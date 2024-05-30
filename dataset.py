@@ -1,0 +1,1847 @@
+import numpy as np
+from torch.utils.data import Dataset
+import copy
+import tqdm
+import torch
+
+from config import (
+    posenames,
+    featrelative, featglobal, featorigin, feattheta, featthetaglobal,
+    nrelative, nglobal, nfeatures
+)
+from features import (
+    compute_movement, compute_pose_features, compute_sensory_wrapper,
+    combine_inputs, combine_relative_global,
+    feat2kp,
+    featidx_to_relfeatidx, relfeatidx_to_featidx,
+    relfeatidx_to_cossinidx, relpose_cos_sin_to_angle,
+    ravel_label_index, unravel_label_index,
+    split_features,
+    zscore, unzscore,
+    get_sensory_feature_shapes, get_sensory_feature_idx,
+)
+from data import fit_discretize_labels, discretize_labels, weighted_sample, labels_discrete_to_continuous
+from utils import modrange, rotate_2d_points, compute_npad
+from models import (  # TODO: dataset should not depend on models
+    generate_square_full_mask,
+    apply_mask,
+    unpack_input,
+    get_output_and_attention_weights,
+    pred_apply_fun
+)
+
+
+class FlyMLMDataset(torch.utils.data.Dataset):
+    def __init__(self, data, max_mask_length=None, pmask=None, masktype='block',
+                 simplify_out=None, simplify_in=None, pdropout_past=0., maskflag=None,
+                 input_labels=True,
+                 dozscore=False,
+                 zscore_params={},
+                 discreteidx=None,
+                 discrete_tspred=[1, ],
+                 discretize_nbins=50,
+                 discretize_epsilon=None,
+                 discretize_params={},
+                 flatten_labels=False,
+                 flatten_obs_idx=None,
+                 flatten_do_separate_inputs=False,
+                 input_noise_sigma=None,
+                 p_add_input_noise=0,
+                 dct_ms=None,
+                 tspred_global=[1, ],
+                 compute_pose_vel=True):
+
+        # copy dicts
+        self.data = [example.copy() for example in data]
+        self.dtype = data[0]['input'].dtype
+        # number of outputs
+        self.d_output = self.data[0]['labels'].shape[-1]
+        self.d_output_continuous = self.d_output
+        self.d_output_discrete = 0
+
+        # number of inputs
+        self.dfeat = self.data[0]['input'].shape[-1]
+
+        self.max_mask_length = max_mask_length
+        self.pmask = pmask
+        self.masktype = masktype
+        self.pdropout_past = pdropout_past
+        self.simplify_out = simplify_out  # modulation of task to make it easier
+        self.simplify_in = simplify_in
+        if maskflag is None:
+            maskflag = (masktype is not None) or (pdropout_past > 0.)
+        self.maskflag = maskflag
+
+        # features used for representing relative pose
+        if compute_pose_vel:
+            self.nrelrep = nrelative
+            self.featrelative = featrelative.copy()
+        else:
+            self.relfeat_to_cossin_map, self.nrelrep = relfeatidx_to_cossinidx(discreteidx)
+            self.featrelative = np.zeros(nglobal + self.nrelrep, dtype=bool)
+            self.featrelative[nglobal:] = True
+
+        self.discretefeat = discreteidx
+
+        self.dct_m = None
+        self.idct_m = None
+        if dct_ms is not None:
+            self.dct_m = dct_ms[0]
+            self.idct_m = dct_ms[1]
+        self.tspred_global = tspred_global
+        # indices of labels corresponding to the next frame if multiple frames are predicted
+        tnext = np.min(self.tspred_global)
+        self.nextframeidx_global = self.ravel_label_index([(f, tnext) for f in featglobal])
+        if self.simplify_out is None:
+            self.nextframeidx_relative = self.ravel_label_index([(i, 1) for i in np.nonzero(self.featrelative)[0]])
+        else:
+            self.nextframeidx_relative = np.array([])
+        self.nextframeidx = np.r_[self.nextframeidx_global, self.nextframeidx_relative]
+        if self.dct_m is not None:
+            dct_tau = self.dct_m.shape[0]
+            # not sure if t+1 should be t+2 here -- didn't add 1 when updating code to make t = 1 mean next frame for relative features
+            self.idxdct_relative = np.stack(
+                [self.ravel_label_index([(i, t + 1) for i in np.nonzero(self.featrelative)[0]]) for t in
+                 range(dct_tau)])
+        self.d_output_nextframe = len(self.nextframeidx)
+
+        # whether to predict relative pose velocities (true) or position (false)
+        self.compute_pose_vel = compute_pose_vel
+
+        if input_labels:
+            assert (masktype is None)
+            assert (pdropout_past == 0.)
+
+        self.input_labels = input_labels
+        if self.input_labels:
+            self.d_input_labels = self.d_output_nextframe
+        else:
+            self.d_input_labels = 0
+
+        # which outputs to discretize, which to keep continuous
+        self.discrete_idx = np.array([])
+        self.discrete_tspred = np.array([1, ])
+        self.discretize = False
+        self.continuous_idx = np.arange(self.d_output)
+        self.discretize_nbins = None
+        self.discretize_bin_samples = None
+        self.discretize_bin_edges = None
+
+        self.mu_input = None
+        self.sig_input = None
+        self.mu_labels = None
+        self.sig_labels = None
+
+        self.dtype = np.float32
+
+        self.flatten_labels = False
+        self.flatten_obs = False
+        self.flatten_nobs_types = None
+        self.flatten_nlabel_types = None
+        self.flatten_dinput_pertype = None
+        self.flatten_max_dinput = None
+        self.flatten_max_doutput = None
+
+        self.input_noise_sigma = input_noise_sigma
+        self.p_add_input_noise = p_add_input_noise
+        self.set_eval_mode()
+
+        if dozscore:
+            print('Z-scoring data...')
+            self.zscore(**zscore_params)
+            print('Done.')
+
+        if discreteidx is not None:
+            print('Discretizing labels...')
+            self.discretize_labels(discreteidx, discrete_tspred, nbins=discretize_nbins, bin_epsilon=discretize_epsilon,
+                                   **discretize_params)
+            print('Done.')
+
+        self.set_flatten_params(flatten_labels=flatten_labels, flatten_obs_idx=flatten_obs_idx,
+                                flatten_do_separate_inputs=flatten_do_separate_inputs)
+
+        self.set_train_mode()
+
+    @property
+    def ntimepoints(self):
+        # number of time points
+        n = self.data[0]['input'].shape[-2]
+        if self.input_labels and not (self.flatten_labels or self.flatten_obs) and not self.ismasked():
+            n -= 1
+        return n
+
+    @property
+    def ntokens_per_timepoint(self):
+        if self.flatten_labels or self.flatten_obs:
+            ntokens = self.flatten_nobs_types + self.flatten_nlabel_types
+        else:
+            ntokens = 1
+        return ntokens
+
+    @property
+    def contextl(self):
+        l = self.ntimepoints * self.ntokens_per_timepoint
+        if (self.flatten_labels or self.flatten_obs) and not self.ismasked():
+            l -= 1
+        return l
+
+    @property
+    def flatten(self):
+        return self.flatten_obs or self.flatten_labels
+
+    @property
+    def continuous(self):
+        return (len(self.continuous_idx) > 0)
+
+    @property
+    def noutput_tokens_per_timepoint(self):
+        if self.flatten_labels and self.discretize:
+            return len(self.discrete_idx) + int(self.continuous)
+        else:
+            return 1
+
+    @property
+    def dct_tau(self):
+        if self.dct_m is None:
+            return 0
+        else:
+            return self.dct_m.shape[0]
+
+    @property
+    def ntspred_relative(self):
+        return self.dct_tau + 1
+
+    @property
+    def ntspred_global(self):
+        return len(self.tspred_global)
+
+    def set_train_mode(self):
+        self.do_add_noise = self.input_noise_sigma is not None and self.p_add_input_noise > 0
+
+    def set_eval_mode(self):
+        self.do_add_noise = False
+
+    def set_flatten_params(self, flatten_labels=False, flatten_obs_idx=None, flatten_do_separate_inputs=False):
+
+        self.flatten_labels = flatten_labels
+        self.flatten_obs_idx = flatten_obs_idx
+        if self.flatten_labels:
+            if self.flatten_obs_idx is None:
+                self.flatten_obs_idx = {'all': [0, self.dfeat]}
+        self.flatten_obs = (self.flatten_obs_idx is not None) and (len(self.flatten_obs_idx) > 0)
+        self.flatten_nobs_types = None
+        self.flatten_nlabel_types = None
+        self.flatten_dinput_pertype = None
+        self.flatten_max_dinput = None
+        self.flatten_max_doutput = None
+        self.flatten_do_separate_inputs = flatten_do_separate_inputs
+
+        if self.flatten_obs:
+            self.flatten_nobs_types = len(self.flatten_obs_idx)
+        else:
+            self.flatten_nobs_types = 1
+        if self.flatten_labels:
+            self.flatten_nlabel_types = self.d_output_discrete
+            if self.d_output_continuous > 0:
+                self.flatten_nlabel_types += 1
+        else:
+            self.flatten_nlabel_types = 1
+
+        if self.flatten:
+            assert self.input_labels
+            self.flatten_dinput_pertype = np.zeros(self.flatten_nobs_types + self.flatten_nlabel_types, dtype=int)
+            for i, v in enumerate(self.flatten_obs_idx.values()):
+                self.flatten_dinput_pertype[i] = v[1] - v[0]
+            if self.flatten_labels and self.discretize:
+                self.flatten_dinput_pertype[self.flatten_nobs_types:] = self.discretize_nbins
+            if self.d_output_continuous > 0:
+                self.flatten_dinput_pertype[-1] = self.d_output_continuous
+            self.flatten_max_dinput = np.max(self.flatten_dinput_pertype)
+            if self.flatten_do_separate_inputs:
+                self.flatten_dinput = np.sum(self.flatten_dinput_pertype)
+            else:
+                self.flatten_dinput = self.flatten_max_dinput
+
+            self.flatten_input_type_to_range = np.zeros((self.flatten_dinput_pertype.size, 2), dtype=int)
+
+            if self.discretize:
+                self.flatten_max_doutput = np.maximum(self.discretize_nbins, self.d_output_continuous)
+            else:
+                self.flatten_max_doutput = self.d_output_continuous
+
+            if self.flatten_do_separate_inputs:
+                cs = np.cumsum(self.flatten_dinput_pertype)
+                self.flatten_input_type_to_range[1:, 0] = cs[:-1]
+                self.flatten_input_type_to_range[:, 1] = cs
+            else:
+                self.flatten_input_type_to_range[:, 1] = self.flatten_dinput_pertype
+
+            # label tokens should be:
+            # observations (flatten_nobs_types)
+            # discrete outputs (d_output_discrete)
+            # continuous outputs (<=1)
+            self.idx_output_token_discrete = torch.arange(self.flatten_nobs_types,
+                                                          self.flatten_nobs_types + self.d_output_discrete, dtype=int)
+            if self.d_output_continuous > 0:
+                self.idx_output_token_continuous = torch.tensor([self.ntokens_per_timepoint - 1, ])
+            else:
+                self.idx_output_token_continuous = torch.tensor([])
+
+        return
+
+    def ravel_label_index(self, ftidx):
+
+        idx = ravel_label_index(ftidx, dct_m=self.dct_m, tspred_global=self.tspred_global, nrelrep=self.nrelrep)
+        return idx
+
+    def unravel_label_index(self, idx):
+
+        ftidx = unravel_label_index(idx, dct_m=self.dct_m, tspred_global=self.tspred_global, nrelrep=self.nrelrep)
+        return ftidx
+
+    def discretize_labels(self, discrete_idx, discrete_tspred, nbins=50,
+                          bin_edges=None, bin_samples=None, bin_epsilon=None,
+                          bin_means=None, bin_medians=None, **kwargs):
+        """
+    discretize_labels(self,discrete_idx,discrete_tspred,nbins=50,bin_edges=None,bin_samples=None,bin_epsilon=None,**kwargs)
+    For each feature in discrete_idx, discretize the labels into nbins bins. For each example in the data,
+    labels_discrete is an ndarray of shape T x len(discrete_idx) x nbins, where T is the number of time points, and
+    indicates whether the label is in each bin, with soft-binning.
+    labels_todiscretize is an ndarray of shape T x len(discrete_idx) with the original continuous labels.
+    labels gets replaced with an ndarray of shape T x len(continuous_idx) with the continuous labels.
+    discretize_bin_edges is an ndarray of shape len(discrete_idx) x (nbins+1) with the bin edges for each discrete feature.
+    discretize_bin_samples is an ndarray of shape nsamples x len(discrete_idx) x nbins with samples from each bin
+    """
+
+        if not isinstance(discrete_idx, np.ndarray):
+            discrete_idx = np.array(discrete_idx)
+        if not isinstance(discrete_tspred, np.ndarray):
+            discrete_tspred = np.array(discrete_tspred)
+
+        is_bin_epsilon_perfeat = len(bin_epsilon) == len(discrete_idx)
+        if is_bin_epsilon_perfeat:
+            bin_epsilon_feat = bin_epsilon
+            bin_epsilon = []
+
+        if not self.compute_pose_vel:
+            discrete_idx1 = []
+            for i in discrete_idx:
+                if not featrelative[i]:
+                    discrete_idx1.append(i)
+                    continue
+                reli = featidx_to_relfeatidx(i)
+                relrepi = self.relfeat_to_cossin_map[reli]
+                assert (type(relrepi) is int)
+                repi = relfeatidx_to_featidx(relrepi)
+                discrete_idx1.append(repi)
+            discrete_idx = np.array(discrete_idx1)
+
+        # bin_epsilon is per feature
+        ftidx = []
+        for i, f in enumerate(discrete_idx):
+            for t in discrete_tspred:
+                if f in featglobal:
+                    ftidx.append((f, t))
+                    if is_bin_epsilon_perfeat:
+                        bin_epsilon.append(bin_epsilon_feat[i])
+                else:
+                    # only t = 1 can be discrete for relative features
+                    if t == 1:
+                        ftidx.append((f, 1))
+                        if is_bin_epsilon_perfeat:
+                            bin_epsilon.append(bin_epsilon_feat[i])
+        self.discrete_idx = self.ravel_label_index(ftidx)
+        order = np.argsort(self.discrete_idx)
+        self.discrete_idx = self.discrete_idx[order]
+        bin_epsilon = np.array(bin_epsilon)
+        if is_bin_epsilon_perfeat:
+            bin_epsilon = bin_epsilon[order]
+
+        self.discretize_nbins = nbins
+        self.continuous_idx = np.ones(self.d_output, dtype=bool)
+        self.continuous_idx[self.discrete_idx] = False
+        self.continuous_idx = np.nonzero(self.continuous_idx)[0]
+        self.d_output_continuous = len(self.continuous_idx)
+        self.d_output_discrete = len(self.discrete_idx)
+        self.discrete_tspred = discrete_tspred
+
+        assert ((bin_edges is None) == (bin_samples is None))
+
+        if bin_edges is None:
+            if self.sig_labels is not None:
+                bin_epsilon = np.array(bin_epsilon) / self.sig_labels[self.discrete_idx]
+            self.discretize_bin_edges, self.discretize_bin_samples, self.discretize_bin_means, self.discretize_bin_medians = \
+                fit_discretize_labels(self, self.discrete_idx, nbins=nbins, bin_epsilon=bin_epsilon, **kwargs)
+        else:
+            self.discretize_bin_samples = bin_samples
+            self.discretize_bin_edges = bin_edges
+            self.discretize_bin_means = bin_means
+            self.discretize_bin_medians = bin_medians
+            assert nbins == bin_edges.shape[-1] - 1
+
+        for example in self.data:
+            example['labels_todiscretize'] = example['labels'][:, self.discrete_idx]
+            example['labels_discrete'] = discretize_labels(example['labels_todiscretize'], self.discretize_bin_edges,
+                                                           soften_to_ends=True)
+            example['labels'] = example['labels'][:, self.continuous_idx]
+
+        self.discretize = True
+        self.discretize_fun = lambda x: discretize_labels(x, self.discretize_bin_edges, soften_to_ends=True)
+
+    def get_discretize_params(self):
+        discretize_params = {
+            'bin_edges': self.discretize_bin_edges.copy(),
+            'bin_samples': self.discretize_bin_samples.copy(),
+            'bin_means': self.discretize_bin_means.copy(),
+            'bin_medians': self.discretize_bin_medians.copy(),
+        }
+        return discretize_params
+
+    def get_bin_edges(self, zscored=False):
+
+        if self.discretize == False:
+            return
+
+        if zscored or (self.mu_labels is None):
+            bin_edges = self.discretize_bin_edges
+        else:
+            bin_edges = self.unzscore_labels(self.discretize_bin_edges.T, self.discrete_idx).T
+
+        return bin_edges
+
+    def get_bin_samples(self, zscored=False):
+        if self.discretize == False:
+            return
+
+        if zscored or (self.mu_labels is None):
+            bin_samples = self.discretize_bin_samples
+        else:
+            sz = self.discretize_bin_samples.shape
+            bin_samples = self.discretize_bin_samples.transpose(0, 2, 1).reshape((sz[0] * sz[2], sz[1]))
+            bin_samples = self.unzscore_labels(bin_samples, self.discrete_idx)
+            bin_samples = bin_samples.reshape((sz[0], sz[2], sz[1])).transpose(0, 2, 1)
+
+        return bin_samples
+
+    def remove_labels_from_input(self, input):
+        if self.hasmaskflag():
+            return input[..., self.d_input_labels:-1]
+        else:
+            return input[..., self.d_input_labels:]
+
+    def metadata_to_index(self, flynum, t0):
+        starttoff = self.get_start_toff()
+        for i, d in enumerate(self.data):
+            if (d['metadata']['t0'] == t0 - starttoff) and (d['metadata']['flynum'] == flynum):
+                return i
+        return None
+
+    def hasmaskflag(self):
+        return self.ismasked() or self.maskflag or self.pdropout_past > 0
+
+    def ismasked(self):
+        """Whether this object is a dataset for a masked language model, ow a causal model.
+    v = self.ismasked()
+
+    Returns:
+        bool: Whether data are masked.
+    """
+        return self.masktype is not None
+
+    def zscore(self, mu_input=None, sig_input=None, mu_labels=None, sig_labels=None):
+        """
+    self.zscore(mu_input=None,sig_input=None,mu_labels=None,sig_labels=None)
+    zscore the data. input and labels are z-scored for each example in self.data
+    and converted to float32. They are stored in place in the dict for each example
+    in the dataset. If mean and standard deviation statistics are input, then
+    these statistics are used for z-scoring. Otherwise, means and standard deviations
+    are computed from this data.
+
+    Args:
+        mu_input (ndarray, dfeat, optional): Pre-computed mean for z-scoring input.
+        If None, mu_input is computed as the mean of all the inputs in self.data.
+        Defaults to None.
+        sig_input (ndarray, dfeat, optional): Pre-computed standard deviation for
+        z-scoring input. If mu_input is None, sig_input is computed as the std of all
+        the inputs in self.data. Defaults to None. Do not set this to None if mu_input
+        is not None.
+        mu_labels (ndarray, d_output_continuous, optional): Pre-computed mean for z-scoring labels.
+        If None, mu_labels is computed as the mean of all the labels in self.data.
+        Defaults to None.
+        sig_labels (ndarray, dfeat, optional): Pre-computed standard deviation for
+        z-scoring labels. If mu_labels is None, sig_labels is computed as the standard
+        deviation of all the labels in self.data. Defaults to None. Do not set this
+        to None if mu_labels is not None.
+
+    No value returned.
+    """
+
+        # must happen before discretizing
+        assert self.discretize == False, 'z-scoring should happen before discretizing'
+
+        def zscore_helper(f):
+            mu = 0.
+            sig = 0.
+            n = 0.
+            for example in self.data:
+                # input is T x dfeat
+                n += np.sum(np.isnan(example[f]) == False, axis=0)
+                mu += np.nansum(example[f], axis=0)
+                sig += np.nansum(example[f] ** 2., axis=0)
+            mu = mu / n
+            sig = np.sqrt(sig / n - mu ** 2.)
+            assert (np.any(np.isnan(mu)) == False)
+            assert (np.any(np.isnan(sig)) == False)
+
+            return mu, sig
+
+        if mu_input is None:
+            self.mu_input, self.sig_input = zscore_helper('input')
+        else:
+            self.mu_input = mu_input.copy()
+            self.sig_input = sig_input.copy()
+
+        self.mu_input = self.mu_input.astype(self.dtype)
+        self.sig_input = self.sig_input.astype(self.dtype)
+
+        if mu_labels is None:
+            self.mu_labels, self.sig_labels = zscore_helper('labels')
+        else:
+            self.mu_labels = mu_labels.copy()
+            self.sig_labels = sig_labels.copy()
+
+        self.mu_labels = self.mu_labels.astype(self.dtype)
+        self.sig_labels = self.sig_labels.astype(self.dtype)
+
+        for example in self.data:
+            example['input'] = self.zscore_input(example['input'])
+            example['labels'] = self.zscore_labels(example['labels'])
+
+    def get_zscore_params(self):
+        zscore_params = {
+            'mu_input': self.mu_input.copy(),
+            'sig_input': self.sig_input.copy(),
+            'mu_labels': self.mu_labels.copy(),
+            'sig_labels': self.sig_labels.copy(),
+        }
+        return zscore_params
+
+    def maskblock(self, inl):
+        # choose a mask length
+        maxl = min(inl - 1, self.max_mask_length)
+        l = np.random.randint(1, self.max_mask_length)
+
+        # choose mask start
+        t0 = np.random.randint(0, inl - l)
+        t1 = t0 + l
+
+        # create mask
+        mask = torch.zeros(inl, dtype=bool)
+        mask[t0:t1] = True
+
+        return mask
+
+    def masklast(self, inl):
+        mask = torch.zeros(inl, dtype=bool)
+        mask[-1] = True
+        return mask
+
+    def maskind(self, inl, pmask=None):
+        if pmask is None:
+            pmask = self.pmask
+        mask = torch.rand(inl) <= pmask
+        if not torch.any(mask):
+            imask = np.random.randint(inl)
+            mask[imask] = True
+        return mask
+
+    def set_masktype(self, masktype):
+        self.masktype = masktype
+
+    def zscore_input(self, rawinput):
+        if self.mu_input is None:
+            input = rawinput.copy()
+        else:
+            input = (rawinput - self.mu_input) / self.sig_input
+        return input.astype(self.dtype)
+
+    def zscore_nextframe_labels(self, rawlabels):
+        if self.mu_labels is None:
+            labels = rawlabels.copy()
+        else:
+            # if rawlabels.shape[-1] > self.d_output_continuous:
+            #   labels = rawlabels.copy()
+            #   labels[...,self.continuous_idx] = (rawlabels[...,self.continuous_idx]-self.mu_labels)/self.sig_labels
+            # else:
+            labels = (rawlabels - self.mu_labels[self.nextframeidx]) / self.sig_labels[self.nextframeidx]
+        return labels.astype(self.dtype)
+
+    def zscore_labels(self, rawlabels):
+        if self.mu_labels is None:
+            labels = rawlabels.copy()
+        else:
+            # if rawlabels.shape[-1] > self.d_output_continuous:
+            #   labels = rawlabels.copy()
+            #   labels[...,self.continuous_idx] = (rawlabels[...,self.continuous_idx]-self.mu_labels)/self.sig_labels
+            # else:
+            labels = (rawlabels - self.mu_labels) / self.sig_labels
+        return labels.astype(self.dtype)
+
+    def unzscore_nextframe_labels(self, zlabels):
+        if self.mu_labels is None:
+            rawlabels = zlabels.copy()
+        else:
+            # if zlabels.shape[-1] > self.d_output_continuous:
+            #   rawlabels = zlabels.copy()
+            #   rawlabels[...,self.continuous_idx] = unzscore(zlabels[...,self.continuous_idx],self.mu_labels,self.sig_labels)
+            # else:
+            rawlabels = unzscore(zlabels, self.mu_labels[self.nextframeidx], self.sig_labels[self.nextframeidx])
+        return rawlabels.astype(self.dtype)
+
+    def unzscore_labels(self, zlabels, featidx=None):
+        if self.mu_labels is None:
+            rawlabels = zlabels.copy()
+        else:
+            # if zlabels.shape[-1] > self.d_output_continuous:
+            #   rawlabels = zlabels.copy()
+            #   rawlabels[...,self.continuous_idx] = unzscore(zlabels[...,self.continuous_idx],self.mu_labels,self.sig_labels)
+            # else:
+            if featidx is None:
+                rawlabels = unzscore(zlabels, self.mu_labels, self.sig_labels)
+            else:
+                rawlabels = unzscore(zlabels, self.mu_labels[featidx], self.sig_labels[featidx])
+        return rawlabels.astype(self.dtype)
+
+    def mask_input(self, input, masktype='default'):
+
+        if masktype == 'default':
+            masktype = self.masktype
+
+        contextl = input.shape[0]
+
+        if self.masktype == 'block':
+            mask = self.maskblock(contextl)
+        elif self.masktype == 'ind':
+            mask = self.maskind(contextl)
+        elif self.masktype == 'last':
+            mask = self.masklast(contextl)
+        else:
+            mask = None
+        maskflagged = False
+        if self.masktype is not None:
+            input = apply_mask(input, mask, self.dfeat)
+            maskflagged = True
+        if self.pdropout_past > 0:
+            dropout_mask = self.maskind(contextl, pmask=self.pdropout_past)
+            input = apply_mask(input, dropout_mask, self.dfeat, maskflagged)
+            maskflagged = True
+        else:
+            dropout_mask = None
+        if self.maskflag and not maskflagged:
+            input = apply_mask(input, None)
+
+        return input, mask, dropout_mask
+
+    def get_input_shapes(self):
+        idx, sz = get_sensory_feature_shapes(self.simplify_in)
+        if self.input_labels:
+            for k, v in idx.items():
+                idx[k] = [x + self.d_input_labels for x in v]
+            idx['labels'] = [0, self.d_input_labels]
+            sz['labels'] = (self.d_input_labels,)
+        return idx, sz
+
+    def unpack_input(self, input, dim=-1):
+
+        idx, sz = self.get_input_shapes()
+        res = unpack_input(input, idx, sz, dim=dim)
+
+        return res
+
+    def input2pose(self, input):
+        """
+    pose = self.input2pose(input)
+    Extracts the relative pose features.
+
+    Args:
+        input (ndarray or Tensor, (... x nfeat) or (... x (d_input_labels+nfeat+ismasked)): input features
+        to process.
+
+    Returns:
+        pose ndarray or Tensor, ... x npose: relative pose features extracted from input
+    """
+        if input.shape[-1] > self.dfeat:
+            input = self.remove_labels_from_input(input)
+        res = split_features(input, simplify=self.simplify_in)
+        return res['pose']
+
+    def get_start_toff(self):
+        if self.ismasked() or (self.input_labels == False) or \
+                self.flatten_labels or self.flatten_obs:
+            starttoff = 0
+        else:
+            starttoff = 1
+        return starttoff
+
+    def __getitem__(self, idx: int):
+        """
+    example = self.getitem(idx)
+    Returns dataset example idx. It performs the following processing:
+    - Converts the data to tensors.
+    - Concatenates labels and feature input into input, and shifts labels in inputs
+    depending on whether this is a dataset for a masked LM or a causal LM (see below).
+    - For masked LMs, draw and applies a random mask of type self.masktype.
+
+    Args:
+        idx (int): Index of the example to return.
+
+    Returns:
+        example (dict) with the following fields:
+
+        For masked LMs:
+        example['input'] is a tensor of shape contextl x (d_input_labels + dfeat + 1)
+        where example['input'][t,:d_input_labels] is the motion from frame t to t+1 and
+        example['input'][t,d_input_labels:-1] are the input features for frame t.
+        example['input'][t,-1] indicates whether the frame is masked or not. If this
+        frame is masked, then example['input'][t,:d_input_labels] will be set to 0.
+        example['labels'] is a tensor of shape contextl x d_output_continuous
+        where example['labels'][t,:] is the continuous motion from frame t to t+1 and/or
+        the pose at frame t+1
+        example['labels_discrete'] is a tensor of shape contextl x d_output_discrete x
+        discretize_nbins, where example['labels_discrete'][t,i,:] is one-hot encoding of
+        discrete motion feature i from frame t to t+1 and/or pose at frame t+1.
+        example['init'] is a tensor of shape dglobal, corresponding to the global
+        position in frame 0.
+        example['mask'] is a tensor of shape contextl indicating which frames are masked.
+
+        For causal LMs:
+        example['input'] is a tensor of shape (contextl-1) x (d_input_labels + dfeat).
+        if input_labels == True, example['input'][t,:d_input_labels] is the motion from
+        frame t to t+1 and/or the pose at frame t+1,
+        example['input'][t,d_input_labels:] are the input features for
+        frame t+1.
+        example['labels'] is a tensor of shape contextl x d_output
+        where example['labels'][t,:] is the motion from frame t+1 to t+2 and/or the pose at
+        frame t+2.
+        example['init'] is a tensor of shape dglobal, corresponding to the global
+        position in frame 1.
+        example['labels_discrete'] is a tensor of shape contextl x d_output_discrete x
+        discretize_nbins, where example['labels_discrete'][t,i,:] is one-hot encoding of
+        discrete motion feature i from frame t+1 to t+2 and/or pose at frame t+2.
+
+        For all:
+        example['scale'] are the scale features for this fly, used for converting from
+        relative pose features to keypoints.
+        example['categories'] are the currently unused categories for this sequence.
+        example['metadata'] is a dict of metadata about this sequence.
+
+    """
+
+        datacurr = self.data[idx]
+
+        input = torch.as_tensor(datacurr['input'].copy())
+        labels = torch.as_tensor(datacurr['labels'].copy())
+        if self.discretize:
+            labels_todiscretize = torch.as_tensor(datacurr['labels_todiscretize'].copy())
+        else:
+            labels_todiscretize = None
+            labels_discrete = None
+        if self.input_labels:
+            # should we use all future predictions, or just the next time point?
+            if self.discretize:
+                input_labels = torch.zeros((labels.shape[0], self.d_output), dtype=labels.dtype)
+                input_labels[:, self.continuous_idx] = labels
+                input_labels[:, self.discrete_idx] = labels_todiscretize
+                input_labels = input_labels[:, self.nextframeidx]  # probably could be made faster
+            else:
+                input_labels = labels[:, self.nextframeidx].clone()
+        else:
+            input_labels = None
+
+        # add_noise
+        if self.do_add_noise:
+            eta, input, input_labels, labels, labels_todiscretize, labels_discrete = self.add_noise(input, input_labels,
+                                                                                                    labels,
+                                                                                                    labels_todiscretize,
+                                                                                                    labels_discrete)
+
+        # whether we start with predicting the 0th or the 1th frame in the input sequence
+        starttoff = self.get_start_toff()
+
+        init = torch.as_tensor(datacurr['init'][:, starttoff].copy())
+        scale = torch.as_tensor(datacurr['scale'].copy())
+        categories = torch.as_tensor(datacurr['categories'].copy())
+        metadata = copy.deepcopy(datacurr['metadata'])
+        metadata['t0'] += starttoff
+        metadata['frame0'] += starttoff
+
+        res = {'input': None, 'labels': None, 'labels_discrete': None,
+               'labels_todiscretize': None,
+               'init': init, 'scale': scale, 'categories': categories,
+               'metadata': metadata}
+
+        if self.discretize:
+            res['labels_discrete'] = labels_discrete[starttoff:, :, :]
+            res['labels_todiscretize'] = labels_todiscretize[starttoff:, :]
+
+        nin = input.shape[-1]
+        contextl = input.shape[0]
+        input, mask, dropout_mask = self.mask_input(input)
+
+        if self.flatten:
+            ntypes = self.ntokens_per_timepoint
+            # newl = contextl*ntypes
+            newlabels = torch.zeros((contextl, ntypes, self.flatten_max_doutput), dtype=input.dtype)
+            newinput = torch.zeros((contextl, ntypes, self.flatten_dinput), dtype=input.dtype)
+            newmask = torch.zeros((contextl, ntypes), dtype=bool)
+            # offidx = np.arange(contextl)*ntypes
+            if self.flatten_obs:
+                for i, v in enumerate(self.flatten_obs_idx.values()):
+                    newinput[:, i,
+                    self.flatten_input_type_to_range[i, 0]:self.flatten_input_type_to_range[i, 1]] = input[:, v[0]:v[1]]
+                    newmask[:, i] = False
+            else:
+                newinput[:, 0, :self.flatten_dinput_pertype[0]] = input
+            if self.discretize:
+                if self.flatten_labels:
+                    for i in range(self.d_output_discrete):
+                        inputnum = self.flatten_nobs_types + i
+                        newlabels[:, inputnum, :self.discretize_nbins] = labels_discrete[:, i, :]
+                        newinput[:, inputnum,
+                        self.flatten_input_type_to_range[inputnum, 0]:self.flatten_input_type_to_range[
+                            inputnum, 1]] = labels_discrete[:, i, :]
+                        if mask is None:
+                            newmask[:, self.flatten_nobs_types + i] = True
+                        else:
+                            newmask[:, self.flatten_nobs_types + i] = mask.clone()
+                    if self.continuous:
+                        inputnum = -1
+                        newlabels[:, -1, :labels.shape[-1]] = labels
+                        newinput[:, -1, self.flatten_input_type_to_range[inputnum, 0]:self.flatten_input_type_to_range[
+                            inputnum, 1]] = labels
+                        if mask is None:
+                            newmask[:, -1] = True
+                        else:
+                            newmask[:, -1] = mask.clone()
+                else:
+                    newinput[:, -1, :self.d_output] = labels
+            newlabels = newlabels.reshape((contextl * ntypes, self.flatten_max_doutput))
+            newinput = newinput.reshape((contextl * ntypes, self.flatten_dinput))
+            newmask = newmask.reshape(contextl * ntypes)
+            if not self.ismasked():
+                newlabels = newlabels[1:, :]
+                newinput = newinput[:-1, :]
+                newmask = newmask[1:]
+
+            res['input'] = newinput
+            res['input_stacked'] = input
+            res['mask_flattened'] = newmask
+            res['labels'] = newlabels
+            res['labels_stacked'] = labels
+        else:
+            if self.input_labels:
+                input = torch.cat((input_labels[:-starttoff, :], input[starttoff:, :]), dim=-1)
+            labels = labels[starttoff:, :]
+            res['input'] = input
+            res['labels'] = labels
+
+        if mask is not None:
+            res['mask'] = mask
+        if dropout_mask is not None:
+            res['dropout_mask'] = dropout_mask
+        return res
+
+    def add_noise(self, input, input_labels, labels, labels_todiscretize, labels_discrete):
+
+        # add noise to the input movement and pose
+        # desire is to do movement truemovement(t-1->t)
+        # movement noisemovement(t-1->t) = truemovement(t-1->t) + eta(t) actually done
+        # resulting in noisepose(t) = truepose(t) + eta(t)[featrelative]
+        # output should then be fixmovement(t->t+1) = truemovement(t->t+1) - eta(t)
+        # input pose: noise_input_pose(t) = truepose(t) + eta(t)[featrelative]
+        # input movement: noise_input_movement(t-1->t) = truemovement(t-1->t) + eta(t)
+        # output movement: noise_output_movement(t->t+1) = truemovement(t->t+1) - eta(t)
+        # movement(t->t+1) = truemovement(t->t+1)
+
+        T = input.shape[0]
+
+        # additive noise
+        input_noise_sigma = self.input_noise_sigma
+        if self.sig_labels is not None:
+            input_noise_sigma = input_noise_sigma / self.sig_labels
+        eta = np.zeros((T, self.d_output))
+        do_add_noise = np.random.rand(T) <= self.p_add_input_noise
+        eta[do_add_noise, :] = input_noise_sigma[None, :] * np.random.randn(np.count_nonzero(do_add_noise),
+                                                                            self.d_output)
+        eta = torch.as_tensor(eta).to(dtype=labels.dtype, device=labels.device)
+
+        # problem with multiplicative noise is that it is 0 when the movement is 0 -- there should always be some jitter
+        # etamult = np.maximum(-self.max_input_noise,np.minimum(self.max_input_noise,self.input_noise_sigma[None,:]*np.random.randn(input.shape[0],self.d_output)))
+        # if self.input_labels:
+        #   eta = input_labels*etamult
+        # else:
+        #   labelsprev = torch.zeros((labels.shape[0],nfeatures),dtype=labels.dtype,device=labels.device)
+        #   if self.continuous:
+        #     labelsprev[1:,self.continuous_idx] = labels[:-1,:]
+        #   if self.discretize:
+        #     labelsprev[1:,self.discrete_idx] = labels_todiscretize[:-1,:]
+        #   eta = labelsprev*etamult
+
+        # input pose
+        inputidx = get_sensory_feature_idx(self.simplify_in)
+        i0 = inputidx['pose'][0]
+        i1 = inputidx['pose'][1]
+        input[:, i0:i1] += eta[:, self.featrelative]
+        # input labels
+        if self.input_labels:
+            input_labels += eta
+        # output labels
+        if self.continuous:
+            labels -= eta[:, self.continuous_idx]
+        if self.discretize and np.any(self.input_noise_sigma[self.discrete_idx] != 0.):
+            labels_todiscretize -= eta[:, self.discrete_idx]
+            labels_discrete = torch.as_tensor(self.discretize_fun(labels_todiscretize.numpy()))
+        return eta, input, input_labels, labels, labels_todiscretize, labels_discrete
+
+    def __len__(self):
+        return len(self.data)
+
+    def pred2pose(self, posein, globalin, pred, isnorm=True):
+        """
+    posenext,globalnext = self.pred2pose(posein,globalin,pred)
+    Adds the motion in pred to the pose defined by posein and globalin
+    to compute the pose in the next frame.
+
+    Args:
+        posein (ndarray, dposerel): Unnormalized relative pose features for the current
+        frame globalin (ndarray, dglobal): Global position for the current frame
+        pred (ndarray, d_output): Z-scored (if applicable) predicted movement from
+        current frame to the next frame/pose in the next frame.
+        isnorm (bool,optional): Whether the input pred is normalized. Default: True.
+
+    Returns:
+        posenext (ndarray, dposerel): Unnormalized relative pose features for the next
+        frame.
+        globalnext (ndarray, dglobal): Global position for the next frame.
+
+    Example call: relposenext,globalposnext = self.pred2pose(relposecurr,globalposcurr,zmovementout)
+    """
+        if isnorm:
+            movement = self.unzscore_labels(pred)
+        else:
+            movement = pred
+
+        if pred.ndim > posein.ndim:
+            nsamples = pred.shape[0]
+        else:
+            nsamples = 1
+
+        # nsamples x tspred_global x nglobal
+        movement_global = self.get_global_movement(movement)
+        originvelrel = movement_global[:, :, [1, 0], ...]
+        theta0 = globalin[2]
+        sz = originvelrel.shape
+        originvel = rotate_2d_points(originvelrel.reshape((-1, sz[-1])), -theta0).reshape(sz)
+        globalnext = np.tile(globalin[None, None, :], (nsamples, self.ntspred_global, 1))
+        globalnext[:, :, :2, ...] += originvel
+        globalnext[:, :, 2, ...] += movement_global[:, :, 2, ...]
+        globalnext[:, :, 2, ...] = modrange(globalnext[:, :, 2, ...], -np.pi, np.pi)
+
+        if self.simplify_out == 'global':
+            posenext = globalnext
+        else:
+            movement_relative_next = self.get_next_relative_movement(movement)
+            if self.dct_m is None:
+                # nsamples x ntspred_relative x nfeatrelative
+                movement_relative = movement_relative_next[:, None, ...]
+            else:
+                # to do: not sure how this will work with multiple samples
+                movement_relative = self.get_relative_movement_dct(movement, iszscored=False)
+                movement_relative[0, ...] = movement_relative_next
+            # nsamples x ntspred_relative x nfeatrelative
+            if self.compute_pose_vel:
+                posenext = posein + movement_relative
+            else:
+                posenext = movement_relative.copy()
+            # globalnext = globalin+movement[featglobal]
+
+        if pred.ndim == posein.ndim:
+            # select out the 0th sample
+            posenext = posenext[0]
+            globalnext = globalnext[0]
+
+        return posenext, globalnext
+
+    def get_global_movement_idx(self):
+        idxglobal = self.ravel_label_index(np.stack(np.meshgrid(featglobal, self.tspred_global), axis=-1))
+        return idxglobal
+
+    def get_global_movement(self, movement):
+        idxglobal = self.get_global_movement_idx()
+        movement_global = movement[..., idxglobal]
+        return movement_global
+
+    def set_global_movement(self, movement_global, movement):
+        idxglobal = self.get_global_movement_idx()
+        movement[..., idxglobal] = movement_global
+        return movement
+
+    def get_global_movement_discrete(self, movement_discrete):
+        if not self.discretize:
+            return None
+        idxglobal = self.get_global_movement_idx()
+        movement_global_discrete = np.zeros(
+            movement_discrete.shape[:-2] + idxglobal.shape + movement_discrete.shape[-1:], dtype=self.dtype)
+        movement_global_discrete[:] = np.nan
+        for i in range(idxglobal.shape[0]):
+            for j in range(idxglobal.shape[1]):
+                idx = idxglobal[i, j]
+                didx = np.nonzero(self.discrete_idx == idx)[0]
+                if len(didx) == 0:
+                    continue
+                movement_global_discrete[..., i, j, :] = movement_discrete[..., didx[0], :]
+        return movement_global_discrete
+
+    def get_next_relative_movement(self, movement):
+        movement_next_relative = movement[..., self.nextframeidx_relative]
+        return movement_next_relative
+
+    def get_relative_movement_dct(self, movements, iszscored=False):
+        movements_dct = movements[..., self.idxdct_relative]
+        if not iszscored and self.mu_labels is not None:
+            movements_dct = unzscore(movements_dct, self.mu_labels[self.idxdct_relative],
+                                     self.sig_labels[self.idxdct_relative])
+        movements_relative = self.idct_m @ movements_dct
+        return movements_relative
+
+    def get_next_relative_movement_dct(self, movements, iszscored=True, dozscore=True):
+        if self.simplify_out == 'global':
+            return movements[..., []]
+
+        if type(movements) is np.ndarray:
+            movements = torch.as_tensor(movements)
+
+        movements_dct = movements[..., self.idxdct_relative]
+        if not iszscored and self.mu_labels is not None:
+            mu = torch.as_tensor(self.mu_labels[self.idxdct_relative]).to(dtype=movements.dtype,
+                                                                          device=movements.device)
+            sig = torch.as_tensor(self.sig_labels[self.idxdct_relative]).to(dtype=movements.dtype,
+                                                                            device=movements.device)
+            movements_dct = unzscore(movements_dct, mu, sig)
+
+        idct_m0 = torch.as_tensor(self.idct_m[[0, ], :]).to(dtype=movements.dtype, device=movements.device)
+        dctfeat = movements[..., self.idxdct_relative]
+        movements_next_relative = torch.matmult(idct_m0, dctfeat)
+
+        if dozscore:
+            movements_next_relative = zscore(movements_next_relative, self.mu_labels[self.nextframeidx_relative],
+                                             self.sig_labels[self.nextframeidx_relative])
+
+        return movements_next_relative
+
+    def compare_dct_to_next_relative(self, movements):
+        movements_next_relative_dct = self.get_next_relative_movement_dct(movements, iszscored=True, dozscore=True)
+        movements_next_relative0 = movements[..., self.nextframeidx_relative]
+        err = movements_next_relative_dct - movements_next_relative0
+        return err
+
+    def get_next_movements(self, movements=None, example=None, iszscored=False, use_dct=False, **kwargs):
+        """
+    get_next_movements(movements=None,example=None,iszscored=False,use_dct=False,**kwargs)
+    extracts the next frame movements/pose from the input, ignoring predictions for frames further
+    into the future.
+    Inputs:
+      movements: ... x d_output ndarray of movements. Required if example is None. Default: None.
+      example: dict holding training/test example. Required if movements is None. Default: None.
+      iszscored: whether movements are z-scored. Default: False.
+      use_dct: whether to use DCT to extract relative pose features. Default: False.
+      Extra args are fed into get_full_labels if movements is None
+    Outputs:
+      movements_next: ... x d_output ndarray of movements/pose for the next frame.
+    """
+        if movements is None:
+            movements = self.get_full_labels(example=example, **kwargs)
+            iszscored = True
+
+        if torch.is_tensor(movements):
+            movements = movements.numpy()
+
+        if iszscored and self.mu_labels is not None:
+            movements = unzscore(movements, self.mu_labels, self.sig_labels)
+
+        movements_next_global = movements[..., self.nextframeidx_global]
+        if self.simplify_out is None:
+            if use_dct and self.dct_m is not None:
+                dctfeat = movements[..., self.idxdct_relative]
+                movements_next_relative = self.idct_m[[0, ], :] @ dctfeat
+            else:
+                movements_next_relative = movements[..., self.nextframeidx_relative]
+            movements_next = np.concatenate((movements_next_global, movements_next_relative), axis=-1)
+        else:
+            movements_next = movements_next_global
+        return movements_next
+
+    def get_init_pose(self, example=None, input0=None, global0=None, zscored=False):
+        if example is not None:
+            if input0 is None:
+                input = self.get_full_inputs(example=example)
+                input0 = input[..., 0, :]
+            if global0 is None:
+                global0 = example['init']
+
+        istorch = torch.is_tensor(input0)
+
+        if (self.mu_input is not None) and (zscored == False):
+            input0 = unzscore(input0, self.mu_input, self.sig_input)
+
+        input0 = split_features(input0, simplify=self.simplify_in)
+        relative0 = input0['pose']
+
+        if istorch:
+            pose0 = torch.zeros(nfeatures, dtype=relative0.dtype, device=relative0.device)
+        else:
+            pose0 = np.zeros(nfeatures, dtype=relative0.dtype)
+        pose0[featglobal] = global0
+        pose0[featrelative] = relative0
+
+        return pose0
+
+    def get_Xfeat(self, input0=None, global0=None, movements=None, example=None, use_dct=False, **kwargs):
+        """
+    Xfeat = self.get_Xfeat(input0,global0,movements)
+    Xfeat = self.get_Xfeat(example=example)
+
+    Unnormalizes initial input input0 and extracts relative pose features. Combines
+    these with global0 to get the full set of pose features for initial frame 0.
+    Converts egocentric movements (forward, sideway) to global, and computes the
+    full pose features for each frame based on the input movements.
+
+    Either input0, global0, and movements must be input OR
+    example must be input, and input0, global0, and movements are derived from there.
+
+    Args:
+        input0 (ndarray, d_input_labels+dfeat+hasmaskflag): network input for time point 0
+        global0 (ndarray, 3): global position at time point 0
+        movements (ndarray, T x d_output ): movements[t,:] is the movement from t to t+1
+
+    Returns:
+        Xfeat: (ndarray, T+1 x nfeatures): All pose features for frames 0 through T
+    """
+
+        if example is not None:
+            if input0 is None:
+                input = self.get_full_inputs(example=example)
+                input0 = input[..., 0, :]
+            if global0 is None:
+                global0 = example['init']
+            if movements is None:
+                movements = self.get_full_labels(example=example, **kwargs)
+
+        szrest = movements.shape[:-1]
+        n = np.prod(np.array(szrest))
+
+        if torch.is_tensor(input0):
+            input0 = input0.numpy()
+        if torch.is_tensor(global0):
+            global0 = global0.numpy()
+        if torch.is_tensor(movements):
+            movements = movements.numpy()
+
+        if self.mu_input is not None:
+            input0 = unzscore(input0, self.mu_input, self.sig_input)
+            movements = unzscore(movements, self.mu_labels, self.sig_labels)
+
+        # get movements/pose for next frame prediction
+        movements_next = self.get_next_movements(movements=movements, iszscored=False, use_dct=use_dct)
+
+        if not self.compute_pose_vel:
+            movements_next = self.convert_cos_sin_to_angle(movements_next)
+
+        input0 = split_features(input0, simplify=self.simplify_in)
+        Xorigin0 = global0[..., :2]
+        Xtheta0 = global0[..., 2]
+        thetavel = movements_next[..., feattheta]
+
+        Xtheta = np.cumsum(np.concatenate((Xtheta0[..., None], thetavel), axis=-1), axis=-1)
+        Xoriginvelrel = movements_next[..., [featorigin[1], featorigin[0]]]
+        Xoriginvel = rotate_2d_points(Xoriginvelrel.reshape((n, 2)), -Xtheta[..., :-1].reshape(n)).reshape(
+            szrest + (2,))
+        Xorigin = np.cumsum(np.concatenate((Xorigin0[..., None, :], Xoriginvel), axis=-2), axis=-2)
+        Xfeat = np.zeros(szrest[:-1] + (szrest[-1] + 1, nfeatures), dtype=self.dtype)
+        Xfeat[..., featorigin] = Xorigin
+        Xfeat[..., feattheta] = Xtheta
+
+        if self.simplify_out == 'global':
+            Xfeat[..., featrelative] = np.tile(input0['pose'], szrest[:-1] + (szrest[-1] + 1, 1))
+        else:
+            Xfeatpose = np.concatenate((input0['pose'][..., None, :], movements_next[..., featrelative]), axis=-2)
+            if self.compute_pose_vel:
+                Xfeatpose = np.cumsum(Xfeatpose, axis=-2)
+            Xfeat[..., featrelative] = Xfeatpose
+
+        return Xfeat
+
+    def get_Xkp(self, example, pred=None, **kwargs):
+        """
+    Xkp = self.get_Xkp(example,pred=None)
+
+    Call get_Xfeat to get the full pose features based on the initial input and global
+    position example['input'] and example['init'] and the per-frame motion in
+    pred (if not None) or example['labels'], example['labels_discrete']. Converts
+    the full pose features to keypoint coordinates.
+
+    Args:
+        scale (ndarray, dscale): scale parameters for this fly
+        example (dict), output of __getitem__: example with fields input, init, labels, and
+        scale.
+        pred (ndarray, T x d_output ): movements[t,:] is the movement from t to t+1
+
+    Returns:
+        Xkp: (ndarray, nkeypoints x 2 x T+1 x 1): Keypoint locations for frames 0 through T
+    """
+
+        scale = example['scale']
+        if torch.is_tensor(scale):
+            scale = scale.numpy()
+
+        if pred is not None:
+            movements = self.get_full_pred(pred, **kwargs)
+        else:
+            movements = None
+        Xfeat = self.get_Xfeat(example=example, movements=movements, **kwargs)
+        Xkp = self.feat2kp(Xfeat, scale)
+        return Xkp
+
+    def get_Xkp0(self, input0=None, global0=None, movements=None, scale=None, example=None):
+        """
+    Xkp = self.get_Xkp(input0,global0,movements)
+
+    Call get_Xfeat to get the full pose features based on the initial input and global
+    position input0 and global0 and the per-frame motion in movements. Converts
+    the full pose features to keypoint coordinates.
+
+    Either input0, global0, movements, and scale must be input OR
+    example must be input, and input0, global0, movements, and scale are derived from there
+
+    Args:
+        input0 (ndarray, d_input_labels+dfeat+hasmaskflag): network input for time point 0
+        global0 (ndarray, 3): global position at time point 0
+        movements (ndarray, T x d_output ): movements[t,:] is the movement from t to t+1
+        scale (ndarray, dscale): scale parameters for this fly
+        example (dict), output of __getitem__: example with fields input, init, labels, and
+        scale.
+
+    Returns:
+        Xkp: (ndarray, nkeypoints x 2 x T+1 x 1): Keypoint locations for frames 0 through T
+    """
+
+        if example is not None and scale is None:
+            scale = example['scale']
+        if torch.is_tensor(scale):
+            scale = scale.numpy()
+
+        Xfeat = self.get_Xfeat(input0=input0, global0=global0, movements=movements, example=example)
+        Xkp = self.feat2kp(Xfeat, scale)
+        return Xkp
+
+    def feat2kp(self, Xfeat, scale):
+        """
+    Xkp = self.feat2kp(Xfeat)
+
+    Args:
+        Xfeat (ndarray, T x nfeatures): full pose features for each frame
+        scale (ndarray, dscale): scale features
+
+    Returns:
+        Xkp (ndarray, nkeypoints x 2 x T+1 x 1): keypoints for each frame
+    """
+        Xkp = feat2kp(Xfeat.T[..., None], scale[..., None])
+        return Xkp
+
+    def construct_input(self, obs, movement=None):
+
+        # to do: merge this code with getitem so that we don't have to duplicate
+        dtype = obs.dtype
+
+        if self.input_labels:
+            assert (movement is not None)
+
+        if self.flatten:
+            xcurr = np.zeros((obs.shape[0], self.ntokens_per_timepoint, self.flatten_dinput), dtype=dtype)
+
+            if self.flatten_obs:
+                for i, v in enumerate(self.flatten_obs_idx.values()):
+                    xcurr[:, i, self.flatten_input_type_to_range[i, 0]:self.flatten_input_type_to_range[i, 1]] = obs[:,
+                                                                                                                 v[0]:v[
+                                                                                                                     1]]
+            else:
+                xcurr[:, 0, :self.flatten_dinput_pertype[0]] = obs
+
+            if self.input_labels:
+                # movement not set for last time points, will be 0s
+                if self.flatten_labels:
+                    for i in range(movement.shape[1]):
+                        if i < len(self.discrete_idx):
+                            dmovement = self.discretize_nbins
+                        else:
+                            dmovement = len(self.continuous_idx)
+                        inputnum = self.flatten_nobs_types + i
+                        xcurr[:-1, inputnum,
+                        self.flatten_input_type_to_range[inputnum, 0]:self.flatten_input_type_to_range[
+                            inputnum, 1]] = movement[:, i, :dmovement]
+                else:
+                    inputnum = self.flatten_nobs_types
+                    xcurr[:-1, inputnum, self.flatten_input_type_to_range[inputnum, 0]:self.flatten_input_type_to_range[
+                        inputnum, 1]] = movement
+            xcurr = np.reshape(xcurr, (xcurr.shape[0] * xcurr.shape[1], xcurr.shape[2]))
+
+        else:
+            if self.input_labels:
+                xcurr = np.concatenate((movement, obs[1:, ...]), axis=-1)
+            else:
+                xcurr = obs
+
+        return xcurr
+
+    def get_movement_npad(self):
+        npad = compute_npad(self.tspred_global, self.dct_m)
+        return npad
+
+    def predict_open_loop(self, Xkp, fliespred, scales, burnin, model, maxcontextl=np.inf, debug=False,
+                          need_weights=False, nsamples=0):
+        """
+      Xkp = predict_open_loop(self,Xkp,fliespred,scales,burnin,model,sensory_params,maxcontextl=np.inf,debug=False)
+
+      Args:
+        Xkp (ndarray, nkpts x 2 x tpred x nflies): keypoints for all flies for all frames.
+        Can be nan for frames/flies to be predicted. Will be overwritten.
+        fliespred (ndarray, nfliespred): indices of flies to predict
+        scales (ndarray, nscale x nfliespred): scale parameters for the flies to be predicted
+        burnin (int): number of frames to use for initialization
+        maxcontextl (int, optional): maximum number of frames to use for context. Default np.inf
+        debug (bool, optional): whether to fill in from movement computed from Xkp_all
+
+      Returns:
+        Xkp (ndarray, nkpts x 2 x tpred x nflies): keypoints for all flies for all frames,
+        with predicted frames/flies filled in.
+
+      Example call:
+      res = dataset.predict_open_loop(Xkp,fliespred,scales,burnin,model,maxcontextl=config['contextl'],
+                                debug=debug,need_weights=plotattnweights,nsamples=nsamplesfuture)
+      """
+        model.eval()
+
+        with torch.no_grad():
+            w = next(iter(model.parameters()))
+            dtype = w.cpu().numpy().dtype
+            device = w.device
+
+        if nsamples == 0:
+            nsamples1 = 1
+        else:
+            nsamples1 = nsamples
+
+        # propagate forward with the 0th sample
+        selectsample = 0
+
+        tpred = Xkp.shape[-2]
+        nfliespred = len(fliespred)
+        relpose = np.zeros((nsamples1, tpred, nrelative, nfliespred), dtype=dtype)
+        globalpos = np.zeros((nsamples1, tpred, nglobal, nfliespred), dtype=dtype)
+        if self.dct_tau == 0:
+            ntspred_rel = 1
+        else:
+            ntspred_rel = self.dct_tau
+        relposefuture = np.zeros((nsamples1, tpred, ntspred_rel, nrelative, nfliespred), dtype=dtype)
+        globalposfuture = np.zeros((nsamples1, tpred, self.ntspred_global, nglobal, nfliespred), dtype=dtype)
+        relposefuture[:] = np.nan
+        globalposfuture[:] = np.nan
+        sensory = None
+        zinputs = None
+        if need_weights:
+            attn_weights = [None, ] * tpred
+
+        if debug:
+            movement_true = compute_movement(X=Xkp[..., fliespred], scale=scales, simplify=self.simplify_out,
+                                             compute_pose_vel=self.compute_pose_vel).transpose((1, 0, 2)).astype(dtype)
+
+        # outputs -- hide frames past burnin
+        Xkp[:, :, burnin:, fliespred] = np.nan
+
+        # compute the pose for pred flies for first burnin frames
+        relpose0, globalpos0 = compute_pose_features(Xkp[..., :burnin, fliespred], scales)
+        relpose[:, :burnin] = relpose0.transpose((1, 0, 2))
+        globalpos[:, :burnin] = globalpos0.transpose((1, 0, 2))
+        # compute one-frame movement for pred flies between first burnin frames
+        movement0 = compute_movement(relpose=relpose0,
+                                     globalpos=globalpos0,
+                                     simplify=self.simplify_out,
+                                     compute_pose_vel=self.compute_pose_vel)
+
+        movement0 = movement0.transpose((1, 0, 2))
+        if self.flatten:
+            zmovement = np.zeros((tpred - 1, self.noutput_tokens_per_timepoint, self.flatten_max_doutput, nfliespred),
+                                 dtype=dtype)
+        else:
+            zmovement = np.zeros((tpred - 1, movement0.shape[1], nfliespred), dtype=dtype)
+
+        for i in range(nfliespred):
+            zmovementcurr = self.zscore_nextframe_labels(movement0[..., i])
+            if self.flatten:
+                if self.discretize:
+                    zmovement_todiscretize = zmovementcurr[..., self.discrete_idx]
+                    zmovement_discrete = discretize_labels(zmovement_todiscretize, self.discretize_bin_edges,
+                                                           soften_to_ends=True)
+                    zmovement[:burnin - 1, :len(self.discrete_idx), :self.discretize_nbins, i] = zmovement_discrete
+                if self.continuous:
+                    zmovement[:burnin - 1, -1, :len(self.continuous_idx), i] = zmovementcurr[..., self.continuous_idx]
+            else:
+                zmovement[:burnin - 1, :, i] = zmovementcurr
+
+        # compute sensory features for first burnin frames
+        if self.simplify_in is None:
+            for i in range(nfliespred):
+                flynum = fliespred[i]
+                sensorycurr = compute_sensory_wrapper(Xkp[..., :burnin, :], flynum,
+                                                      theta_main=globalpos[0, :burnin, featthetaglobal, i])[
+                    0]  # 0th sample
+                if sensory is None:
+                    nsensory = sensorycurr.shape[0]
+                    sensory = np.zeros((tpred, nsensory, nfliespred), dtype=dtype)
+                sensory[:burnin, :, i] = sensorycurr.T
+
+        for i in range(nfliespred):
+            if self.simplify_in is None:
+                rawinputscurr = combine_inputs(relpose=relpose[0, :burnin, :, i],
+                                               sensory=sensory[:burnin, :, i], dim=1)
+            else:
+                rawinputscurr = relpose[:burnin, :, i, 0]
+
+            zinputscurr = self.zscore_input(rawinputscurr)
+
+            # if self.flatten_obs:
+            #   zinputscurr = self.apply_flatten_input(zinputscurr)
+            # elif self.flatten:
+            #   zinputscurr = zinputscurr[:,None,:]
+            if zinputs is None:
+                zinputs = np.zeros((tpred,) + zinputscurr.shape[1:] + (nfliespred,), dtype=dtype)
+            zinputs[:burnin, ..., i] = zinputscurr
+
+        if self.ismasked():
+            # to do: figure this out for flattened models
+            masktype = 'last'
+            dummy = np.zeros((1, self.d_output))
+            dummy[:] = np.nan
+        else:
+            masktype = None
+
+        # start predicting motion from frame burnin-1 to burnin = t
+        for t in tqdm.trange(burnin, tpred):
+            t0 = int(np.maximum(t - maxcontextl, 0))
+
+            masksize = t - t0
+            if self.flatten:
+                masksize *= self.ntokens_per_timepoint
+            if self.input_labels:
+                masksize -= self.noutput_tokens_per_timepoint
+
+            if self.ismasked():
+                net_mask = generate_square_full_mask(masksize).to(device)
+                is_causal = False
+            else:
+                net_mask = torch.nn.Transformer.generate_square_subsequent_mask(masksize).to(device)
+                is_causal = True
+
+            for i in range(nfliespred):
+                flynum = fliespred[i]
+                zinputcurr = zinputs[t0:t, ..., i]
+                relposecurr = relpose[0, t - 1, :, i]  # 0th sample
+                globalposcurr = globalpos[0, t - 1, :, i]  # 0th sample
+
+                if self.input_labels:
+                    zmovementin = zmovement[t0:t - 1, ..., i]
+                    if self.ismasked():
+                        # to do: figure this out for flattened model
+                        zmovementin = np.r_[zmovementin, dummy]
+                else:
+                    zmovementin = None
+                xcurr = self.construct_input(zinputcurr, movement=zmovementin)
+
+                # if self.flatten:
+                #     xcurr = np.zeros((zinputcurr.shape[0],self.ntokens_per_timepoint,self.flatten_max_dinput),dtype=dtype)
+                #     xcurr[:,:self.flatten_nobs_types,:] = zinputcurr
+                #     # movement not set for last time points, will be 0s
+                #     xcurr[:-1,self.flatten_nobs_types:,:self.flatten_max_doutput] = zmovementin
+                #     xcurr = np.reshape(xcurr,(xcurr.shape[0]*xcurr.shape[1],xcurr.shape[2]))
+                #     lastidx = xcurr.shape[0]-self.noutput_tokens_per_timepoint
+                #   else:
+                #     xcurr = np.concatenate((zmovementin,zinputcurr[1:,...]),axis=-1)
+                # else:
+                #   xcurr = zinputcurr
+
+                xcurr = torch.tensor(xcurr)
+                xcurr, _, _ = self.mask_input(xcurr, masktype)
+
+                if debug:
+                    zmovementout = np.tile(self.zscore_labels(movement_true[t - 1, :, i]).astype(dtype)[None],
+                                           (nsamples1, 1))
+                else:
+
+                    if self.flatten:
+                        # to do: not sure if multiple samples here works
+
+                        zmovementout = np.zeros((nsamples1, self.d_output), dtype=dtype)
+                        zmovementout_flattened = np.zeros((self.noutput_tokens_per_timepoint, self.flatten_max_doutput),
+                                                          dtype=dtype)
+
+                        for token in range(self.noutput_tokens_per_timepoint):
+
+                            lastidx = xcurr.shape[0] - self.noutput_tokens_per_timepoint
+                            masksize = lastidx + token
+                            if self.ismasked():
+                                net_mask = generate_square_full_mask(masksize).to(device)
+                            else:
+                                net_mask = torch.nn.Transformer.generate_square_subsequent_mask(masksize, device=device)
+
+                            with torch.no_grad():
+                                predtoken = model(xcurr[None, :lastidx + token, ...].to(device), mask=net_mask,
+                                                  is_causal=is_causal)
+                            if token < len(self.discrete_idx):
+                                # sample
+                                sampleprob = torch.softmax(predtoken[0, -1, :self.discretize_nbins], dim=-1)
+                                binnum = int(weighted_sample(sampleprob, nsamples=nsamples1))
+
+                                # store in input
+                                xcurr[lastidx + token, binnum[0]] = 1.
+                                zmovementout_flattened[token, binnum[0]] = 1.
+
+                                # convert to continuous
+                                nsamples_per_bin = self.discretize_bin_samples.shape[0]
+                                sample = int(torch.randint(low=0, high=nsamples_per_bin, size=(nsamples,)))
+                                zmovementcurr = self.discretize_bin_samples[sample, token, binnum]
+
+                                # store in output
+                                zmovementout[:, self.discrete_idx[token]] = zmovementcurr
+                            else:  # else token < len(self.discrete_idx)
+                                # continuous
+                                zmovementout[:, self.continuous_idx] = predtoken[0, -1, :len(self.continuous_idx)].cpu()
+                                zmovementout_flattened[token, :len(self.continuous_idx)] = zmovementout[
+                                    self.continuous_idx, 0]
+
+                    else:  # else flatten
+
+                        if need_weights:
+                            with torch.no_grad():
+                                pred, attn_weights_curr = get_output_and_attention_weights(model,
+                                                                                           xcurr[None, ...].to(device),
+                                                                                           net_mask)
+                            # dimensions correspond to layer, output frame, input frame
+                            attn_weights_curr = torch.cat(attn_weights_curr, dim=0).cpu().numpy()
+                            if i == 0:
+                                attn_weights[t] = np.tile(attn_weights_curr[..., None], (1, 1, 1, nfliespred))
+                                attn_weights[t][..., 1:] = np.nan
+                            else:
+                                attn_weights[t][..., i] = attn_weights_curr
+                        else:
+                            with torch.no_grad():
+                                # predict for all frames
+                                # masked: movement from 0->1, ..., t->t+1
+                                # causal: movement from 1->2, ..., t->t+1
+                                # last prediction: t->t+1
+                                pred = model.output(xcurr[None, ...].to(device), mask=net_mask, is_causal=is_causal)
+                        if model.model_type == 'TransformerBestState' or model.model_type == 'TransformerState':
+                            pred = model.randpred(pred)
+                        # z-scored movement from t to t+1
+                        pred = pred_apply_fun(pred, lambda x: x[0, -1, ...].cpu())
+                        zmovementout = self.get_full_pred(pred, sample=True, nsamples=nsamples)
+                        zmovementout = zmovementout.numpy()
+                    # end else flatten
+                # end else debug
+
+                if nsamples == 0:
+                    zmovementout = zmovementout[None, ...]
+                # relposenext is nsamples x ntspred_relative x nrelative
+                # globalposnext is nsamples x ntspred_global x nglobal
+                relposenext, globalposnext = self.pred2pose(relposecurr, globalposcurr, zmovementout)
+                relpose[:, t, :, i] = relposenext[:, 0]  # select next time point, all samples, all features
+                globalpos[:, t, :, i] = globalposnext[:, 0]
+                # relposefuture is (nsamples1,tpred,ntspred_rel,nrelative,nfliespred)
+                relposefuture[:, t, :, :, i] = relposenext
+                globalposfuture[:, t, :, :, i] = globalposnext
+                if self.flatten:
+                    zmovement[t - 1, :, :, i] = zmovementout_flattened
+                else:
+                    zmovement[t - 1, :, i] = zmovementout[selectsample, self.nextframeidx]
+                # next frame
+                featnext = combine_relative_global(relposenext[selectsample, 0, :], globalposnext[selectsample, 0, :])
+                Xkp_next = feat2kp(featnext, scales[..., i])
+                Xkp_next = Xkp_next[:, :, 0, 0]
+                Xkp[:, :, t, flynum] = Xkp_next
+            # end loop over flies
+
+            if self.simplify_in is None:
+                for i in range(nfliespred):
+                    flynum = fliespred[i]
+                    sensorynext = compute_sensory_wrapper(Xkp[..., [t, ], :], flynum,
+                                                          theta_main=globalpos[
+                                                              selectsample, [t, ], featthetaglobal, i])[0]
+                    sensory[t, :, i] = sensorynext.T
+
+            for i in range(nfliespred):
+                if self.simplify_in is None:
+                    rawinputsnext = combine_inputs(relpose=relpose[selectsample, [t, ], :, i],
+                                                   sensory=sensory[[t, ], :, i], dim=1)
+                else:
+                    rawinputsnext = relpose[selectsample, [t, ], :, i]
+                zinputsnext = self.zscore_input(rawinputsnext)
+                zinputs[t, ..., i] = zinputsnext
+            # end loop over flies
+        # end loop over time points
+
+        # if self.flatten:
+        #   if self.flatten_obs:
+        #     zinputs_unflattened = np.zeros((zinputs.shape[0],self.dfeat,nfliespred))
+        #     for i,v in enumerate(self.flatten_obs_idx.values()):
+        #       zinputs_unflattened[:,v[0]:v[1],:] = zinputs[:,i,:self.flatten_dinput_pertype[i],:]
+        #     zinputs = zinputs_unflattened
+        #   else:
+        #     zinputs = zinputs[:,0,...]
+
+        if need_weights:
+            return Xkp, zinputs, globalposfuture, relposefuture, attn_weights
+        else:
+            return Xkp, zinputs, globalposfuture, relposefuture
+
+    def get_movement_names_global(self):
+        return ['forward', 'sideways', 'orientation']
+
+    def get_movement_names(self):
+        outnames_global = self.get_movement_names_global()
+        if self.simplify_out == 'global':
+            return outnames_global
+        featnamesrel = [posenames[x] for x in np.nonzero(featrelative)[0]]
+        if self.compute_pose_vel:
+            outnames_rel = featnamesrel
+        else:
+            outnames_rel = [None, ] * self.nrelrep
+            for i, x in enumerate(self.relfeat_to_cossin_map):
+                if type(x) is list:
+                    outnames_rel[x[0]] = featnamesrel[i] + '_cos'
+                    outnames_rel[x[1]] = featnamesrel[i] + '_sin'
+                else:
+                    outnames_rel[x] = featnamesrel[i]
+        outnames = outnames_global + outnames_rel
+        return outnames
+
+    def get_outnames(self):
+        """
+    outnames = self.get_outnames()
+
+    Returns:
+        outnames (list of strings): names of each output motion
+    """
+        outnames = self.get_movement_names()
+
+        if len(self.tspred_global) > 1 or self.dct_m is not None:
+            ftidx = self.unravel_label_index(np.arange(self.d_output, dtype=int))
+            outnames = [f'{outnames[ft[0]]}_{ft[1]}' for ft in ftidx]
+
+        return outnames
+
+    def parse_label_fields(self, example):
+
+        labels_discrete = None
+        labels_todiscretize = None
+        labels_stacked = None
+
+        # get labels_continuous, labels_discrete from example
+        if isinstance(example, dict):
+            if 'labels' in example:
+                labels_continuous = example['labels']
+            elif 'continuous' in example:
+                labels_continuous = example['continuous']  # prediction
+            else:
+                raise ValueError('Could not find continuous labels')
+            if 'labels_discrete' in example:
+                labels_discrete = example['labels_discrete']
+            elif 'discrete' in example:
+                labels_discrete = example['discrete']
+            if 'labels_todiscretize' in example:
+                labels_todiscretize = example['labels_todiscretize']
+            if 'labels_stacked' in example:
+                labels_stacked = example['labels_stacked']
+        else:
+            labels_continuous = example
+        if self.flatten:
+            labels_continuous, labels_discrete = self.unflatten_labels(labels_continuous)
+
+        return labels_continuous, labels_discrete, labels_todiscretize, labels_stacked
+
+    def unflatten_labels(self, labels_flattened):
+        assert self.flatten_labels
+        sz = labels_flattened.shape
+        newsz = sz[:-2] + (self.ntimepoints, self.ntokens_per_timepoint, self.flatten_max_doutput)
+        if not self.ismasked():
+            pad = torch.zeros(sz[:-2] + (1, self.flatten_max_doutput), dtype=labels_flattened.dtype,
+                              device=labels_flattened.device)
+            labels_flattened = torch.cat((pad, labels_flattened), dim=-2)
+        labels_flattened = labels_flattened.reshape(newsz)
+        if self.d_output_continuous > 0:
+            labels_continuous = labels_flattened[..., -1, :self.d_output_continuous]
+        else:
+            labels_continuous = None
+        if self.discretize:
+            labels_discrete = labels_flattened[..., self.flatten_nobs_types:, :self.discretize_nbins]
+            if self.continuous:
+                labels_discrete = labels_discrete[..., :-1, :]
+        else:
+            labels_discrete = None
+        return labels_continuous, labels_discrete
+
+    def apply_flatten_input(self, input):
+
+        if type(input) == np.ndarray:
+            input = torch.Tensor(input)
+
+        if self.flatten_obs == False:
+            return input
+
+        # input is of size ...,contextl,d_input
+        sz = input.shape[:-2]
+        contextl = input.shape[-2]
+        newinput = torch.zeros(sz + (contextl, self.flatten_nobs_types, self.flatten_max_dinput), dtype=input.dtype)
+
+        for i, v in enumerate(self.flatten_obs_idx.values()):
+            newinput[..., i, :self.flatten_dinput_pertype[i]] = input[..., v[0]:v[1]]
+        return newinput
+
+    def unflatten_input(self, input_flattened):
+        assert self.flatten_obs
+        sz = input_flattened.shape
+        if not self.ismasked():
+            pad = torch.zeros(sz[:-2] + (1, self.flatten_dinput), dtype=input_flattened.dtype,
+                              device=input_flattened.device)
+            input_flattened = torch.cat((input_flattened, pad), dim=-2)
+        resz = sz[:-2] + (self.ntimepoints, self.ntokens_per_timepoint, self.flatten_dinput)
+        input_flattened = input_flattened.reshape(resz)
+        newsz = sz[:-2] + (self.ntimepoints, self.dfeat)
+        newinput = torch.zeros(newsz, dtype=input_flattened.dtype)
+        for i, v in enumerate(self.flatten_obs_idx.values()):
+            newinput[..., :, v[0]:v[1]] = input_flattened[..., i,
+                                          self.flatten_input_type_to_range[i, 0]:self.flatten_input_type_to_range[i, 1]]
+        return newinput
+
+    def get_full_inputs(self, example=None, idx=None, use_stacked=False):
+        if example is None:
+            example = self[idx]
+        if self.flatten_obs:
+            if use_stacked and \
+                    ('input_stacked' in example and example['input_stacked'] is not None):
+                return example['input_stacked']
+            else:
+                return self.unflatten_input(example['input'])
+        else:
+            return self.remove_labels_from_input(example['input'])
+
+    def get_continuous_discrete_labels(self, example):
+
+        # get labels_continuous, labels_discrete from example
+        labels_continuous, labels_discrete, _, _ = self.parse_label_fields(example)
+        return labels_continuous, labels_discrete
+
+    def get_continuous_labels(self, example):
+
+        labels_continuous, _ = self.get_continuous_discrete_labels(example)
+        return labels_continuous
+
+    def get_discrete_labels(self, example):
+        _, labels_discrete = self.get_continuous_discrete_labels(example)
+
+        return labels_discrete
+
+    def get_full_pred(self, pred, **kwargs):
+        return self.get_full_labels(example=pred, ispred=True, **kwargs)
+
+    def convert_cos_sin_to_angle(self, movements_in):
+        # relpose_cos_sin = WORKING HERE
+        if self.compute_pose_vel:
+            return movements_in.copy()
+        relpose_cos_sin = movements_in[..., -self.nrelrep:]
+        relpose_angle = relpose_cos_sin_to_angle(relpose_cos_sin, discreteidx=self.discretefeat)
+        return np.concatenate((movements_in[..., :-self.nrelrep], relpose_angle), axis=-1)
+
+    def get_full_labels(self, example=None, idx=None, use_todiscretize=False, sample=False, use_stacked=False,
+                        ispred=False, nsamples=0):
+
+        if self.discretize and sample:
+            return self.sample_full_labels(example=example, idx=idx, nsamples=nsamples)
+
+        if example is None:
+            example = self[idx]
+
+        # get labels_continuous, labels_discrete from example
+        labels_continuous, labels_discrete, labels_todiscretize, labels_stacked = \
+            self.parse_label_fields(example)
+
+        if self.flatten_labels:
+            if use_stacked and labels_stacked is not None:
+                labels_continuous, labels_discrete = self.unflatten_labels(labels_stacked)
+
+        if self.discretize:
+            # should be ... x d_output_discrete x discretize_nbins
+            sz = labels_discrete.shape
+            newsz = sz[:-2] + (self.d_output,)
+            labels = torch.zeros(newsz, dtype=labels_discrete.dtype)
+            if self.d_output_continuous > 0:
+                labels[..., self.continuous_idx] = labels_continuous
+            if use_todiscretize and (labels_todiscretize is not None):
+                labels[..., self.discrete_idx] = labels_todiscretize
+            else:
+                labels[..., self.discrete_idx] = labels_discrete_to_continuous(labels_discrete,
+                                                                               torch.tensor(self.discretize_bin_edges))
+        else:
+            labels = labels_continuous.clone()
+
+        return labels
+
+    def sample_full_labels(self, example=None, idx=None, nsamples=0):
+        if example is None:
+            example = self[idx]
+
+        nsamples1 = nsamples
+        if nsamples1 == 0:
+            nsamples1 = 1
+
+        # get labels_continuous, labels_discrete from example
+        labels_continuous, labels_discrete, _, _ = self.parse_label_fields(example)
+
+        if not self.discretize:
+            return labels_continuous
+
+        # should be ... x d_output_continuous
+        sz = labels_discrete.shape[:-2]
+        dtype = labels_discrete.dtype
+        newsz = (nsamples1,) + sz + (self.d_output,)
+        labels = torch.zeros(newsz, dtype=dtype)
+        if self.continuous:
+            labels[..., self.continuous_idx] = labels_continuous
+
+        # labels_discrete is ... x nfeat x nbins
+        nfeat = labels_discrete.shape[-2]
+        nbins = labels_discrete.shape[-1]
+        szrest = labels_discrete.shape[:-2]
+        if len(szrest) == 0:
+            n = 1
+        else:
+            n = np.prod(szrest)
+        nsamples_per_bin = self.discretize_bin_samples.shape[0]
+        for i in range(nfeat):
+            binnum = weighted_sample(labels_discrete[..., i, :].reshape((n, nbins)), nsamples=nsamples)
+            sample = torch.randint(low=0, high=nsamples_per_bin, size=(nsamples, n))
+            labelscurr = torch.Tensor(self.discretize_bin_samples[sample, i, binnum].reshape((nsamples,) + szrest))
+            labels[..., self.discrete_idx[i]] = labelscurr
+
+        if nsamples == 0:
+            labels = labels[0]
+
+        return labels
