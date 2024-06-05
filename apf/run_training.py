@@ -10,11 +10,9 @@ import datetime
 import argparse
 import pickle
 
-from config import posenames, featglobal, featrelative, nfeatures
-from features import (
-    compute_features,
-)
-from plotting import (
+from apf.config import posenames, featglobal, featrelative, nfeatures
+from apf.features import compute_features
+from apf.plotting import (
     debug_plot_dct_relative_error,
     debug_plot_global_error,
     debug_plot_global_histograms,
@@ -23,11 +21,11 @@ from plotting import (
     initialize_loss_plots, update_loss_plots,
     select_featidx_plot,
 )
-from data import load_and_filter_data, interval_all, chunk_data, sanity_check_tspred
-from dataset import FlyMLMDataset
-from simulation import animate_predict_open_loop
-from utils import get_dct_matrix, compute_npad
-from models import (
+from apf.data import load_and_filter_data, interval_all, chunk_data, sanity_check_tspred
+from apf.dataset import FlyMLMDataset
+from apf.simulation import animate_predict_open_loop
+from apf.utils import get_dct_matrix, compute_npad
+from apf.models import (
     initialize_model, initialize_loss,
     generate_square_full_mask,
     criterion_wrapper,
@@ -37,7 +35,7 @@ from models import (
     sanity_check_temporal_dep,
     stack_batch_list,
 )
-from io import (
+from apf.io import (
     read_config, load_config_from_model_file, get_modeltype_str,
     load_model, save_model, parse_modelfile,
     clean_intermediate_results

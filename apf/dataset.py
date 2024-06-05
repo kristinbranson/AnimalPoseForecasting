@@ -4,12 +4,12 @@ import copy
 import tqdm
 import torch
 
-from config import (
+from apf.config import (
     posenames,
     featrelative, featglobal, featorigin, feattheta, featthetaglobal,
     nrelative, nglobal, nfeatures
 )
-from features import (
+from apf.features import (
     compute_movement, compute_pose_features, compute_sensory_wrapper,
     combine_inputs, combine_relative_global,
     feat2kp,
@@ -20,9 +20,9 @@ from features import (
     zscore, unzscore,
     get_sensory_feature_shapes, get_sensory_feature_idx,
 )
-from data import fit_discretize_labels, discretize_labels, weighted_sample, labels_discrete_to_continuous
-from utils import modrange, rotate_2d_points, compute_npad
-from models import (  # TODO: dataset should not depend on models
+from apf.data import fit_discretize_labels, discretize_labels, weighted_sample, labels_discrete_to_continuous
+from apf.utils import modrange, rotate_2d_points, compute_npad
+from apf.models import (  # TODO: dataset should not depend on models
     generate_square_full_mask,
     apply_mask,
     unpack_input,
@@ -303,15 +303,15 @@ class FlyMLMDataset(torch.utils.data.Dataset):
                           bin_edges=None, bin_samples=None, bin_epsilon=None,
                           bin_means=None, bin_medians=None, **kwargs):
         """
-    discretize_labels(self,discrete_idx,discrete_tspred,nbins=50,bin_edges=None,bin_samples=None,bin_epsilon=None,**kwargs)
-    For each feature in discrete_idx, discretize the labels into nbins bins. For each example in the data,
-    labels_discrete is an ndarray of shape T x len(discrete_idx) x nbins, where T is the number of time points, and
-    indicates whether the label is in each bin, with soft-binning.
-    labels_todiscretize is an ndarray of shape T x len(discrete_idx) with the original continuous labels.
-    labels gets replaced with an ndarray of shape T x len(continuous_idx) with the continuous labels.
-    discretize_bin_edges is an ndarray of shape len(discrete_idx) x (nbins+1) with the bin edges for each discrete feature.
-    discretize_bin_samples is an ndarray of shape nsamples x len(discrete_idx) x nbins with samples from each bin
-    """
+        discretize_labels(self,discrete_idx,discrete_tspred,nbins=50,bin_edges=None,bin_samples=None,bin_epsilon=None,**kwargs)
+        For each feature in discrete_idx, discretize the labels into nbins bins. For each example in the data,
+        labels_discrete is an ndarray of shape T x len(discrete_idx) x nbins, where T is the number of time points, and
+        indicates whether the label is in each bin, with soft-binning.
+        labels_todiscretize is an ndarray of shape T x len(discrete_idx) with the original continuous labels.
+        labels gets replaced with an ndarray of shape T x len(continuous_idx) with the continuous labels.
+        discretize_bin_edges is an ndarray of shape len(discrete_idx) x (nbins+1) with the bin edges for each discrete feature.
+        discretize_bin_samples is an ndarray of shape nsamples x len(discrete_idx) x nbins with samples from each bin
+        """
 
         if not isinstance(discrete_idx, np.ndarray):
             discrete_idx = np.array(discrete_idx)
@@ -743,6 +743,7 @@ class FlyMLMDataset(torch.utils.data.Dataset):
         labels = torch.as_tensor(datacurr['labels'].copy())
         if self.discretize:
             labels_todiscretize = torch.as_tensor(datacurr['labels_todiscretize'].copy())
+            labels_discrete = torch.as_tensor(datacurr['labels_discrete'].copy())
         else:
             labels_todiscretize = None
             labels_discrete = None

@@ -1,10 +1,10 @@
 import numpy as np
 import torch
 
-from config import featglobal, featrelative, featangle
-from features import relfeatidx_to_cossinidx, ravel_label_index, unravel_label_index, zscore, unzscore, feat2kp
-from data import weighted_sample
-from utils import modrange
+from apf.config import featglobal, featrelative, featangle
+from apf.features import relfeatidx_to_cossinidx, ravel_label_index, unravel_label_index, zscore, unzscore, feat2kp
+from apf.data import weighted_sample
+from apf.utils import modrange
 
 
 class PoseLabels:

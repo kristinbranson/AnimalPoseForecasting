@@ -3,7 +3,7 @@ import math
 import typing
 import torch
 
-from config import nfeatures
+from apf.config import nfeatures
 # TODO: remove specific knowledge about the data in this file
 
 

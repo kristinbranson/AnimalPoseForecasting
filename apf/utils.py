@@ -74,3 +74,10 @@ def npindex(big, small):
     idx = np.searchsorted(bigsorted, small, side='left')
     idx[bigsorted[idx] != small] = -1
     return idx
+
+
+def angledist2xy(origin, angle, dist):
+    u = np.vstack((np.cos(angle[np.newaxis, ...]), np.sin(angle[np.newaxis, ...])))
+    d = u * dist[np.newaxis, ...]
+    xy = origin + d
+    return xy

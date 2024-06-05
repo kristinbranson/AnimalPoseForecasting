@@ -5,8 +5,12 @@ import json
 import numpy as np
 import pathlib
 
-from config import DEFAULTCONFIGFILE, SENSORY_PARAMS, featglobal, posenames
-from features import get_sensory_feature_idx
+from apf.config import SENSORY_PARAMS, featglobal, posenames
+from apf.features import get_sensory_feature_idx
+
+codedir = pathlib.Path(__file__).parent.resolve()
+DEFAULTCONFIGFILE = os.path.join(codedir, 'config_fly_llm_default.json')
+assert os.path.exists(DEFAULTCONFIGFILE), f"{DEFAULTCONFIGFILE} does not exist."
 
 
 def save_model(savefile, model, lr_optimizer=None, scheduler=None, loss=None, config=None):

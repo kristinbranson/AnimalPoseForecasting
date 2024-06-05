@@ -3,10 +3,16 @@ import tqdm
 import re
 import torch
 
-from config import SENSORY_PARAMS, PXPERMM, keypointnames
-from features import compute_scale_perfly, compute_pose_features, compute_movement, compute_otherflies_touch_mult
+from apf.config import SENSORY_PARAMS, PXPERMM, keypointnames, featglobal
+from apf.features import (
+    compute_features,
+    compute_scale_perfly,
+    compute_pose_features,
+    compute_movement,
+    compute_otherflies_touch_mult
+)
 # TODO: would be nice if data did not depend on features
-from utils import get_interval_ends
+from apf.utils import get_interval_ends
 
 
 def interval_all(x, l):
@@ -300,7 +306,6 @@ def split_data_by_id(data):
     return splitdata
 
 
-
 def sanity_check_tspred(data, compute_feature_params, npad, scale_perfly, contextl=512, t0=510, flynum=0):
     # sanity check on computing features when predicting many frames into the future
     # compute inputs and outputs for frames t0:t0+contextl+npad+1 with tspred_global set by config
@@ -461,22 +466,14 @@ def filter_data_by_categories(data, categories):
 
 
 def load_and_filter_data(infile, config):
-    """
-    TODO: It is strange to have load_and_filter_data do feature computations like
-        compute_noise_params (updates input config)
-        compute_otherflies_touch_mult (updates SENSORY_PARAMS)
-    """
     # load data
     print(f"loading raw data from {infile}...")
     data = load_raw_npz_data(infile)
 
-    # compute scale parameters
-    print('computing scale parameters...')
-    scale_perfly = compute_scale_allflies(data)
-
     # compute noise parameters
     if (len(config['discreteidx']) > 0) and config['discretize_epsilon'] is None:
         if (config['all_discretize_epsilon'] is None):
+            scale_perfly = compute_scale_allflies(data)
             config['all_discretize_epsilon'] = compute_noise_params(data, scale_perfly,
                                                                     simplify_out=config['simplify_out'])
         config['discretize_epsilon'] = config['all_discretize_epsilon'][config['discreteidx']]
@@ -501,6 +498,10 @@ def load_and_filter_data(infile, config):
         data['isdata'] = np.tile(data['isdata'], (2, 1))
         data['isstart'] = np.tile(data['isstart'], (2, 1))
 
+    # compute scale parameters
+    print('computing scale parameters...')
+    scale_perfly = compute_scale_allflies(data)
+
     if np.isnan(SENSORY_PARAMS['otherflies_touch_mult']):
         print('computing touch parameters...')
         SENSORY_PARAMS['otherflies_touch_mult'] = compute_otherflies_touch_mult(data)
@@ -510,3 +511,14 @@ def load_and_filter_data(infile, config):
     data['isdata'][np.isin(data['ids'], idsremove)] = False
 
     return data, scale_perfly
+
+
+def get_real_flies(x, tgtdim=-1):
+    # x is ... x ntgts
+    dims = list(range(x.ndim))
+    if tgtdim < 0:
+        tgtdim = x.ndim + tgtdim
+    dims.remove(tgtdim)
+
+    isreal = np.all(np.isnan(x), axis=tuple(dims)) == False
+    return isreal

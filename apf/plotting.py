@@ -1,18 +1,20 @@
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib import cm, colors
 import torch
 
-from config import (
+from apf.config import (
     SENSORY_PARAMS, ARENA_RADIUS_MM,
-    posenames, keypointnames, scalenames,
+    posenames, keypointnames, scalenames, skeleton_edges, keypointidx,
     featglobal, featrelative, kpvision_other,
-    nglobal, nrelative, nkptouch
+    nglobal, nrelative, nkptouch, nfeatures
 )
-from data import get_batch_idx, load_and_filter_data, split_data_by_id, select_bin_edges
-from features import get_sensory_feature_idx, zscore, unzscore
-from models import criterion_wrapper
-from utils import npindex
+from apf.data import get_batch_idx, load_and_filter_data, split_data_by_id, select_bin_edges, get_real_flies
+from apf.features import compute_features, get_sensory_feature_idx, zscore, unzscore
+from apf.models import criterion_wrapper
+from apf.utils import npindex
+from apf.io import read_config
 
 
 def select_featidx_plot(train_dataset, ntspred_plot, ntsplot_global=None, ntsplot_relative=None):
@@ -108,37 +110,103 @@ def get_Dark3_cmap():
     return dark3cm
 
 
-def plot_fly(self, x=None, idx=None, f=None, **kwargs):
-    """
-    hkpt,hedge,htxt,fig,ax = data.plot_fly(pose=None, idx=None, f=None,
-                                          fig=None, ax=None, kptcolors=None, color=None, name=None,
-                                          plotskel=True, plotkpts=True, hedge=None, hkpt=None)
-    Visualize the single fly position specified by pose
-    Inputs:
-    pose: Optional. nfeatures x 2 ndarray. Default is None.
-    idx: Data sample index to plot. Only used if pose is not input. Default: None.
-    f: Frame of data sample idx to plot. Only used if pose is not input. Default: dataset.ctrf.
-    fig: Optional. Handle to figure to plot in. Only used if ax is not specified. Default = None.
-    ax: Optional. Handle to axes to plot in. Default = None.
-    kptcolors: Optional. Color scheme for each keypoint. Can be a string defining a matplotlib
-    colormap (e.g. 'hsv'), a matplotlib colormap, or a single color. If None, it is set to 'hsv'.
-    Default: None
-    color: Optional. Color for edges plotted. If None, it is set to [.6,.6,.6]. efault: None.
-    name: Optional. String defining an identifying label for these plots. Default None.
-    plotskel: Optional. Whether to plot skeleton edges. Default: True.
-    plotkpts: Optional. Whether to plot key points. Default: True.
-    hedge: Optional. Handle of edges to update instead of plot new edges. Default: None.
-    hkpt: Optional. Handle of keypoints to update instead of plot new key points. Default: None.
-    """
-    if x is not None:
-        return plot_fly(pose=self.unnormalize(x), kptidx=self.keypointidx, skelidx=self.skeleton_edges, **kwargs)
-    else:
-        assert (idx is not None)
-        if f is None:
-            f = self.ctrf
-        x = self.getitem(idx)
-        return plot_fly(pose=self.unnormalize(x['x'][:, :, f, 0]), kptidx=self.keypointidx, skelidx=self.skeleton_edges,
-                        **kwargs)
+def plot_fly(pose=None, kptidx=keypointidx, skelidx=skeleton_edges, fig=None, ax=None, kptcolors=None, color=None,
+             name=None,
+             plotskel=True, plotkpts=True, hedge=None, hkpt=None, textlabels=None, htxt=None, kpt_ms=6, skel_lw=1,
+             kpt_alpha=1., skel_alpha=1., skeledgecolors=None, kpt_marker='.'):
+    # plot_fly(x,fig=None,ax=None,kptcolors=None):
+    # x is nfeatures x 2
+    assert (pose is not None)
+    assert (kptidx is not None)
+    assert (skelidx is not None)
+
+    fig, ax, isnewaxis = set_fig_ax(fig=fig, ax=ax)
+    isreal = get_real_flies(pose[:, :, np.newaxis])
+
+    hkpts = None
+    hedges = None
+    htxt = None
+    if plotkpts:
+        if isreal:
+            xc = pose[kptidx, 0]
+            yc = pose[kptidx, 1]
+        else:
+            xc = []
+            yc = []
+        if hkpt is None:
+            if kptcolors is None:
+                kptcolors = 'hsv'
+            if (type(kptcolors) == list or type(kptcolors) == np.ndarray) and len(kptcolors) == 3:
+                kptname = 'keypoints'
+                if name is not None:
+                    kptname = name + ' ' + kptname
+                hkpt = \
+                ax.plot(xc, yc, kpt_marker, color=kptcolors, label=kptname, zorder=10, ms=kpt_ms, alpha=kpt_alpha)[0]
+            else:
+                if type(kptcolors) == str:
+                    kptcolors = plt.get_cmap(kptcolors)
+                hkpt = ax.scatter(xc, yc, c=np.arange(len(kptidx)), marker=kpt_marker, cmap=kptcolors, s=kpt_ms,
+                                  alpha=kpt_alpha, zorder=10)
+        else:
+            if type(hkpt) == matplotlib.lines.Line2D:
+                hkpt.set_data(xc, yc)
+            else:
+                hkpt.set_offsets(np.column_stack((xc, yc)))
+
+    if textlabels is not None:
+        xc = pose[kptidx, 0]
+        yc = pose[kptidx, 1]
+        xc[np.isnan(xc)] = 0.
+        yc[np.isnan(yc)] = 0.
+        if textlabels == 'keypoints':
+            if htxt is None:
+                htxt = []
+                for i in range(len(xc)):
+                    htxt.append(plt.text(xc[i], yc[i], '%d: %s' % (i + 1, keypointnames[i]), horizontalalignment='left',
+                                         visible=isreal))
+            else:
+                for i in range(len(xc)):
+                    htxt[i].set_visible(isreal)
+                    htxt[i].set_data(xc[i], yc[i])
+        else:
+            if htxt is None:
+                htxt = plt.text(xc[0], yc[0], textlabels, horizontalalignment='left', visible=isreal)
+            else:
+                htxt.set_visible(isreal)
+                htxt.set_data(xc[0], yc[0])
+
+    if plotskel:
+        nedges = skelidx.shape[0]
+        if isreal:
+            segments = pose[skelidx, :]
+            # xc = np.concatenate((pose[skelidx,0],np.zeros((nedges,1))+np.nan),axis=1)
+            # yc = np.concatenate((pose[skelidx,1],np.zeros((nedges,1))+np.nan),axis=1)
+        else:
+            segments = np.zeros((nedges, 2)) + np.nan
+            # xc = np.array([])
+            # yc = np.array([])
+        if hedge is None:
+            if color is None:
+                color = [.6, .6, .6]
+            if type(color) == str:
+                color = get_n_colors_from_colormap(color, nedges)
+
+            hedge = matplotlib.collections.LineCollection(
+                pose[skelidx, :], colors=color, linewidths=skel_lw, alpha=skel_alpha
+            )
+            ax.add_collection(hedge)
+            # edgename = 'skeleton'
+            # if name is not None:
+            #  edgename = name + ' ' + edgename
+            # hedge = ax.plot(xc.flatten(),yc.flatten(),'-',color=color,label=edgename,zorder=0,lw=skel_lw,alpha=skel_alpha)[0]
+        else:
+            hedge.set_segments(segments)
+            # hedge.set_data(xc.flatten(),yc.flatten())
+
+    if isnewaxis:
+        ax.axis('equal')
+
+    return hkpt, hedge, htxt, fig, ax
 
 
 def plot_flies(poses=None, fig=None, ax=None, colors=None, kptcolors=None, hedges=None, hkpts=None, htxt=None,
@@ -633,6 +701,10 @@ def debug_plot_batch_pose(example, train_dataset, pred=None, data=None,
         flynum = example['metadata']['flynum'][iplot].item()
         if pred is not None:
             predcurr = get_batch_idx(pred, iplot)
+            print(iplot)
+            print(examplecurr['labels'].shape)
+            print(predcurr.keys())
+            print(pred_args)
             Xkp_pred = train_dataset.get_Xkp(examplecurr, pred=predcurr, **pred_args)
             Xkp_pred = Xkp_pred[..., 0]
         elif data is not None:

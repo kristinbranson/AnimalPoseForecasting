@@ -1,13 +1,11 @@
-"""Simulate animals given a model of their behavior.
-"""
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib import animation
 
-from features import compute_pose_features, split_features
-from config import ARENA_RADIUS_MM
-from plotting import plot_flies, plot_arena
+from apf.features import compute_pose_features, split_features
+from apf.config import ARENA_RADIUS_MM
+from apf.plotting import plot_flies, plot_arena
 
 
 def get_real_flies(x, tgtdim=-1):

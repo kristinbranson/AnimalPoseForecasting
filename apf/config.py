@@ -1,11 +1,6 @@
-import os
-import pathlib
+
 import numpy as np
 import re
-
-codedir = pathlib.Path(__file__).parent.resolve()
-DEFAULTCONFIGFILE = os.path.join(codedir, 'config_fly_llm_default.json')
-assert os.path.exists(DEFAULTCONFIGFILE)
 
 
 # Names of features
@@ -92,6 +87,28 @@ touch_other_kpnames_v1 = [
     'base_thorax',
     'tip_abdomen',
 ]
+
+keypointidx = np.arange(19,dtype=int)
+skeleton_edges = np.array([
+  [ 7,  8],
+  [10, 14],
+  [11, 12],
+  [12, 17],
+  [ 7, 11],
+  [ 9, 10],
+  [ 7,  9],
+  [ 5,  7],
+  [ 2,  3],
+  [ 2,  7],
+  [ 5, 18],
+  [ 6, 13],
+  [ 7, 16],
+  [ 7, 15],
+  [ 2,  4],
+  [ 6,  7],
+  [ 7,  0],
+  [ 7,  1]
+  ])
 
 # Sensory parameters
 ARENA_RADIUS_MM = 26.689  # size of the arena the flies are enclosed in
