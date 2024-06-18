@@ -583,9 +583,9 @@ class PoseLabels:
         elif Xkp is not None:
             self.set_keypoints(Xkp, scale)
 
+        # TODO: This assert fails in notebook debug_fly_llm.py, with 24 != 65
         if 'continuous' in self.labels_raw:
-            assert self.d_multicontinuous == self.labels_raw['continuous'].shape[-1], \
-                f"{self.d_multicontinuous} != {self.labels_raw['continuous'].shape[-1]}"
+            assert self.d_multicontinuous == self.labels_raw['continuous'].shape[-1]
         if self.is_discretized() and 'discrete' in self.labels_raw:
             assert self.d_multidiscrete == self.labels_raw['discrete'].shape[-2]
 
@@ -1813,11 +1813,11 @@ class PoseLabels:
 
         # TODO: I believe these should be deleted as this is done on set_raw_example
         #       and it uses functions that are not defined
-        # if self.is_zscored():
-        #     self.zscore(example)
-        #
-        # if self.is_discretized():
-        #     self.discretize_multi(example)
+        if self.is_zscored():
+            self.zscore(example)
+
+        if self.is_discretized():
+            self.discretize_multi(example)
 
         self.set_raw_example(example)
         return

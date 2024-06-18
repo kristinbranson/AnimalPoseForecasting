@@ -391,7 +391,7 @@ for epoch in range(epoch, config['num_train_epochs']):
     if train_dataset.discretize:
         loss_epoch['train_discrete'][epoch] = tr_loss_discrete.item() / nmask_train
         loss_epoch['train_continuous'][epoch] = tr_loss_continuous.item() / nmask_train
-    """
+    
     # compute validation loss after this epoch
     if val_dataset.discretize:
          loss_epoch['val'][epoch],loss_epoch['val_discrete'][epoch],loss_epoch['val_continuous'][epoch] = \
@@ -400,7 +400,7 @@ for epoch in range(epoch, config['num_train_epochs']):
         loss_epoch['val'][epoch] = \
           compute_loss(model,val_dataloader,val_dataset,device,train_src_mask,criterion,config)
     last_val_loss = loss_epoch['val'][epoch].item()
-    """
+    
     update_loss_plots(hloss, loss_epoch)
     plt.show()
     plt.pause(.1)

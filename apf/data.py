@@ -360,26 +360,26 @@ def compare_dicts(old_ex, new_ex, maxerr=None):
     for k, v in old_ex.items():
         err = 0.
         if not k in new_ex:
-            print(f'Missing key {k}')
+            logging.info(f'Missing key {k}')
         elif type(v) is torch.Tensor:
             v = v.cpu().numpy()
             newv = new_ex[k]
             if type(newv) is torch.Tensor:
                 newv = newv.cpu().numpy()
             err = np.nanmax(np.abs(v - newv))
-            print(f'max diff {k}: {err:e}')
+            logging.info(f'max diff {k}: {err:e}')
         elif type(v) is np.ndarray:
             err = np.nanmax(np.abs(v - new_ex[k]))
-            print(f'max diff {k}: {err:e}')
+            logging.info(f'max diff {k}: {err:e}')
         elif type(v) is dict:
-            print(f'Comparing dict {k}')
+            logging.info(f'Comparing dict {k}')
             compare_dicts(v, new_ex[k])
         else:
             try:
                 err = np.nanmax(np.abs(v - new_ex[k]))
-                print(f'max diff {k}: {err:e}')
+                logging.info(f'max diff {k}: {err:e}')
             except:
-                print(f'not comparing {k}')
+                logging.info(f'not comparing {k}')
         if maxerr is not None:
             assert err < maxerr
 
