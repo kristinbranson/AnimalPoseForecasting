@@ -28,7 +28,7 @@ from apf.io import read_config, get_modeltype_str
 from apf.utils import get_dct_matrix, compute_npad
 from apf.config import scalenames, nfeatures, featglobal
 from apf.features import compute_features, compute_scale_perfly
-from apf.data import load_and_filter_data, sanity_check_tspred, chunk_data, interval_all
+from apf.data import load_and_filter_data, sanity_check_tspred, chunk_data, interval_all, debug_less_data
 from apf.dataset import FlyMLMDataset
 from apf.plotting import (
     initialize_debug_plots, 
@@ -75,21 +75,16 @@ device = torch.device(config['device'])
 # Skip augmentation for debugging purposes
 config['augment_flip'] = False 
 
+config['intrainfile']
+
 # load raw data
 data, scale_perfly = load_and_filter_data(config['intrainfile'], config)
 valdata, val_scale_perfly = load_and_filter_data(config['invalfile'], config)
 
-# +
+# for debugging, use only a subset of the data
 max_frames = config['contextl'] * 100
-
-for data_ in [data, valdata]:
-    data_['videoidx'] = data_['videoidx'][:max_frames]
-    data_['ids'] = data_['ids'][:max_frames]
-    data_['frames'] = data_['frames'][:max_frames]
-    data_['X'] = data_['X'][:, :, :max_frames]
-    data_['y'] = data_['y'][:, :max_frames]
-    data_['isdata'] = data_['isdata'][:max_frames]
-    data_['isstart'] = data_['isstart'][:max_frames]
+for data in [data, valdata]:
+    debug_less_data(data)
 
 # +
 print(config['contextl'])
@@ -269,7 +264,7 @@ config['niterplot'] = 2
 
 # +
 # create the model
-model, criterion = initialize_model(d_input, d_output, config, train_dataset, device)
+model, criterion = initialize_model(config, train_dataset, device)
 
 # optimizer
 num_training_steps = config['num_train_epochs'] * ntrain
@@ -360,9 +355,8 @@ for epoch in range(epoch, config['num_train_epochs']):
             with torch.no_grad():
                 trainpred = model.output(example['input'].to(device=device),mask=train_src_mask,is_causal=is_causal)
                 valpred = model.output(valexample['input'].to(device=device),mask=train_src_mask,is_causal=is_causal)
-            # TODO: this plot gives a bug, I get slightly further if I add {'nsamples': 1} to pred_params in debug_plot_batch_pose
-            # update_debug_plots(hdebug['train'],config,model,train_dataset,example,trainpred,name='Train',criterion=criterion,**debug_params)
-            # update_debug_plots(hdebug['val'],config,model,val_dataset,valexample,valpred,name='Val',criterion=criterion,**debug_params)
+            update_debug_plots(hdebug['train'],config,model,train_dataset,example,trainpred,name='Train',criterion=criterion,**debug_params)
+            update_debug_plots(hdebug['val'],config,model,val_dataset,valexample,valpred,name='Val',criterion=criterion,**debug_params)
             plt.show()
             plt.pause(.1)
     
@@ -433,152 +427,93 @@ print('Done training')
 model.eval()
 
 # compute predictions and labels for all validation data using default masking
-all_pred, all_labels, all_mask, all_pred_discrete, all_labels_discrete = predict_all(
+all_pred, all_labels = predict_all(
     val_dataloader, val_dataset, model, config, train_src_mask
 )
-# -
-
-# plot comparison between predictions and labels on validation data
-predv = stack_batch_list(all_pred)
-labelsv = stack_batch_list(all_labels)
-maskv = stack_batch_list(all_mask)
-pred_discretev = stack_batch_list(all_pred_discrete)
-labels_discretev = stack_batch_list(all_labels_discrete)
 
 # +
-fig, ax = debug_plot_global_histograms(predv, labelsv, train_dataset, nbins=25, subsample=1, compare='pred')
+# # plot comparison between predictions and labels on validation data
+# predv = stack_batch_list(all_pred)
+# labelsv = stack_batch_list(all_labels)
+# maskv = stack_batch_list(all_mask)
+# pred_discretev = stack_batch_list(all_pred_discrete)
+# labels_discretev = stack_batch_list(all_labels_discrete)
+
+# +
+fig, ax = debug_plot_global_histograms(all_pred, all_labels, train_dataset, nbins=25, subsample=1, compare='pred')
 
 if train_dataset.dct_m is not None:
-    debug_plot_dct_relative_error(predv, labelsv, train_dataset)
+    debug_plot_dct_relative_error(all_pred, all_labels, train_dataset)
 if train_dataset.ntspred_global > 1:
-    debug_plot_global_error(predv, labelsv, pred_discretev, labels_discretev, train_dataset)
+    debug_plot_global_error(all_pred, all_labels, train_dataset)
 
 # crop to nplot for plotting
-nplot = 8000 #min(len(all_labels),8000//config['batch_size']//config['contextl']+1)
-predv = predv[:nplot, :]
-labelsv = labelsv[:nplot, :]
-if len(maskv) > 0:
-    maskv = maskv[:nplot,:]
-pred_discretev = pred_discretev[:nplot, :]
-labels_discretev = labels_discretev[:nplot, :]
+nplot = min(len(all_labels),8000//config['batch_size']//config['contextl']+1)
+# -
 
-if maskv is not None and len(maskv) > 0:
-    maskidx = torch.nonzero(maskv)[:,0]
-else:
-    maskidx = None
-
-# +
 ntspred_plot = np.minimum(4, train_dataset.ntspred_global)
-featidxplot = select_featidx_plot(train_dataset, ntspred_plot)
+featidxplot, ftplot = all_labels[0].select_featidx_plot(ntspred_plot)
 naxc = np.maximum(1, int(np.round(len(featidxplot) / nfeatures)))
 fig, ax = debug_plot_predictions_vs_labels(
-    predv,
-    labelsv,
-    pred_discretev,
-    labels_discretev,
-    outnames=outnames,
-    maskidx=maskidx,
-    naxc=naxc,
-    featidxplot=featidxplot,
-    dataset=val_dataset
+    all_pred[:nplot], all_labels[:nplot], naxc=naxc, featidxplot=featidxplot
 )
 if train_dataset.ntspred_global > 1:
-    featidxplot = select_featidx_plot(train_dataset, ntspred_plot=train_dataset.ntspred_global, ntsplot_relative=0)
+    featidxplot, ftplot = all_labels[0].select_featidx_plot(
+        ntsplot=train_dataset.ntspred_global, ntsplot_relative=0
+    )
     naxc = np.maximum(1, int(np.round(len(featidxplot) / nfeatures)))
     fig, ax = debug_plot_predictions_vs_labels(
-        predv,
-        labelsv,
-        pred_discretev,
-        labels_discretev,
-        outnames=outnames,
-        maskidx=maskidx,
-        naxc=naxc,
-        featidxplot=featidxplot,
-        dataset=val_dataset
+        all_pred[:nplot], all_labels[:nplot], naxc=naxc, featidxplot=featidxplot
     )
-
-if train_dataset.ntspred_global > 1:
-    featidxplot = train_dataset.ravel_label_index([(featglobal[0],t) for t in train_dataset.tspred_global])
+    featidxplot, _ = all_labels[0].select_featidx_plot(ntsplot=1, ntsplot_relative=1)
     fig, ax = debug_plot_predictions_vs_labels(
-        predv,
-        labelsv,
-        pred_discretev,
-        labels_discretev,
-        outnames=outnames,
-        maskidx=maskidx,
-        featidxplot=featidxplot,
-        dataset=val_dataset
+        all_pred[:nplot], all_labels[:nplot], naxc=naxc, featidxplot=featidxplot
     )
-
-if train_dataset.dct_tau > 0:
-    fstrs = ['left_middle_leg_tip_angle', 'left_front_leg_tip_angle', 'left_wing_angle']
-    fs = [mabe.posenames.index(x) for x in fstrs]
-    featidxplot = train_dataset.ravel_label_index([(f,i+1) for i in range(train_dataset.dct_tau+1) for f in fs])
-    fig, ax = debug_plot_predictions_vs_labels(
-        predv,
-        labelsv,
-        pred_discretev,
-        labels_discretev,
-        outnames=outnames,
-        maskidx=maskidx,
-        featidxplot=featidxplot,
-        dataset=val_dataset,
-        naxc=len(fs)
-    )
-
-    predrelative_dct = train_dataset.get_relative_movement_dct(predv.numpy())
-    labelsrelative_dct = train_dataset.get_relative_movement_dct(labelsv.numpy())
-    fsdct = [np.array(mabe.posenames)[featrelative].tolist().index(x) for x in fstrs]
-    predrelative_dct = predrelative_dct[:, :, fsdct].astype(train_dataset.dtype)
-    labelsrelative_dct = labelsrelative_dct[:, :, fsdct].astype(train_dataset.dtype)
-    outnamescurr = [f'{f}_dt{i+1}' for i in range(train_dataset.dct_tau) for f in fstrs]
-    fig, ax = debug_plot_predictions_vs_labels(
-        torch.as_tensor(predrelative_dct.reshape((-1,train_dataset.dct_tau*len(fsdct)))),
-        torch.as_tensor(labelsrelative_dct.reshape((-1,train_dataset.dct_tau*len(fsdct)))),
-        outnames=outnamescurr,maskidx=maskidx,naxc=len(fstrs)
-    )
-# -
 
 # # Simulate
 
 # +
 # generate an animation of open loop prediction
-# tpred = 2000 + config['contextl']
-tpred = 200 + config['contextl']
+tpred = np.minimum(2000 + config['contextl'], valdata['isdata'].shape[0] // 2)
+print(tpred)
 
 # all frames must have real data
 
-burnin = config['contextl']-1
-contextlpad = burnin + 1
+burnin = config['contextl'] - 1
+contextlpad = burnin + train_dataset.ntspred_max
 allisdata = interval_all(valdata['isdata'], contextlpad)
-isnotsplit = interval_all(valdata['isstart'] == False, tpred)[1:,...]
+isnotsplit = interval_all(valdata['isstart'] == False, tpred)[1:, ...]
 canstart = np.logical_and(allisdata[:isnotsplit.shape[0], :], isnotsplit)
-flynum = 2
-# t0 = np.nonzero(canstart[:, flynum])[0][40000]    
-t0 = np.nonzero(canstart[:, flynum])[0][0]
-fliespred = np.array([flynum,])
+flynum = 3  # 2
+t0 = np.nonzero(canstart[:, flynum])[0]
+idxstart = np.minimum(40000, len(t0) - 1)
+if len(t0) > idxstart:
+    t0 = t0[idxstart]
+else:
+    t0 = t0[0]
+fliespred = np.array([flynum, ])
 
 randstate_np = np.random.get_state()
 randstate_torch = torch.random.get_rng_state()
 
-nsamplesfuture = 32  
+nsamplesfuture = 32
 
 # reseed numpy random number generator with randstate_np
 np.random.set_state(randstate_np)
 # reseed torch random number generator with randstate_torch
 torch.random.set_rng_state(randstate_torch)
 ani = animate_predict_open_loop(
-    model,
-    val_dataset,
-    valdata,
-    val_scale_perfly,
-    config,
-    fliespred,
-    t0,
+    model, 
+    val_dataset, 
+    valdata, 
+    val_scale_perfly, 
+    config, 
+    fliespred, 
+    t0, 
     tpred,
     debug=False,
-    plotattnweights=False,
-    plotfuture=train_dataset.ntspred_global>1,
+    plotattnweights=False, 
+    plotfuture=train_dataset.ntspred_global > 1,
     nsamplesfuture=nsamplesfuture
 )
 # -

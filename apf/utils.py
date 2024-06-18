@@ -81,3 +81,20 @@ def angledist2xy(origin, angle, dist):
     d = u * dist[np.newaxis, ...]
     xy = origin + d
     return xy
+
+
+def len_wrapper(x, defaultlen=None):
+    if x is None:
+        return defaultlen
+    if hasattr(x, '__len__'):
+        return len(x)
+    return 1
+
+
+def dict_convert_torch_to_numpy(d):
+    for k, v in d.items():
+        if type(v) is torch.Tensor:
+            d[k] = v.numpy()
+        elif type(v) is dict:
+            d[k] = dict_convert_torch_to_numpy(v)
+    return d

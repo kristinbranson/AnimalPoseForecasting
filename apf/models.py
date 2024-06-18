@@ -4,6 +4,7 @@ import typing
 import torch
 
 from apf.config import nfeatures
+from apf.pose import FlyExample
 # TODO: remove specific knowledge about the data in this file
 
 
@@ -932,7 +933,7 @@ def get_output_and_attention_weights(model, inputs, mask=None, is_causal=False):
     return output, activation
 
 
-def initialize_model(d_input, d_output, config, train_dataset, device):
+def initialize_model(config, train_dataset, device):
     # architecture arguments
     MODEL_ARGS = {
         'd_model': config['d_model'],
@@ -952,6 +953,7 @@ def initialize_model(d_input, d_output, config, train_dataset, device):
         MODEL_ARGS['input_idx'], MODEL_ARGS['input_szs'] = train_dataset.get_input_shapes()
         MODEL_ARGS['embedding_types'] = config['obs_embedding_types']
         MODEL_ARGS['embedding_params'] = config['obs_embedding_params']
+    d_input = train_dataset.d_input
     if train_dataset.flatten:
         MODEL_ARGS['ntokens_per_timepoint'] = train_dataset.ntokens_per_timepoint
         d_input = train_dataset.flatten_dinput
@@ -960,6 +962,8 @@ def initialize_model(d_input, d_output, config, train_dataset, device):
         MODEL_ARGS['d_output_discrete'] = train_dataset.d_output_discrete
         MODEL_ARGS['nbins'] = train_dataset.discretize_nbins
         d_output = train_dataset.d_output_continuous
+    else:
+        d_output = train_dataset.d_output
 
     if config['modelstatetype'] == 'prob':
         model = TransformerStateModel(d_input, d_output, **MODEL_ARGS).to(device)
@@ -971,7 +975,7 @@ def initialize_model(d_input, d_output, config, train_dataset, device):
         model = TransformerModel(d_input, d_output, **MODEL_ARGS).to(device)
 
         if train_dataset.discretize:
-            # this should be maybe be len(train_dataset.discrete_idx) / train_dataset.d_output
+            # this should be maybe be len(train_dataset.discreteidx) / train_dataset.d_output
             config['weight_discrete'] = len(config['discreteidx']) / nfeatures
             if config['modeltype'] == 'mlm':
                 criterion = mixed_masked_criterion
@@ -1053,12 +1057,14 @@ def predict_all(dataloader, dataset, model, config, mask):
         w = next(iter(model.parameters()))
         device = w.device
 
+    example_params = dataset.get_flyexample_params()
+
     # compute predictions and labels for all validation data using default masking
     all_pred = []
     all_mask = []
     all_labels = []
-    all_pred_discrete = []
-    all_labels_discrete = []
+    # all_pred_discrete = []
+    # all_labels_discrete = []
     with torch.no_grad():
         for example in dataloader:
             pred = model.output(example['input'].to(device=device), mask=mask, is_causal=is_causal)
@@ -1070,17 +1076,25 @@ def predict_all(dataloader, dataset, model, config, mask):
                 pred = {k: v.cpu() for k, v in pred.items()}
             else:
                 pred = pred.cpu()
-            pred1 = dataset.get_full_pred(pred)
-            labels1 = dataset.get_full_labels(example=example, use_todiscretize=True)
-            all_pred.append(pred1)
-            all_labels.append(labels1)
-            if dataset.discretize:
-                all_pred_discrete.append(pred['discrete'])
-                all_labels_discrete.append(example['labels_discrete'])
-            if 'mask' in example:
-                all_mask.append(example['mask'])
+            # pred1 = dataset.get_full_pred(pred)
+            # labels1 = dataset.get_full_labels(example=example,use_todiscretize=True)
+            example_obj = FlyExample(example_in=example, **example_params)
+            label_obj = example_obj.labels
+            pred_obj = label_obj.copy()
+            pred_obj.erase_labels()
+            pred_obj.set_prediction(pred)
 
-    return all_pred, all_labels, all_mask, all_pred_discrete, all_labels_discrete
+            for i in range(np.prod(label_obj.pre_sz)):
+                all_pred.append(pred_obj.copy_subindex(idx_pre=i))
+                all_labels.append(label_obj.copy_subindex(idx_pre=i))
+
+            # if dataset.discretize:
+            #   all_pred_discrete.append(pred['discrete'])
+            #   all_labels_discrete.append(example['labels_discrete'])
+            # if 'mask' in example:
+            #   all_mask.append(example['mask'])
+
+    return all_pred, all_labels  # ,all_mask,all_pred_discrete,all_labels_discrete
 
 
 def pred_apply_fun(pred, fun):

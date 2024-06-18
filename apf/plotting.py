@@ -12,6 +12,7 @@ from apf.config import (
 )
 from apf.data import get_batch_idx, load_and_filter_data, split_data_by_id, select_bin_edges, get_real_flies
 from apf.features import compute_features, get_sensory_feature_idx, zscore, unzscore
+from apf.pose import FlyExample
 from apf.models import criterion_wrapper
 from apf.utils import npindex
 from apf.io import read_config
@@ -472,21 +473,62 @@ def debug_plot_batch_state(stateprob, nsamplesplot=3,
     return h, ax, fig
 
 
-def debug_plot_batch_traj(example, train_dataset, criterion=None, config=None,
+def subsample_batch(example, nsamples=1, samples=None, dataset=None):
+    israw = type(example) is dict
+    islist = type(example) is list
+    if samples is not None:
+        nsamples = len(samples)
+
+    if israw:
+        batch_size = example['input'].shape[0]
+    elif islist:
+        batch_size = len(example)
+    elif type(example) is FlyExample:
+        batch_size = int(np.prod(example.pre_sz))
+        if batch_size == 1:
+            return [example, ], np.arange(1)
+    else:
+        raise ValueError(f'Unknown type {type(example)}')
+
+    if samples is None:
+        nsamples = np.minimum(nsamples, batch_size)
+        samples = np.round(np.linspace(0, batch_size - 1, nsamples)).astype(int)
+    else:
+        assert np.max(samples) < batch_size
+
+    if islist:
+        return [example[i] for i in samples], samples
+
+    if israw:
+        rawbatch = example
+        examplelist = []
+        for samplei in samples:
+            examplecurr = get_batch_idx(rawbatch, samplei)
+            assert dataset is not None
+            flyexample = FlyExample(example_in=examplecurr, dataset=dataset)
+            examplelist.append(flyexample)
+    else:
+        examplelist = []
+        for samplei in samples:
+            examplecurr = example.copy_subindex(idx_pre=samplei)
+            examplelist.append(examplecurr)
+
+    return examplelist, samples
+
+
+def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None,
                           pred=None, data=None, nsamplesplot=3,
-                          true_discrete_mode='to_discretize',
-                          pred_discrete_mode='sample',
                           h=None, ax=None, fig=None, label_true='True', label_pred='Pred',
-                          ntspred_plot=2):
-    batch_size = example['input'].shape[0]
-    contextl = train_dataset.ntimepoints
+                          ntsplot=3, ntsplot_global=None, ntsplot_relative=None):
+    example, samplesplot = subsample_batch(example_in, nsamples=nsamplesplot,
+                                           dataset=train_dataset)
+    nsamplesplot = len(example)
 
     true_color = [0, 0, 0]
-    true_color_y = [.5, .5, .5]
     pred_cmap = lambda x: plt.get_cmap("tab10")(x % 10)
 
     if train_dataset.ismasked():
-        mask = example['mask']
+        mask = example_in['mask']
     else:
         mask = None
 
@@ -494,70 +536,58 @@ def debug_plot_batch_traj(example, train_dataset, criterion=None, config=None,
         fig, ax = plt.subplots(1, nsamplesplot, squeeze=False)
         ax = ax[0, :]
 
-    if true_discrete_mode == 'to_discretize':
-        true_args = {'use_todiscretize': True}
-    elif true_discrete_mode == 'sample':
-        true_args = {'sample': True}
-    else:
-        true_args = {}
+    featidxplot, ftplot = example[0].labels.select_featidx_plot(ntsplot=ntsplot,
+                                                                ntsplot_global=ntsplot_global,
+                                                                ntsplot_relative=ntsplot_relative)
+    for i, iplot in enumerate(samplesplot):
+        examplecurr = example[i]
+        rawlabelstrue = examplecurr.labels.get_train_labels()
+        zmovement_continuous_true = rawlabelstrue['continuous']
+        zmovement_discrete_true = rawlabelstrue['discrete']
 
-    if pred_discrete_mode == 'sample':
-        pred_args = {'sample': True}
-    else:
-        pred_args = {}
-
-    featidxplot = select_featidx_plot(train_dataset, ntspred_plot)
-    samplesplot = np.round(np.linspace(0, batch_size - 1, nsamplesplot)).astype(int)
-    for i in range(nsamplesplot):
-        iplot = samplesplot[i]
-        examplecurr = get_batch_idx(example, iplot)
-        zmovement_continuous_true, zmovement_discrete_true = train_dataset.get_continuous_discrete_labels(examplecurr)
-        ntimepoints = train_dataset.ntimepoints
-
-        # zmovement_true = train_dataset.get_full_labels(examplecurr,**true_args)
-        # zmovement_true = example['labels'][iplot,...].numpy()
-        # err_movement = None
         err_total = None
-        if mask is not None:
-            maskcurr = np.zeros(mask.shape[-1] + 1, dtype=bool)
-            maskcurr[:-1] = mask[iplot, ...].numpy()
+        maskcurr = examplecurr.labels.get_mask()
+        if maskcurr is None:
             maskidx = np.nonzero(maskcurr)[0]
+        zmovement_continuous_pred = None
+        zmovement_discrete_pred = None
         if pred is not None:
-            predcurr = get_batch_idx(pred, iplot)
-            zmovement_continuous_pred, zmovement_discrete_pred = train_dataset.get_continuous_discrete_labels(predcurr)
-            # zmovement_pred = train_dataset.get_full_labels(predcurr,**pred_args)
-            # if mask is not None:
-            #   nmask = np.count_nonzero(maskcurr)
-            # else:
-            #   nmask = np.prod(zmovement_continuous_pred.shape[:-1])
+            rawpred = get_batch_idx(pred, iplot)
+            if 'continuous' in rawpred:
+                zmovement_continuous_pred = rawpred['continuous']
+            if 'discrete' in rawpred:
+                zmovement_discrete_pred = rawpred['discrete']
+                zmovement_discrete_pred = torch.softmax(zmovement_discrete_pred, dim=-1)
             if criterion is not None:
-                err_total, err_discrete, err_continuous = criterion_wrapper(examplecurr, predcurr, criterion,
+                err_total, err_discrete, err_continuous = criterion_wrapper(rawlabelstrue, rawpred, criterion,
                                                                             train_dataset, config)
-            zmovement_discrete_pred = torch.softmax(zmovement_discrete_pred, dim=-1)
             # err_movement = torch.abs(zmovement_true[maskidx,:]-zmovement_pred[maskidx,:])/nmask
             # err_total = torch.sum(err_movement).item()/d
 
         elif data is not None:
+            # for i in range(nsamplesplot):
+            #   metadata = example[i].get_train_metadata()
+            #   t0 = metadata['t0']
+            #   flynum = metadata[flynum]
+            #   datakp,id = data['X'][:,:,t0:t0+ntimepoints+1,flynum].transpose(2,0,1)
+
             # t0 = example['metadata']['t0'][iplot].item()
             # flynum = example['metadata']['flynum'][iplot].item()
-            zmovement_pred = None
-        else:
-            # Xcenter_pred = None
-            # Xtheta_pred = None
-            zmovement_pred = None
+            pass
 
         mult = 6.
         d = len(featidxplot)
-        outnames = train_dataset.get_outnames()
-        contextl = train_dataset.ntimepoints
+        outnames = examplecurr.labels.get_multi_names()
+        contextl = examplecurr.labels.ntimepoints_train
 
         ax[i].cla()
 
+        idx_multi_to_multidiscrete = examplecurr.labels.idx_multi_to_multidiscrete
+        idx_multi_to_multicontinuous = examplecurr.labels.idx_multi_to_multicontinuous
         for featii, feati in enumerate(featidxplot):
-            featidx = np.nonzero(train_dataset.discrete_idx == feati)[0]
-            if len(featidx) == 0:
+            featidx = idx_multi_to_multidiscrete[feati]
+            if featidx < 0:
                 continue
-            featidx = featidx[0]
             im = np.ones((train_dataset.discretize_nbins, contextl, 3))
             ztrue = zmovement_discrete_true[:, featidx, :].cpu().T
             ztrue = ztrue - torch.min(ztrue)
@@ -572,10 +602,9 @@ def debug_plot_batch_traj(example, train_dataset, criterion=None, config=None,
                          aspect='auto')
 
         for featii, feati in enumerate(featidxplot):
-            featidx = np.nonzero(train_dataset.continuous_idx == feati)[0]
-            if len(featidx) == 0:
+            featidx = idx_multi_to_multicontinuous[feati]
+            if featidx < 0:
                 continue
-            featidx = featidx[0]
             ax[i].plot([0, contextl], [mult * featii, ] * 2, ':', color=[.5, .5, .5])
             ax[i].plot(mult * featii + zmovement_continuous_true[:, featidx], '-', color=true_color,
                        label=f'{outnames[feati]}, true')
@@ -605,9 +634,128 @@ def debug_plot_batch_traj(example, train_dataset, criterion=None, config=None,
         ax[i].set_ylabel('Movement')
         ax[i].set_ylim([-mult, mult * d])
 
-    # fig.tight_layout()
+    fig.tight_layout()
 
     return ax, fig
+
+
+def debug_plot_pose(example, train_dataset=None, pred=None, data=None,
+                    true_discrete_mode='to_discretize',
+                    pred_discrete_mode='sample',
+                    ntsplot=5, nsamplesplot=3, h=None, ax=None, fig=None,
+                    tsplot=None):
+    example, samplesplot = subsample_batch(example, nsamples=nsamplesplot,
+                                           dataset=train_dataset)
+
+    israwpred = type(pred) is dict
+    if israwpred:
+        batchpred = pred
+        pred = []
+        for i, samplei in enumerate(samplesplot):
+            predcurr = get_batch_idx(batchpred, samplei)
+            flyexample = example[i].copy()
+            # just to make sure no data sticks around
+            flyexample.labels.erase_labels()
+            flyexample.labels.set_prediction(predcurr)
+            pred.append(flyexample)
+    elif type(pred) is FlyExample:
+        pred, _ = subsample_batch(pred, samples=samplesplot)
+
+    nsamplesplot = len(example)
+    if pred is not None:
+        assert (len(pred) == nsamplesplot)
+
+    contextl = example[0].ntimepoints
+    if tsplot is None:
+        tsplot = np.round(np.linspace(0, contextl - 1, ntsplot)).astype(int)
+    else:
+        ntsplot = len(tsplot)
+
+    if tsplot is None:
+        tsplot = np.round(np.linspace(0, contextl - 1, ntsplot)).astype(int)
+    else:
+        ntsplot = len(tsplot)
+
+    if ax is None:
+        fig, ax = plt.subplots(nsamplesplot, ntsplot, squeeze=False)
+
+    if h is None:
+        h = {'kpt0': [], 'kpt1': [], 'edge0': [], 'edge1': []}
+
+    if true_discrete_mode == 'to_discretize':
+        true_args = {'use_todiscretize': True}
+    elif true_discrete_mode == 'sample':
+        true_args = {'sample': True}
+    else:
+        true_args = {}
+
+    if pred_discrete_mode == 'sample':
+        pred_args = {'nsamples': 1, 'collapse_samples': True}
+    else:
+        pred_args = {}
+
+    for i in range(nsamplesplot):
+        iplot = samplesplot[i]
+        examplecurr = example[i]
+        Xkp_true = examplecurr.labels.get_next_keypoints(**true_args)
+        nametrue = 'Labels'
+        # ['input'][iplot,0,...].numpy(),
+        #                            example['init'][iplot,...].numpy(),
+        #                            example['labels'][iplot,...].numpy(),
+        #                            example['scale'][iplot,...].numpy())
+        # Xkp_true = Xkp_true[...,0]
+        t0 = examplecurr.metadata['t0']
+        flynum = examplecurr.metadata['flynum']
+        if pred is not None:
+            predcurr = pred[i]
+            Xkp_pred = predcurr.labels.get_next_keypoints(**pred_args)
+            namepred = 'Pred'
+        elif data is not None:
+            Xkp_pred = data['X'][:, :, t0:t0 + contextl, flynum].transpose(2, 0, 1)
+            namepred = 'Raw data'
+        else:
+            Xkp_pred = None
+        for key in h.keys():
+            if len(h[key]) <= i:
+                h[key].append([None, ] * ntsplot)
+
+        minxy = np.nanmin(np.nanmin(Xkp_true[tsplot, :, :], axis=1), axis=0)
+        maxxy = np.nanmax(np.nanmax(Xkp_true[tsplot, :, :], axis=1), axis=0)
+        if Xkp_pred is not None:
+            minxy_pred = np.nanmin(np.nanmin(Xkp_pred[tsplot, :, :], axis=1), axis=0)
+            maxxy_pred = np.nanmax(np.nanmax(Xkp_pred[tsplot, :, :], axis=1), axis=0)
+            minxy = np.minimum(minxy, minxy_pred)
+            maxxy = np.maximum(maxxy, maxxy_pred)
+        for j in range(ntsplot):
+            tplot = tsplot[j]
+            if j == 0:
+                ax[i, j].set_title(f'fly: {flynum} t0: {t0}')
+            else:
+                ax[i, j].set_title(f't = {tplot}')
+
+            h['kpt0'][i][j], h['edge0'][i][j], _, _, _ = plot_fly(Xkp_true[tplot, :, :],
+                                                                       skel_lw=2, color=[0, 0, 0],
+                                                                       ax=ax[i, j], hkpt=h['kpt0'][i][j],
+                                                                       hedge=h['edge0'][i][j])
+            if Xkp_pred is not None:
+                h['kpt1'][i][j], h['edge1'][i][j], _, _, _ = plot_fly(Xkp_pred[tplot, :, :],
+                                                                           skel_lw=1, color=[0, 1, 1],
+                                                                           ax=ax[i, j], hkpt=h['kpt1'][i][j],
+                                                                           hedge=h['edge1'][i][j])
+                if i == 0 and j == 0:
+                    ax[i, j].legend([h['edge0'][i][j], h['edge1'][i][j]], [nametrue, namepred])
+            ax[i, j].set_aspect('equal')
+            # minxy = np.nanmin(Xkp_true[:,:,tplot],axis=0)
+            # maxxy = np.nanmax(Xkp_true[:,:,tplot],axis=0)
+            # if Xkp_pred is not None:
+            #   minxy_pred = np.nanmin(Xkp_pred[:,:,tplot],axis=0)
+            #   maxxy_pred = np.nanmax(Xkp_pred[:,:,tplot],axis=0)
+            #   minxy = np.minimum(minxy,minxy_pred)
+            #   maxxy = np.maximum(maxxy,maxxy_pred)
+            ax[i, j].set_xlim([minxy[0], maxxy[0]])
+            ax[i, j].set_ylim([minxy[1], maxxy[1]])
+
+    return h, ax, fig
 
 
 def debug_plot_pose_prob(example, train_dataset, predcpu, tplot, fig=None, ax=None, h=None, minalpha=.25):
@@ -655,199 +803,106 @@ def debug_plot_pose_prob(example, train_dataset, predcpu, tplot, fig=None, ax=No
     return h, ax, fig
 
 
-def debug_plot_batch_pose(example, train_dataset, pred=None, data=None,
-                          true_discrete_mode='to_discretize',
-                          pred_discrete_mode='sample',
-                          ntsplot=5, nsamplesplot=3, h=None, ax=None, fig=None,
-                          tsplot=None):
-    batch_size = example['input'].shape[0]
-    contextl = train_dataset.ntimepoints
-    nsamplesplot = np.minimum(nsamplesplot, batch_size)
-
-    if tsplot is None:
-        tsplot = np.round(np.linspace(0, contextl, ntsplot)).astype(int)
-    else:
-        ntsplot = len(tsplot)
-    samplesplot = np.round(np.linspace(0, batch_size - 1, nsamplesplot)).astype(int)
-
-    if ax is None:
-        fig, ax = plt.subplots(nsamplesplot, ntsplot, squeeze=False)
-
-    if h is None:
-        h = {'kpt0': [], 'kpt1': [], 'edge0': [], 'edge1': []}
-
-    if true_discrete_mode == 'to_discretize':
-        true_args = {'use_todiscretize': True}
-    elif true_discrete_mode == 'sample':
-        true_args = {'sample': True}
-    else:
-        true_args = {}
-
-    if pred_discrete_mode == 'sample':
-        pred_args = {'sample': True}
-    else:
-        pred_args = {}
-
-    for i in range(nsamplesplot):
-        iplot = samplesplot[i]
-        examplecurr = get_batch_idx(example, iplot)
-        Xkp_true = train_dataset.get_Xkp(examplecurr, **true_args)
-        # ['input'][iplot,0,...].numpy(),
-        #                            example['init'][iplot,...].numpy(),
-        #                            example['labels'][iplot,...].numpy(),
-        #                            example['scale'][iplot,...].numpy())
-        Xkp_true = Xkp_true[..., 0]
-        t0 = example['metadata']['t0'][iplot].item()
-        flynum = example['metadata']['flynum'][iplot].item()
-        if pred is not None:
-            predcurr = get_batch_idx(pred, iplot)
-            print(iplot)
-            print(examplecurr['labels'].shape)
-            print(predcurr.keys())
-            print(pred_args)
-            Xkp_pred = train_dataset.get_Xkp(examplecurr, pred=predcurr, **pred_args)
-            Xkp_pred = Xkp_pred[..., 0]
-        elif data is not None:
-            Xkp_pred = data['X'][:, :, t0:t0 + contextl + 1, flynum]
-        else:
-            Xkp_pred = None
-        for key in h.keys():
-            if len(h[key]) <= i:
-                h[key].append([None, ] * ntsplot)
-
-        minxy = np.nanmin(np.nanmin(Xkp_true[:, :, tsplot], axis=0), axis=-1)
-        maxxy = np.nanmax(np.nanmax(Xkp_true[:, :, tsplot], axis=0), axis=-1)
-        if Xkp_pred is not None:
-            minxy_pred = np.nanmin(np.nanmin(Xkp_pred[:, :, tsplot], axis=0), axis=-1)
-            maxxy_pred = np.nanmax(np.nanmax(Xkp_pred[:, :, tsplot], axis=0), axis=-1)
-            minxy = np.minimum(minxy, minxy_pred)
-            maxxy = np.maximum(maxxy, maxxy_pred)
-        for j in range(ntsplot):
-            tplot = tsplot[j]
-            if j == 0:
-                ax[i, j].set_title(f'fly: {flynum} t0: {t0}')
-            else:
-                ax[i, j].set_title(f't = {tplot}')
-
-            h['kpt0'][i][j], h['edge0'][i][j], _, _, _ = plot_fly(Xkp_true[:, :, tplot],
-                                                                  skel_lw=2, color=[0, 0, 0],
-                                                                  ax=ax[i, j], hkpt=h['kpt0'][i][j],
-                                                                  hedge=h['edge0'][i][j])
-            if Xkp_pred is not None:
-                h['kpt1'][i][j], h['edge1'][i][j], _, _, _ = plot_fly(Xkp_pred[:, :, tplot],
-                                                                      skel_lw=1, color=[0, 1, 1],
-                                                                      ax=ax[i, j], hkpt=h['kpt1'][i][j],
-                                                                      hedge=h['edge1'][i][j])
-            ax[i, j].set_aspect('equal')
-            # minxy = np.nanmin(Xkp_true[:,:,tplot],axis=0)
-            # maxxy = np.nanmax(Xkp_true[:,:,tplot],axis=0)
-            # if Xkp_pred is not None:
-            #   minxy_pred = np.nanmin(Xkp_pred[:,:,tplot],axis=0)
-            #   maxxy_pred = np.nanmax(Xkp_pred[:,:,tplot],axis=0)
-            #   minxy = np.minimum(minxy,minxy_pred)
-            #   maxxy = np.maximum(maxxy,maxxy_pred)
-            ax[i, j].set_xlim([minxy[0], maxxy[0]])
-            ax[i, j].set_ylim([minxy[1], maxxy[1]])
-
-    return h, ax, fig
-
-
-def debug_plot_sample_inputs(dataset, example, nplot=3):
-    nplot = np.minimum(nplot, example['input'].shape[0])
+def debug_plot_sample(example_in, dataset=None, nplot=3):
+    example, samplesplot = subsample_batch(example_in, nsamples=nplot, dataset=dataset)
+    nplot = len(example)
 
     fig, ax = plt.subplots(nplot, 2, squeeze=False)
-    idx = get_sensory_feature_idx(dataset.simplify_in)
-    labels = dataset.get_full_labels(example=example, use_todiscretize=True)
-    nlabels = labels.shape[-1]
-    inputs = dataset.get_full_inputs(example=example, use_stacked=False)
 
+    idx = example[0].inputs.get_sensory_feature_idx()
     inputidxstart = [x[0] - .5 for x in idx.values()]
     inputidxtype = list(idx.keys())
+    T = example[0].ntimepoints
 
-    for iplot in range(nplot):
+    for iplot, samplei in enumerate(samplesplot):
         ax[iplot, 0].cla()
         ax[iplot, 1].cla()
-        ax[iplot, 0].imshow(inputs[iplot, ...], vmin=-3, vmax=3, cmap='coolwarm', aspect='auto')
-        ax[iplot, 0].set_title(f'Input {iplot}')
+        ax[iplot, 0].imshow(example[iplot].inputs.get_raw_inputs(),
+                            vmin=-3, vmax=3, cmap='coolwarm', aspect='auto')
+        ax[iplot, 0].set_title(f'Input {samplei}')
         # ax[iplot,0].set_xticks(inputidxstart)
         for j in range(len(inputidxtype)):
-            ax[iplot, 0].plot([inputidxstart[j], ] * 2, [-.5, inputs.shape[1] - .5], 'k-')
-            ax[iplot, 0].text(inputidxstart[j], inputs.shape[1] - 1, inputidxtype[j], horizontalalignment='left')
+            ax[iplot, 0].plot([inputidxstart[j], ] * 2, [-.5, T - .5], 'k-')
+            ax[iplot, 0].text(inputidxstart[j], T - 1, inputidxtype[j], horizontalalignment='left')
         lastidx = list(idx.values())[-1][1]
-        ax[iplot, 0].plot([lastidx - .5, ] * 2, [-.5, inputs.shape[1] - .5], 'k-')
+        ax[iplot, 0].plot([lastidx - .5, ] * 2, [-.5, T - .5], 'k-')
 
         # ax[iplot,0].set_xticklabels(inputidxtype)
-        ax[iplot, 1].imshow(labels[iplot, ...], vmin=-3, vmax=3, cmap='coolwarm', aspect='auto')
-        ax[iplot, 1].set_title(f'Labels {iplot}')
+        ax[iplot, 1].imshow(example[iplot].labels.get_multi(zscored=True),
+                            vmin=-3, vmax=3, cmap='coolwarm', aspect='auto')
+        ax[iplot, 1].set_title(f'Labels {samplei}')
     return fig, ax
 
 
-def debug_plot_predictions_vs_labels(predv, labelsv, pred_discretev=None, labels_discretev=None, outnames=None,
-                                     maskidx=None, ax=None, prctile_lim=.1, naxc=1, featidxplot=None, dataset=None):
-    d_output = predv.shape[-1]
+def debug_plot_predictions_vs_labels(all_pred, all_labels, ax=None,
+                                     prctile_lim=.1, naxc=1, featidxplot=None,
+                                     gaplen=2):
+    d_output = all_pred[0].d_multi
+    predv_cont = np.stack([pred.get_multi() for pred in all_pred], axis=0)
+    labelsv_cont = np.stack([label.get_multi() for label in all_labels], axis=0)
+    nans = np.zeros((len(all_pred), gaplen, d_output), dtype=all_labels[0].dtype) + np.nan
+    predv_cont = np.reshape(np.concatenate((predv_cont, nans), axis=1), (-1, d_output))
+    labelsv_cont = np.reshape(np.concatenate((labelsv_cont, nans), axis=1), (-1, d_output))
+    if all_labels[0].is_discretized():
+        predv_discrete = np.stack([pred.get_multi_discrete() for pred in all_pred], axis=0)
+        labelsv_discrete = np.stack([labels.get_multi_discrete() for labels in all_labels], axis=0)
+        nans = np.zeros((len(all_pred), gaplen) + predv_discrete.shape[-2:], dtype=all_labels[0].dtype) + np.nan
+        predv_discrete = np.reshape(np.concatenate((predv_discrete, nans), axis=1), (-1,) + predv_discrete.shape[-2:])
+        labelsv_discrete = np.reshape(np.concatenate((labelsv_discrete, nans), axis=1),
+                                      (-1,) + labelsv_discrete.shape[-2:])
 
-    if featidxplot is not None:
-        predv = predv[:, featidxplot]
-        labelsv = labelsv[:, featidxplot]
-        outnames = [outnames[i] for i in featidxplot]
-        if labels_discretev is not None and len(labels_discretev) > 0:
-            tmp = torch.zeros((labels_discretev.shape[0], d_output, labels_discretev.shape[2]),
-                              dtype=labels_discretev.dtype)
-            tmp[:] = np.nan
-            tmp[:, dataset.discrete_idx, :] = labels_discretev
-            labels_discretev = tmp[:, featidxplot, :]
-            tmp = torch.zeros((labels_discretev.shape[0], d_output, labels_discretev.shape[2]),
-                              dtype=labels_discretev.dtype)
-            tmp[:] = np.nan
-            tmp[:, dataset.discrete_idx, :] = pred_discretev
-            pred_discretev = tmp[:, featidxplot, :]
-        else:
-            labels_discretev = None
-            pred_discretev = None
-        d_output = len(featidxplot)
+    if featidxplot is None:
+        featidxplot = np.arange(d_output)
+    nfeat = len(featidxplot)
 
-    ismasked = maskidx is not None and len(maskidx) > 0
-    naxr = int(np.ceil(d_output / naxc))
+    ismasked = all_labels[0].is_masked()
+    if ismasked:
+        maskv = np.stack([label.get_mask() for label in all_labels], axis=0)
+        nans = np.zeros((len(all_pred), gaplen), dtype=all_labels[0].dtype) + np.nan
+        maskv = np.reshape(np.concatenate((maskv, nans), axis=1), (-1,))
+        maskidx = np.nonzero(maskv)[0]
+    naxr = int(np.ceil(nfeat / naxc))
     if ax is None:
         fig, ax = plt.subplots(naxr, naxc, sharex='all', figsize=(20, 20))
         ax = ax.flatten()
         plt.tight_layout(h_pad=0)
 
     pred_cmap = lambda x: plt.get_cmap("tab10")(x % 10)
-    for i in range(d_output):
+    discreteidx = list(all_labels[0].idx_multidiscrete_to_multi)
+    outnames = all_labels[0].get_multi_names()
+    for i, feati in enumerate(featidxplot):
         ax[i].cla()
-        if outnames is not None:
-            ti = ax[i].set_title(outnames[i], y=1.0, pad=-14, color=pred_cmap(i), loc='left')
+        ti = ax[i].set_title(outnames[feati], y=1.0, pad=-14, color=pred_cmap(feati), loc='left')
 
-        if pred_discretev is not None and len(pred_discretev) > 0 and (
-                not torch.all(torch.isnan(pred_discretev[:, i, :]))):
-            predcurr = pred_discretev[:, i, :].T
-            labelscurr = labels_discretev[:, i, :].T
-            zlabels = torch.max(labelscurr[torch.isnan(labelscurr) == False])
-            zpred = torch.max(predcurr[torch.isnan(predcurr) == False])
-            im = torch.stack((1 - labelscurr / zlabels, 1 - predcurr / zpred, torch.ones(predcurr.shape)), dim=-1)
-            im[torch.isnan(im)] = 1.
-            ax[i].imshow(im.numpy(), aspect='auto')
+        if feati in discreteidx:
+            disci = discreteidx.index(feati)
+            predcurr = predv_discrete[:, disci, :].T
+            labelscurr = labelsv_discrete[:, disci, :].T
+            zlabels = np.nanmax(labelscurr)
+            zpred = np.nanmax(predcurr)
+            im = np.stack((1 - labelscurr / zlabels, 1 - predcurr / zpred, np.ones(predcurr.shape)), axis=-1)
+            im[np.isnan(im)] = 1.
+            ax[i].imshow(im, aspect='auto')
         else:
-            lims = torch.quantile(labelsv[:, i][torch.isnan(labelsv[:, i]) == False],
-                                  torch.tensor([prctile_lim / 100., 1 - prctile_lim / 100.]))
-            ax[i].plot(labelsv[:, i], 'k-', label='True')
+            lims = np.nanpercentile(np.concatenate([labelsv_cont[:, feati], predv_cont[:, feati]], axis=0),
+                                    [prctile_lim, 100 - prctile_lim])
+            ax[i].plot(labelsv_cont[:, feati], 'k-', label='True')
             if ismasked:
-                ax[i].plot(maskidx, predv[maskidx, i], '.', color=pred_cmap(i), label='Pred')
+                ax[i].plot(maskidx, predv_cont[maskidx, i], '.', color=pred_cmap(feati), label='Pred')
             else:
-                ax[i].plot(predv[:, i], '-', color=pred_cmap(i), label='Pred')
+                ax[i].plot(predv_cont[:, feati], '-', color=pred_cmap(feati), label='Pred')
             # ax[i].set_ylim([-ylim_nstd,ylim_nstd])
             ax[i].set_ylim(lims)
             if outnames is not None:
                 plt.setp(ti, color=pred_cmap(i))
-    ax[0].set_xlim([0, labelsv.shape[0]])
+    ax[0].set_xlim([0, labelsv_cont.shape[0]])
 
     return fig, ax
 
 
 def debug_plot_histograms(dataset, alpha=1):
     r = np.random.rand(dataset.discretize_bin_samples.shape[0]) - .5
-    ftidx = dataset.unravel_label_index(dataset.discrete_idx)
+    ftidx = dataset.unravel_label_index(dataset.discreteidx)
     # ftidx[featrelative[ftidx[:,0]],1]+=1
     fs = np.unique(ftidx[:, 0])
     ts = np.unique(ftidx[:, 1])
@@ -865,11 +920,11 @@ def debug_plot_histograms(dataset, alpha=1):
     bin_edges = dataset.discretize_bin_edges
     bin_samples = dataset.discretize_bin_samples
     if dataset.sig_labels is not None:
-        bin_edges = unzscore(bin_edges, dataset.mu_labels[dataset.discrete_idx, None],
-                             dataset.sig_labels[dataset.discrete_idx, None])
-        bin_samples = unzscore(bin_samples, dataset.mu_labels[None, dataset.discrete_idx, None],
-                               dataset.sig_labels[None, dataset.discrete_idx, None])
-    for i, idx in enumerate(dataset.discrete_idx):
+        bin_edges = unzscore(bin_edges, dataset.mu_labels[dataset.discreteidx, None],
+                             dataset.sig_labels[dataset.discreteidx, None])
+        bin_samples = unzscore(bin_samples, dataset.mu_labels[None, dataset.discreteidx, None],
+                               dataset.sig_labels[None, dataset.discreteidx, None])
+    for i, idx in enumerate(dataset.discreteidx):
         f = ftidx[i, 0]
         t = ftidx[i, 1]
         fi = np.nonzero(fs == f)[0][0]
@@ -895,23 +950,22 @@ def debug_plot_histograms(dataset, alpha=1):
     return
 
 
-def debug_plot_global_histograms(predv, labelsv, train_dataset, nbins=50, subsample=1, compare='time'):
+def debug_plot_global_histograms(all_pred, all_labels, train_dataset, nbins=50, subsample=1, compare='time'):
     outnames_global = train_dataset.get_movement_names_global()
 
     # global labels, continuous representation, unzscored
     # ntimepoints x tspred x nglobal
-    unz_labelsv = train_dataset.unzscore_labels(labelsv.numpy())
-    unz_glabelsv = train_dataset.get_global_movement(unz_labelsv)
+    unz_glabelsv = np.concatenate(
+        [labels.get_future_global(zscored=False, use_todiscretize=True) for labels in all_labels], axis=0)
 
     # global predictions, continuous representation, unzscored
     # ntimepoints x tspred x nglobal
-    unz_predv = train_dataset.unzscore_labels(predv.numpy())
-    unz_gpredv = train_dataset.get_global_movement(unz_predv)
+    unz_gpredv = np.concatenate([pred.get_future_global(zscored=False) for pred in all_pred], axis=0)
 
     if train_dataset.discretize:
 
         bin_edges = train_dataset.get_bin_edges(zscored=False)
-        ftidx = train_dataset.unravel_label_index(train_dataset.discrete_idx)
+        ftidx = all_labels[0].idx_multi_to_multifeattpred[all_labels[0].idx_multidiscrete_to_multi]
         bins = []
         for f in featglobal:
             j = np.nonzero(np.all(ftidx == np.array([f, 1])[None, ...], axis=1))[0][0]
@@ -968,66 +1022,75 @@ def debug_plot_global_histograms(predv, labelsv, train_dataset, nbins=50, subsam
     return fig, ax
 
 
-def debug_plot_global_error(predv, labelsv, pred_discretev, labels_discretev, train_dataset):
+def debug_plot_global_error(all_pred, all_labels, train_dataset):
     """
-  debug_plot_global_error(predv,labelsv,pred_discretev,labels_discretev,train_dataset)
-  inputs:
-  predv: torch.Tensor, shape (ntimepoints,d_output), all prediction features in continuous representation
-  labelsv: torch.Tensor, shape (ntimepoints,d_output) all labels in continuous representation
-  pred_discretev: torch.Tensor, shape (ntimepoints,len(train_dataset.discrete_idx),train_dataset.discretize_nbins), discrete predictions
-  labels_discretev: torch.Tensor, shape (ntimepoints,len(train_dataset.discrete_idx),train_dataset.discretize_nbins), discrete labels
-  train_dataset: FlyMLMDataset, the training dataset
-  """
+      debug_plot_global_error(all_pred,all_labels,train_dataset)
+      inputs:
+      all_pred: list of PoseLabels objects containing predictions, each of shape (ntimepoints,d_output)
+      all_labels: list of PoseLabels objects containing labels, each of shape (ntimepoints,d_output)
+      train_dataset: FlyMLMDataset, the training dataset
+    """
     outnames_global = train_dataset.get_movement_names_global()
-    ntimepoints = predv.shape[0]
 
-    # global predictions, continuous representation
-    # ntimepoints x tspred x nglobal
-    gpredv = train_dataset.get_global_movement(predv)
+    # global predictions, continuous representation, z-scored
+    # nexamples x ntimepoints x tspred x nglobal
+    gpredv = torch.tensor(np.stack([pred.get_future_global(zscored=True) for pred in all_pred], axis=0))
 
     # global labels, continuous representation
-    # ntimepoints x tspred x nglobal
-    glabelsv = train_dataset.get_global_movement(labelsv)
+    # nexamples x ntimepoints x tspred x nglobal
+    glabelsv = torch.tensor(
+        np.stack([labels.get_future_global(zscored=True, use_todiscretize=True) for labels in all_labels], axis=0))
+
+    nexamples = gpredv.shape[0]
+    ntimepoints = gpredv.shape[1]
+    ntspred = train_dataset.ntspred_global
+    dglobal = all_labels[0].d_next_global
 
     # compute L1 error from continuous representations, all global features
     # network predictions
-    errcont = np.nanmean(torch.nn.L1Loss(reduction='none')(gpredv, glabelsv), axis=0)
-    # just predicting zero velocity all the time
-    pred0 = np.zeros((ntimepoints, train_dataset.d_output))
-    if train_dataset.mu_labels is not None:
-        pred0 = train_dataset.zscore_labels(pred0)
-    gpred0 = torch.as_tensor(train_dataset.get_global_movement(pred0))
-    err0cont = np.nanmean(torch.nn.L1Loss(reduction='none')(gpred0, glabelsv), axis=0)
+    errcont_all = torch.nn.L1Loss(reduction='none')(gpredv, glabelsv)
+    errcont = np.nanmean(errcont_all, axis=(0, 1))
+    # just predicting zero (unzscored) all the time
+    # only care about the global features
+    pred0_obj = all_pred[0].copy_subindex(ts=np.array([0, ]))
+    pred0_obj.set_multi(np.zeros((1, pred0_obj.d_multi)), zscored=False)
+    gpred0 = torch.tensor(pred0_obj.get_future_global(zscored=True)[None, ...])
+    err0cont_all = torch.nn.L1Loss(reduction='none')(gpred0, glabelsv)
+    err0cont = np.nanmean(err0cont_all, axis=(0, 1))
 
     # constant velocity predictions: use real labels from dt frames previous.
     # note we we won't have predictions for the first dt frames
     gpredprev = torch.zeros(glabelsv.shape)
-    gpredprev[:] = np.nan
+    gpredprev[:] = torch.nan
     for i, dt in enumerate(train_dataset.tspred_global):
-        gpredprev[dt:, i, :] = glabelsv[:-dt, i, :]
-    errprevcont = np.nanmean(torch.nn.L1Loss(reduction='none')(gpredprev, glabelsv), axis=0)
+        gpredprev[:, dt:, i, :] = glabelsv[:, :-dt, i, :]
+    errprevcont_all = torch.nn.L1Loss(reduction='none')(gpredprev, glabelsv)
+    errprevcont = np.nanmean(errprevcont_all, axis=(0, 1))
 
     if train_dataset.discretize:
-        # ntimepoints x tspred x nglobal x nbins: discretized global predictions
-        gpreddiscretev = torch.as_tensor(train_dataset.get_global_movement_discrete(pred_discretev))
-        # ntimepoints x tspred x nglobal x nbins: discretized global labels
-        glabelsdiscretev = torch.as_tensor(train_dataset.get_global_movement_discrete(labels_discretev))
+        # nexamples x ntimepoints x tspred x nglobal x nbins: discretized global predictions
+        gpreddiscretev = torch.tensor(np.stack([pred.get_future_global_as_discrete() for pred in all_pred], axis=0))
+        # nexamples x ntimepoints x tspred x nglobal x nbins: discretized global labels
+        glabelsdiscretev = torch.tensor(
+            np.stack([labels.get_future_global_as_discrete() for labels in all_labels], axis=0))
         # cross entropy error
-        errdiscrete = np.nanmean(torch.nn.CrossEntropyLoss(reduction='none')(gpreddiscretev.moveaxis(-1, 1),
-                                                                             glabelsdiscretev.moveaxis(-1, 1)), axis=0)
+        errdiscrete_all = torch.nn.CrossEntropyLoss(reduction='none')(gpreddiscretev.moveaxis(-1, 1),
+                                                                      glabelsdiscretev.moveaxis(-1, 1))
+        errdiscrete = np.nanmean(errdiscrete_all, axis=(0, 1))
 
-        zerodiscretev = train_dataset.discretize_fun(pred0)
-        gzerodiscretev = torch.as_tensor(train_dataset.get_global_movement_discrete(zerodiscretev))
-        err0discrete = np.nanmean(torch.nn.CrossEntropyLoss(reduction='none')(gzerodiscretev.moveaxis(-1, 1),
-                                                                              glabelsdiscretev.moveaxis(-1, 1)), axis=0)
+        gzerodiscretev = torch.tensor(
+            np.tile(pred0_obj.get_future_global_as_discrete()[None, ...], (nexamples, ntimepoints, 1, 1, 1)))
+        err0discrete_all = torch.nn.CrossEntropyLoss(reduction='none')(gzerodiscretev.moveaxis(-1, 1),
+                                                                       glabelsdiscretev.moveaxis(-1, 1))
+        err0discrete = np.nanmean(err0discrete_all, axis=(0, 1))
 
         gpredprevdiscrete = torch.zeros(gpreddiscretev.shape, dtype=gpreddiscretev.dtype)
-        gpredprevdiscrete[:] = np.nan
+        gpredprevdiscrete[:] = torch.nan
         for i, dt in enumerate(train_dataset.tspred_global):
-            gpredprevdiscrete[dt:, i, :, :] = glabelsdiscretev[:-dt, i, :, :]
-        errprevdiscrete = np.nanmean(torch.nn.CrossEntropyLoss(reduction='none')(gpredprevdiscrete.moveaxis(-1, 1),
-                                                                                 glabelsdiscretev.moveaxis(-1, 1)),
-                                     axis=0)
+            gpredprevdiscrete[:, dt:, i, :, :] = glabelsdiscretev[:, :-dt, i, :, :]
+        errprevdiscrete_all = torch.nn.CrossEntropyLoss(reduction='none')(gpredprevdiscrete.moveaxis(-1, 1),
+                                                                          glabelsdiscretev.moveaxis(-1, 1))
+        errprevdiscrete = np.nanmean(errprevdiscrete_all, axis=(0, 1))
 
     if train_dataset.discretize:
         nc = 2
@@ -1140,7 +1203,7 @@ def debug_plot_dct_relative_error(predv, labelsv, train_dataset):
 
 def debug_plot_histogram_edges(train_dataset):
     bin_edges = train_dataset.get_bin_edges(zscored=False)
-    ftidx = train_dataset.unravel_label_index(train_dataset.discrete_idx)
+    ftidx = train_dataset.unravel_label_index(train_dataset.discreteidx)
     fs = np.unique(ftidx[:, 0])
     ts = np.unique(ftidx[:, 1])
     fig, ax = plt.subplots(1, len(fs), sharey=True)
@@ -1159,13 +1222,14 @@ def debug_plot_histogram_edges(train_dataset):
 
 
 def initialize_debug_plots(dataset, dataloader, data, name='', tsplot=None, traj_nsamplesplot=3):
-    example = next(iter(dataloader))
+    example_batch = next(iter(dataloader))
+    example = FlyExample(example_in=example_batch, dataset=dataset)
 
     # plot to visualize input features
-    fig, ax = debug_plot_sample_inputs(dataset, example)
+    fig, ax = debug_plot_sample(example, dataset)
 
     # plot to check that we can get poses from examples
-    hpose, ax, fig = debug_plot_batch_pose(example, dataset, data=data, tsplot=tsplot)
+    hpose, ax, fig = debug_plot_pose(example, dataset, data=data, tsplot=tsplot)
     ax[-1, 0].set_xlabel('Train')
 
     # plot to visualize motion outputs
@@ -1207,7 +1271,7 @@ def update_debug_plots(hdebug, config, model, dataset, example, pred, criterion=
             pred1 = {k: v.detach().cpu() for k, v in pred.items()}
         else:
             pred1 = pred.detach().cpu()
-    debug_plot_batch_pose(example, dataset, pred=pred1, h=hdebug['hpose'], ax=hdebug['axpose'], fig=hdebug['figpose'],
+    debug_plot_pose(example, dataset, pred=pred1, h=hdebug['hpose'], ax=hdebug['axpose'], fig=hdebug['figpose'],
                           tsplot=tsplot)
     debug_plot_batch_traj(example, dataset, criterion=criterion, config=config, pred=pred1, ax=hdebug['axtraj'],
                           fig=hdebug['figtraj'], nsamplesplot=traj_nsamplesplot)
@@ -1325,4 +1389,5 @@ def explore_representation(configfile):
     fig.tight_layout()
 
     valdata, val_scale_perfly = load_and_filter_data(config['invalfile'], config)
+
 

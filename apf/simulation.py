@@ -6,6 +6,7 @@ from matplotlib import animation
 from apf.features import compute_pose_features, split_features
 from apf.config import ARENA_RADIUS_MM
 from apf.plotting import plot_flies, plot_arena
+from apf.pose import PoseLabels
 
 
 def get_real_flies(x, tgtdim=-1):
@@ -357,12 +358,19 @@ def animate_predict_open_loop(model, dataset, data, scale_perfly, config, fliesp
     if burnin is None:
         burnin = config['contextl'] - 1
 
-    Xkp_true = data['X'][..., t0:t0 + tpred, :].copy()
+    Xkp_true = data['X'][..., t0:t0 + tpred + dataset.ntspred_max, :].copy()
     Xkp = Xkp_true.copy()
 
-    # fliespred = np.nonzero(get_real_flies(Xkp))[0]
     ids = data['ids'][t0, fliespred]
     scales = scale_perfly[:, ids]
+
+    # fliespred = np.nonzero(mabe.get_real_flies(Xkp))[0]
+    for i, flynum in enumerate(fliespred):
+        id = data['ids'][t0, flynum]
+        scale = scale_perfly[:, id]
+        metadata = {'flynum': flynum, 'id': id, 't0': t0, 'videoidx': data['videoidx'][t0, 0],
+                    'frame0': data['frames'][t0, 0]}
+        Xkp_obj = PoseLabels(Xkp=Xkp_true[..., flynum], scale=scale, metadata=metadata, dataset=dataset)
 
     if plotfuture:
         # subtract one from tspred_global, as the tspred_global for predicted data come from the previous frame

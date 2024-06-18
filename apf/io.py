@@ -92,6 +92,7 @@ def read_config(jsonfile):
         else:
             raise ValueError(f"Unknown type {config['flatten_obs_idx']} for flatten_obs_idx")
 
+    # discreteidx will reference apf.config.posenames
     if type(config['discreteidx']) == str:
         if config['discreteidx'] == 'global':
             config['discreteidx'] = featglobal.copy()
@@ -111,7 +112,7 @@ def read_config(jsonfile):
         if 'discreteidx' in config and config['discreteidx'] is not None:
             config['discretize_epsilon'] = config['all_discretize_epsilon'][config['discreteidx']]
 
-    if 'input_noise_sigma' in config:
+    if 'input_noise_sigma' in config and config['input_noise_sigma'] is not None:
         config['input_noise_sigma'] = np.array(config['input_noise_sigma'])
     # elif 'input_noise_sigma_mult' in config and 'all_discretize_epsilon' in config:
     #  config['input_noise_sigma'] = np.zeros(config['all_discretize_epsilon'].shape)
@@ -258,7 +259,7 @@ def get_modeltype_str(config, dataset):
 def parse_modelfile(modelfile):
     _, filestr = os.path.split(modelfile)
     filestr, _ = os.path.splitext(filestr)
-    m = re.match('fly(.*)_epoch\d+_(\d{8}T\d{6})', filestr)
+    m = re.match(r'fly(.*)_epoch\d+_(\d{8}T\d{6})', filestr)
     if m is None:
         modeltype_str = ''
         savetime = ''

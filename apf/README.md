@@ -4,7 +4,7 @@ Reorganization of flyllm.py and a subset of MABeFlyUtils.py, copied from https:/
 
 ### Modules
 
-**run_training.py**: Main entry point. Loads data, trains a model, visualizes process.
+**run_apf.py**: Main entry point. Loads data, trains a model, visualizes process.
 
 **config.py**: Parameters for feature extraction.
 
@@ -24,6 +24,6 @@ Reorganization of flyllm.py and a subset of MABeFlyUtils.py, copied from https:/
 
 **utils.py**: Math utils, completely agnostic of data, features or models.
 
-**pose.py**: This is WIP and not currently used by the rest of the code.
+**pose.py**: 
 
 **legacy.py**: Functions not currently used by rest of the code.

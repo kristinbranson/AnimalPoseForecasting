@@ -58,12 +58,12 @@ def relpose_cos_sin_to_angle(relpose_cos_sin, discreteidx=[], epsilon=1e-6):
     relpose = np.zeros((n, nrelative), dtype=relpose_cos_sin.dtype)
     for relfeati in range(nrelative):
         csi = rel2cossinmap[relfeati]
-        if type(csi) is list:
+        if type(csi) is int:
+            relpose[..., relfeati] = relpose_cos_sin[..., csi]
+        else:
             # if the norm is less than epsilon, just make the angle 0
             idxgood = np.linalg.norm(relpose_cos_sin[:, csi], axis=-1) >= epsilon
             relpose[idxgood, relfeati] = np.arctan2(relpose_cos_sin[idxgood, csi[1]], relpose_cos_sin[idxgood, csi[0]])
-        else:
-            relpose[..., relfeati] = relpose_cos_sin[..., csi]
 
     relpose = relpose.reshape(sz + (nrelative,))
     return relpose
@@ -81,11 +81,11 @@ def relpose_angle_to_cos_sin(relpose, discreteidx=[]):
     relpose_cos_sin = np.zeros((ncs,) + relpose.shape[1:], dtype=relpose.dtype)
     for relfeati in range(nrelative):
         csi = rel2cossinmap[relfeati]
-        if type(csi) is list:
+        if type(csi) is int:
+            relpose_cos_sin[csi, ...] = relpose[relfeati, ...]
+        else:
             relpose_cos_sin[csi[0], ...] = np.cos(relpose[relfeati, ...])
             relpose_cos_sin[csi[1], ...] = np.sin(relpose[relfeati, ...])
-        else:
-            relpose_cos_sin[csi, ...] = relpose[relfeati, ...]
     return relpose_cos_sin
 
 
@@ -149,7 +149,7 @@ def compute_relpose_velocity(relpose, tspred_dct=[]):
 
     for i, toff in enumerate(tspred_dct):
         # compute total change in relative pose in toff frame intervals
-        drelpose[:, :-toff, i + 1, :] = boxsum(drelpose, toff)
+        drelpose[:, :-toff, i + 1, :] = boxsum(drelpose1, toff)
 
     return drelpose
 
@@ -169,11 +169,12 @@ def compute_relpose_tspred(relposein, tspred_dct=[], discreteidx=[]):
     relpose = relpose_angle_to_cos_sin(relposein, discreteidx=discreteidx)
     nrelrep = relpose.shape[0]
 
+    # predict next frame pose
     relpose_tspred = np.zeros((nrelrep, T, ntspred_dct + 1, nflies), dtype=relpose.dtype)
     relpose_tspred[:] = np.nan
-    relpose_tspred[:, :, 0, :] = relpose
+    relpose_tspred[:, :-1, 0, :] = relpose[:, 1:, :]
     for i, toff in enumerate(tspred_dct):
-        relpose_tspred[:, :-toff, i + 1, :] = relpose_tspred[:, toff:, :]
+        relpose_tspred[:, :-toff, i + 1, :] = relpose[:, toff:, :]
 
     return relpose_tspred
 
@@ -406,7 +407,7 @@ def combine_relative_global_pose(relpose, globalpos):
 """
 
 
-def ravel_label_index(ftidx, dct_m=None, tspred_global=[1, ], nrelrep=None, d_output=None, dct_tau=1):
+def ravel_label_index(ftidx, dct_m=None, tspred_global=[1, ], nrelrep=None, d_output=None, ntspred_relative=1):
     ftidx = np.array(ftidx)
     sz = ftidx.shape
     assert sz[-1] == 2
@@ -415,7 +416,7 @@ def ravel_label_index(ftidx, dct_m=None, tspred_global=[1, ], nrelrep=None, d_ou
     idx = np.zeros(ftidx.shape[:-1], dtype=int)
 
     if dct_m is not None:
-        dct_tau = dct_m.shape[0] + 1
+        ntspred_relative = dct_m.shape[0] + 1
     offrelative = len(tspred_global) * nglobal
     if nrelrep is None:
         if d_output is None:
@@ -434,7 +435,7 @@ def ravel_label_index(ftidx, dct_m=None, tspred_global=[1, ], nrelrep=None, d_ou
             idx[i] = np.ravel_multi_index((tidx, fidx), (len(tspred_global), nglobal))
         else:
             # t = 1 corresponds to next frame
-            idx[i] = np.ravel_multi_index((t - 1, fidx - nglobal), (dct_tau, nrelrep)) + offrelative
+            idx[i] = np.ravel_multi_index((t - 1, fidx - nglobal), (ntspred_relative, nrelrep)) + offrelative
 
     return idx.reshape(sz[:-1])
 
@@ -445,13 +446,13 @@ def unravel_label_index(
         tspred_global=[1, ],
         nrelrep=None,
         d_output=None,
-        dct_tau=1
+        ntspred_relative=1
 ):
     idx = np.array(idx)
     sz = idx.shape
     idx = idx.flatten()
     if dct_m is not None:
-        dct_tau = dct_m.shape[0] + 1
+        ntspred_relative = dct_m.shape[0] + 1
     offrelative = len(tspred_global) * nglobal
     if nrelrep is None:
         if d_output is None:
@@ -464,7 +465,7 @@ def unravel_label_index(
             tidx, fidx = np.unravel_index(i, (len(tspred_global), nglobal))
             ftidx[ii] = (fidx, tspred_global[tidx])
         else:
-            t, fidx = np.unravel_index(i - offrelative, (dct_tau, nrelrep))
+            t, fidx = np.unravel_index(i - offrelative, (ntspred_relative, nrelrep))
             # t = 1 corresponds to next frame
             ftidx[ii] = (fidx + nglobal, t + 1)
     return ftidx.reshape(sz + (2,))
@@ -480,7 +481,8 @@ def compute_movement(
         tspred_global=[1, ],
         compute_pose_vel=True,
         discreteidx=[],
-        returnidx=False
+        returnidx=False,
+        debug=False,
 ):
     """
     movement = compute_movement(X=X,scale=scale,...)
@@ -545,6 +547,27 @@ def compute_movement(
         relpose_rep = compute_relpose_tspred(relpose, tspred_dct, discreteidx=discreteidx)
     nrelrep = relpose_rep.shape[0]
 
+    if debug:
+        # try to reconstruct xorigin, xtheta from dxoriginrel and dtheta
+        xtheta0 = Xtheta[0]
+        xorigin0 = Xorigin[:, 0]
+        thetavel = dtheta[0, :]
+        xtheta = np.cumsum(np.concatenate((xtheta0[None], thetavel), axis=0), axis=0)
+        xoriginvelrel = dXoriginrel[0]
+        xoriginvel = rotate_2d_points(xoriginvelrel.reshape((2, -1)).T, -xtheta[:-1].flatten()).T.reshape(
+            xoriginvelrel.shape)
+        xorigin = np.cumsum(np.concatenate((xorigin0[:, None], xoriginvel), axis=1), axis=1)
+        print('xtheta0 = %s' % str(xtheta0[0]))
+        print('xorigin0 = %s' % str(xorigin0[:, 0]))
+        print('xtheta[:5] = %s' % str(xtheta[:5, 0]))
+        print('original Xtheta[:5] = %s' % str(Xtheta[:5, 0]))
+        print('xoriginvelrel[:5] = \n%s' % str(xoriginvelrel[:, :5, 0]))
+        print('xoriginvel[:5] = \n%s' % str(xoriginvel[:, :5, 0]))
+        print('xorigin[:5] = \n%s' % str(xorigin[:, :5, 0]))
+        print('original Xorigin[:5] = \n%s' % str(Xorigin[:, :5, 0]))
+        print('max error origin: %e' % np.max(np.abs(xorigin[:, :-1] - Xorigin)))
+        print('max error theta: %e' % np.max(np.abs(modrange(xtheta[:-1] - Xtheta, -np.pi, np.pi))))
+
     # only full data up to frame lastT
     # dXoriginrel is (ntspred_global,2,lastT,nflies)
     dXoriginrel = dXoriginrel[:, :, :lastT, :]
@@ -559,6 +582,17 @@ def compute_movement(
         relpose_rep[:, :, 1:, :] = dct_m @ relpose_rep[:, :, 1:, :]
     # relpose_rep is now (ntspred_dct+1,nrelrep,lastT,nflies)
     relpose_rep = np.moveaxis(relpose_rep, 2, 0)
+
+    if debug and dct_m is not None:
+        idct_m = np.linalg.inv(dct_m)
+        relpose_rep_dct = relpose_rep[1:].reshape((ntspred_dct, -1))
+        relpose_rep_idct = idct_m @ relpose_rep_dct
+        relpose_rep_idct = relpose_rep_idct.reshape((ntspred_dct,) + relpose_rep.shape[1:])
+        err_dct_0 = np.max(np.abs(relpose_rep_idct[0] - relpose_rep[0]))
+        print('max error dct_0: %e' % err_dct_0)
+        err_dct_tau = np.max(
+            np.abs(relpose_rep[0, :, ntspred_dct - 1:, :] - relpose_rep_idct[-1, :, :-ntspred_dct + 1, :]))
+        print('max error dct_tau: %e' % err_dct_tau)
 
     # concatenate the global (dforward, dsideways, dorientation)
     movement_global = np.concatenate((dXoriginrel[:, [1, 0]], dtheta[:, None, :, :]), axis=1)
@@ -852,13 +886,16 @@ def get_sensory_feature_idx(simplify=None):
 
 def combine_inputs(relpose=None, sensory=None, input=None, labels=None, dim=0):
     if input is None:
-        input = np.concatenate((relpose, sensory), axis=dim)
+        if sensory is None:
+            input = relpose
+        else:
+            input = np.concatenate((relpose, sensory), axis=dim)
     if labels is not None:
         input = np.concatenate((input, labels), axis=dim)
     return input
 
 
-def compute_features(X, id, flynum, scale_perfly, smush=True, outtype=None,
+def compute_features(X, id=None, flynum=0, scale_perfly=None, smush=True, outtype=None,
                      simplify_out=None, simplify_in=None, dct_m=None, tspred_global=[1, ],
                      npad=1, compute_pose_vel=True, discreteidx=[], returnidx=False):
     res = {}
@@ -876,17 +913,25 @@ def compute_features(X, id, flynum, scale_perfly, smush=True, outtype=None,
         endidx = None
     else:
         endidx = -npad
-    out = compute_sensory_wrapper(X[:, :, :endidx, :], flynum, theta_main=globalpos[featthetaglobal, :endidx],
-                                  returnall=True, returnidx=returnidx)
-    sensory, wall_touch, otherflies_vision, otherflies_touch = out[:4]
-    if returnidx:
-        idxinfo = {}
-        idxinfo['input'] = out[4]
+    if simplify_in == 'no_sensory':
+        sensory = None
+        res['input'] = relpose.T
+        if returnidx:
+            idxinfo = {}
+            idxinfo['input'] = {}
+            idxinfo['input']['relpose'] = [0, relpose.shape[0]]
+    else:
+        out = compute_sensory_wrapper(X[:, :, :endidx, :], flynum, theta_main=globalpos[featthetaglobal, :endidx],
+                                      returnall=True, returnidx=returnidx)
+        sensory, wall_touch, otherflies_vision, otherflies_touch = out[:4]
+        if returnidx:
+            idxinfo = {}
+            idxinfo['input'] = out[4]
 
-    res['input'] = combine_inputs(relpose=relpose[:, :endidx], sensory=sensory).T
-    if returnidx:
-        idxinfo['input'] = {k: [vv + relpose.shape[0] for vv in v] for k, v in idxinfo['input'].items()}
-        idxinfo['input']['relpose'] = relpose.shape[0]
+        res['input'] = combine_inputs(relpose=relpose[:, :endidx], sensory=sensory).T
+        if returnidx:
+            idxinfo['input'] = {k: [vv + relpose.shape[0] for vv in v] for k, v in idxinfo['input'].items()}
+            idxinfo['input']['relpose'] = [0, relpose.shape[0]]
 
     out = compute_movement(relpose=relpose, globalpos=globalpos, simplify=simplify_out, dct_m=dct_m,
                            tspred_global=tspred_global, compute_pose_vel=compute_pose_vel,

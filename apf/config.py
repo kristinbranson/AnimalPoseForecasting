@@ -1,7 +1,5 @@
-
 import numpy as np
 import re
-
 
 # Names of features
 keypointnames = [
@@ -121,7 +119,6 @@ SENSORY_PARAMS = {
     'arena_height': 3.5,
     'otherflies_vision_exp': .6,
     'touch_kpnames': keypointnames,
-    # 'touch_kpnames': legtipnames,
     'vision_kpnames': vision_kpnames_v1,
     'touch_other_kpnames': touch_other_kpnames_v1,
     'compute_otherflies_touch': True,
@@ -129,7 +126,6 @@ SENSORY_PARAMS = {
     'otherflies_touch_mult': 0.3110326159171111,  # set 20230807 based on courtship male data
 }
 SENSORY_PARAMS['otherflies_vision_mult'] = 1. / ((2. * ARENA_RADIUS_MM) ** SENSORY_PARAMS['otherflies_vision_exp'])
-
 
 # Pose feature indices
 featorigin = [posenames.index('thorax_front_x'), posenames.index('thorax_front_y')]

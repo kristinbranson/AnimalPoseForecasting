@@ -3,6 +3,8 @@ import numpy as np
 from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
 from matplotlib import animation
+import matplotlib
+matplotlib.use('tkagg')
 import tqdm
 import torch
 import transformers
@@ -11,17 +13,28 @@ import argparse
 import pickle
 
 from apf.config import posenames, featglobal, featrelative, nfeatures
-from apf.features import compute_features
+from apf.features import compute_features, kp2feat
 from apf.plotting import (
     debug_plot_dct_relative_error,
     debug_plot_global_error,
     debug_plot_global_histograms,
     debug_plot_predictions_vs_labels,
+    debug_plot_pose,
+    debug_plot_sample,
+    debug_plot_batch_traj,
     initialize_debug_plots, update_debug_plots,
     initialize_loss_plots, update_loss_plots,
     select_featidx_plot,
 )
-from apf.data import load_and_filter_data, interval_all, chunk_data, sanity_check_tspred
+from apf.data import (
+    load_and_filter_data,
+    interval_all,
+    chunk_data,
+    sanity_check_tspred,
+    debug_less_data,
+    data_to_kp_from_metadata,
+    compare_dicts,
+)
 from apf.dataset import FlyMLMDataset
 from apf.simulation import animate_predict_open_loop
 from apf.utils import get_dct_matrix, compute_npad
@@ -35,6 +48,7 @@ from apf.models import (
     sanity_check_temporal_dep,
     stack_batch_list,
 )
+from apf.pose import FlyExample
 from apf.io import (
     read_config, load_config_from_model_file, get_modeltype_str,
     load_model, save_model, parse_modelfile,
@@ -42,13 +56,283 @@ from apf.io import (
 )
 
 
+def debug_fly_example(configfile=None, loadmodelfile=None, restartmodelfile=None):
+    # tmpsavefile = 'chunkeddata20240325.pkl'
+    # tmpsavefile = 'chunkeddata20240325_decimated.pkl'
+    tmpsavefile = 'tmp_small_usertrainval.pkl'
+
+    # configfile = 'config_fly_llm_multitime_20230825.json'
+
+    # configuration parameters for this model
+    config = read_config(configfile)
+
+    # debug velocity representation
+    config['compute_pose_vel'] = False
+
+    # debug dct
+    config['dct_tau'] = 4
+
+    # debug no multi time-scale predictions
+    # config['tspred_global'] = [1,]
+    # config['discrete_tspred'] = [1,]
+
+    if os.path.exists(tmpsavefile):
+        with open(tmpsavefile, 'rb') as f:
+            tmp = pickle.load(f)
+            data = tmp['data']
+            scale_perfly = tmp['scale_perfly']
+    else:
+        data, scale_perfly = load_and_filter_data(config['intrainfile'], config)
+        valdata, val_scale_perfly = load_and_filter_data(config['invalfile'], config)
+        T = 10000
+        debug_less_data(data, T)
+        debug_less_data(valdata, T)
+
+        with open(tmpsavefile, 'wb') as f:
+            pickle.dump(
+                {'data': data, 'scale_perfly': scale_perfly, 'valdata': valdata, 'val_scale_perfly': val_scale_perfly},
+                f)
+
+    if config['dct_tau'] is not None and config['dct_tau'] > 0:
+        dct_m, idct_m = get_dct_matrix(config['dct_tau'])
+    else:
+        dct_m = None
+        idct_m = None
+
+    # how much to pad outputs by -- depends on how many frames into the future we will predict
+    npad = compute_npad(config['tspred_global'], dct_m)
+    chunk_data_params = {'npad': npad}
+
+    compute_feature_params = {
+        "simplify_out": config['simplify_out'],
+        "simplify_in": config['simplify_in'],
+        "dct_m": dct_m,
+        "tspred_global": config['tspred_global'],
+        "compute_pose_vel": config['compute_pose_vel'],
+        "discreteidx": config['discreteidx'],
+    }
+
+    # function for computing features
+    reparamfun = lambda x, id, flynum, **kwargs: compute_features(x, id, flynum, scale_perfly, outtype=np.float32,
+                                                                  **compute_feature_params, **kwargs)
+    # chunk the data if we didn't load the pre-chunked cache file
+    print('Chunking training data...')
+    X = chunk_data(data, config['contextl'], reparamfun, **chunk_data_params)
+
+    dataset_params = {
+        'max_mask_length': config['max_mask_length'],
+        'pmask': config['pmask'],
+        'masktype': config['masktype'],
+        'simplify_out': config['simplify_out'],
+        'pdropout_past': config['pdropout_past'],
+        'input_labels': config['input_labels'],
+        'dozscore': True,
+        'discreteidx': config['discreteidx'],
+        'discretize_nbins': config['discretize_nbins'],
+        'discretize_epsilon': config['discretize_epsilon'],
+        'flatten_labels': config['flatten_labels'],
+        'flatten_obs_idx': config['flatten_obs_idx'],
+        'flatten_do_separate_inputs': config['flatten_do_separate_inputs'],
+        'p_add_input_noise': config['p_add_input_noise'],
+        'dct_ms': (dct_m, idct_m),
+        'tspred_global': config['tspred_global'],
+        'discrete_tspred': config['discrete_tspred'],
+        'compute_pose_vel': config['compute_pose_vel'],
+    }
+    train_dataset_params = {
+        'input_noise_sigma': config['input_noise_sigma'],
+    }
+
+    compute_feature_params = {
+        "simplify_out": config['simplify_out'],
+        "simplify_in": config['simplify_in'],
+        "dct_m": dct_m,
+        "tspred_global": config['tspred_global'],
+        "compute_pose_vel": config['compute_pose_vel'],
+        "discreteidx": config['discreteidx'],
+    }
+
+    # import old_fly_llm
+
+    # old_dataset_params = dataset_params.copy()
+    # old_dataset_params.pop('compute_pose_vel')
+    # old_train_dataset = old_fly_llm.FlyMLMDataset(X,**train_dataset_params,**old_dataset_params)
+    # train_dataloader = torch.utils.data.DataLoader(old_train_dataset,
+    #                                               batch_size=1,
+    #                                               shuffle=False,
+    #                                               pin_memory=True,
+    #                                               )
+
+    # old_batch = next(iter(train_dataloader))
+    # old_fly_llm.debug_plot_batch_pose(old_batch,old_train_dataset)
+
+    print('Creating training data set...')
+    train_dataset = FlyMLMDataset(X, **train_dataset_params, **dataset_params)
+
+    flyexample = train_dataset.data[0]
+
+    # compare flyexample initialized from FlyMLMDataset and from keypoints directly
+    contextlpad = train_dataset.contextl + npad + 1
+    Xkp = data['X'][:, :, flyexample.metadata['t0']:flyexample.metadata['t0'] + contextlpad, :]
+    flyexample_kp = FlyExample(Xkp=Xkp, scale=scale_perfly[:, flyexample.metadata['id']],
+                               flynum=flyexample.metadata['flynum'], metadata=flyexample.metadata,
+                               **train_dataset.get_flyexample_params())
+    print(f"comparing flyexample initialized from FlyMLMDataset and from keypoints directly")
+    print('max diff between continuous labels: %e' % np.max(
+        np.abs(flyexample_kp.labels.labels_raw['continuous'] - flyexample.labels.labels_raw['continuous'])))
+    print('max diff between discrete labels: %e' % np.max(
+        np.abs(flyexample_kp.labels.labels_raw['discrete'] - flyexample.labels.labels_raw['discrete'])))
+    print('max diff between todiscretize: %e' % np.max(
+        np.abs(flyexample_kp.labels.labels_raw['todiscretize'] - flyexample.labels.labels_raw['todiscretize'])))
+    multi = flyexample.labels.get_multi(use_todiscretize=True, zscored=False)
+    multi_kp = flyexample_kp.labels.get_multi(use_todiscretize=True, zscored=False)
+    print('max diff between multi labels: %e' % np.max(np.abs(multi - multi_kp)))
+
+    # compare pose feature representation in and outside PoseLabels -- diff should be 0
+    err_chunk_multi = np.max(np.abs(X[0]['labels'] - flyexample.labels.get_multi(use_todiscretize=True, zscored=False)))
+    print('max diff between chunked labels and multi: %e' % err_chunk_multi)
+
+    # extract frames associated with metadata in flyexample
+    contextl = flyexample.ntimepoints
+    datakp, id = data_to_kp_from_metadata(data, flyexample.metadata, contextl)
+    # compute next frame pose feature representation directly
+    datafeat = kp2feat(datakp.transpose(1, 2, 0), scale_perfly[:, id])[..., 0].T
+
+    if config['compute_pose_vel']:
+
+        print('\nComparing next frame movements from train_dataset to those from flyexample')
+        chunknext = train_dataset.get_next_movements(movements=X[0]['labels'])
+        examplenext = flyexample.labels.get_next(use_todiscretize=True, zscored=False)
+        err_chunk_next = np.max(np.abs(chunknext - examplenext))
+        print('max diff between chunked labels and next: %e' % err_chunk_next)
+
+    else:
+
+        print('\nComparing next frame pose feature representation from train_dataset to that from flyexample')
+        chunknextcossin = train_dataset.get_next_movements(movements=X[0]['labels'])
+        examplenextcossin = flyexample.labels.get_nextcossin(use_todiscretize=True, zscored=False)
+        err_chunk_nextcossin = np.max(np.abs(chunknextcossin - examplenextcossin))
+        print('max diff between chunked labels and nextcossin: %e' % err_chunk_nextcossin)
+
+        chunknext = train_dataset.convert_cos_sin_to_angle(chunknextcossin)
+        examplenext = flyexample.labels.get_next(use_todiscretize=True, zscored=False)
+        err_chunk_next = np.max(np.abs(chunknext - examplenext))
+        print('max diff between chunked labels and next: %e' % err_chunk_next)
+
+        examplefeat = flyexample.labels.get_next_pose(use_todiscretize=True, zscored=False)
+
+        err_chunk_data_feat = np.max(np.abs(chunknext[:, featrelative] - datafeat[1:, featrelative]))
+        print('max diff between chunked and data relative features: %e' % err_chunk_data_feat)
+
+        err_example_chunk_feat = np.max(np.abs(chunknext[:, featrelative] - examplefeat[1:, featrelative]))
+        print('max diff between chunked and example relative features: %e' % err_example_chunk_feat)
+
+    err_example_data_global = np.max(np.abs(datafeat[:, featglobal] - examplefeat[:, featglobal]))
+    print('max diff between data and example global features: %e' % err_example_data_global)
+
+    err_example_data_feat = np.max(np.abs(datafeat[:, featrelative] - examplefeat[:, featrelative]))
+    print('max diff between data and example relative features: %e' % err_example_data_feat)
+
+    examplekp = flyexample.labels.get_next_keypoints(use_todiscretize=True)
+    err_mean_example_data_kp = np.mean(np.abs(datakp[:] - examplekp))
+    print('mean diff between data and example keypoints: %e' % err_mean_example_data_kp)
+    err_max_example_data_kp = np.max(np.abs(datakp[:] - examplekp))
+    print('max diff between data and example keypoints: %e' % err_max_example_data_kp)
+
+    debug_plot_pose(flyexample, data=data)
+    # elements of the list tspred_global that are smaller than contextl
+    tsplot = [t for t in train_dataset.tspred_global if t < contextl]
+    debug_plot_pose(flyexample, pred=flyexample, tsplot=tsplot)
+
+    if config['compute_pose_vel']:
+        import old_fly_llm
+
+        old_dataset_params = dataset_params.copy()
+        old_dataset_params.pop('compute_pose_vel')
+        old_train_dataset = old_fly_llm.FlyMLMDataset(X, **train_dataset_params, **old_dataset_params,
+                                                      discretize_params=train_dataset.get_discretize_params(),
+                                                      zscore_params=train_dataset.get_zscore_params())
+
+        new_ex = flyexample.get_train_example()
+        old_ex = old_train_dataset[0]
+
+        compare_dicts(old_ex, new_ex)
+
+        print('\nComparing old fly llm code to new:')
+        mean_err_discrete = torch.mean(
+            torch.sqrt(torch.sum((old_ex['labels_discrete'] - new_ex['labels_discrete']) ** 2., dim=-1))).item()
+        print('mean error between old and new discrete labels: %e' % mean_err_discrete)
+
+        max_err_continuous = torch.max(torch.abs(old_ex['labels'] - new_ex['labels'])).item()
+        print('max error between old and new continuous labels: %e' % max_err_continuous)
+
+        max_err_input = torch.max(torch.abs(new_ex['input'] - old_ex['input'])).item()
+        print('max error between old and new input: %e' % max_err_input)
+
+        max_err_init = torch.max(torch.abs(new_ex['init'] - old_ex['init'])).item()
+        print('max error between old and new init: %e' % max_err_init)
+
+    # check global future predictions
+    print('\nChecking that representations of many frames into the future match')
+    for tpred in flyexample.labels.tspred_global:
+        examplefuture = flyexample.labels.get_future_globalpos(use_todiscretize=True, tspred=tpred, zscored=False)
+        t = flyexample.metadata['t0'] + tpred
+        flynum = flyexample.metadata['flynum']
+        datakpfuture = data['X'][:, :, t:t + contextl, flynum]
+        datafeatfuture = kp2feat(datakpfuture, scale_perfly[:, id])[..., 0].T
+        err_global_future = np.max(np.abs(datafeatfuture[:, featglobal] - examplefuture[:, 0, :]))
+        print(f'max diff between data and t+{tpred} global prediction: {err_global_future:e}')
+
+    # check relative future predictions
+    if flyexample.labels.ntspred_relative > 1:
+        examplefuture = flyexample.labels.get_future_relative_pose(zscored=False, use_todiscretize=True)
+        for tpred in range(1, flyexample.labels.ntspred_relative):
+            t = flyexample.metadata['t0'] + tpred
+            datakpfuture = data['X'][:, :, t:t + contextl, flynum]
+            datafeatfuture = kp2feat(datakpfuture, scale_perfly[:, id])[..., 0].T
+            err_relative_future = np.max(np.abs(datafeatfuture[:, featrelative] - examplefuture[:, tpred - 1, :]))
+            print(f'max diff between data and t+{tpred} relative prediction: {err_relative_future:e}')
+
+    # get a training example
+    print(
+        '\nComparing training example from dataset to creating a new FlyExample from that training example, and converting back to a training example')
+    trainexample = train_dataset[0]
+    flyexample1 = FlyExample(example_in=trainexample, dataset=train_dataset)
+    trainexample1 = flyexample1.get_train_example()
+    compare_dicts(trainexample, trainexample1)
+
+    # initialize example from batch
+    print('\nComparing training batch to FlyExample created from that batch converted back to a training batch')
+    train_dataloader = torch.utils.data.DataLoader(train_dataset,
+                                                   batch_size=config['batch_size'],
+                                                   shuffle=False,
+                                                   pin_memory=True,
+                                                   )
+    raw_batch = next(iter(train_dataloader))
+    example_batch = FlyExample(example_in=raw_batch, dataset=train_dataset)
+    trainbatch1 = example_batch.get_train_example()
+    compare_dicts(raw_batch, trainbatch1)
+
+    debug_plot_pose(example_batch, data=data)
+    debug_plot_sample(example_batch, train_dataset)
+    debug_plot_batch_traj(example_batch, train_dataset)
+    # old_fly_llm.debug_plot_sample_inputs(old_train_dataset,raw_batch)
+
+    print('Goodbye!')
+    plt.show(block=True)
+
+
 def main(configfile, loadmodelfile=None, restartmodelfile=None):
     tmpsavefile = ''
     # to save time, i saved the chunked data to a pkl file
     # tmpsavefile = 'chunkeddata20230905.pkl'
     # tmpsavefile = 'chunkeddata20230828.pkl'
+    # tmpsavefile = 'chunkeddata20240325.pkl'
     doloadtmpsavefile = os.path.exists(tmpsavefile)
     # tmpsavefile = None
+    debugdatafile = ''
+    debugdatafile = 'tmp_small_usertrainval.pkl'
+    isdebug = len(debugdatafile) > 0
 
     # configuration parameters for this model
     config = read_config(configfile)
@@ -77,6 +361,8 @@ def main(configfile, loadmodelfile=None, restartmodelfile=None):
 
     plt.ion()
 
+    data = None
+    valdata = None
     if doloadtmpsavefile:
         # load cached, pre-chunked data
         print(f'Loading tmp save file {tmpsavefile}')
@@ -88,6 +374,13 @@ def main(configfile, loadmodelfile=None, restartmodelfile=None):
         val_scale_perfly = tmp['val_scale_perfly']
         X = tmp['X']
         valX = tmp['valX']
+    elif isdebug and os.path.exists(debugdatafile):
+        with open(debugdatafile, 'rb') as f:
+            tmp = pickle.load(f)
+            data = tmp['data']
+            scale_perfly = tmp['scale_perfly']
+            valdata = tmp['valdata']
+            val_scale_perfly = tmp['val_scale_perfly']
     else:
         # load raw data
         data, scale_perfly = load_and_filter_data(config['intrainfile'], config)
@@ -212,7 +505,7 @@ def main(configfile, loadmodelfile=None, restartmodelfile=None):
     hdebug['val'] = initialize_debug_plots(val_dataset, val_dataloader, valdata, name='Val', **debug_params)
 
     # create the model
-    model, criterion = initialize_model(d_input, d_output, config, train_dataset, device)
+    model, criterion = initialize_model(config, train_dataset, device)
 
     # optimizer
     num_training_steps = config['num_train_epochs'] * ntrain
@@ -376,17 +669,16 @@ def main(configfile, loadmodelfile=None, restartmodelfile=None):
     model.eval()
 
     # compute predictions and labels for all validation data using default masking
-    all_pred, all_labels, all_mask, all_pred_discrete, all_labels_discrete = predict_all(val_dataloader, val_dataset,
-                                                                                         model, config, train_src_mask)
+    all_pred, all_labels = predict_all(val_dataloader, val_dataset, model, config, train_src_mask)
 
     # plot comparison between predictions and labels on validation data
-    predv = stack_batch_list(all_pred)
-    labelsv = stack_batch_list(all_labels)
-    maskv = stack_batch_list(all_mask)
-    pred_discretev = stack_batch_list(all_pred_discrete)
-    labels_discretev = stack_batch_list(all_labels_discrete)
+    # predv = stack_batch_list(all_pred)
+    # labelsv = stack_batch_list(all_labels)
+    # maskv = stack_batch_list(all_mask)
+    # pred_discretev = stack_batch_list(all_pred_discrete)
+    # labels_discretev = stack_batch_list(all_labels_discrete)
 
-    fig, ax = debug_plot_global_histograms(predv, labelsv, train_dataset, nbins=25, subsample=1, compare='pred')
+    fig, ax = debug_plot_global_histograms(all_pred, all_labels, train_dataset, nbins=25, subsample=1, compare='pred')
     # glabelsv = train_dataset.get_global_movement(labelsv)
     # gpredprev = torch.zeros(glabelsv.shape)
     # gpredprev[:] = np.nan
@@ -398,73 +690,61 @@ def main(configfile, loadmodelfile=None, restartmodelfile=None):
     # fig,ax = debug_plot_global_histograms(predprev,labelsv,train_dataset,nbins=25,subsample=100)
 
     if train_dataset.dct_m is not None:
-        debug_plot_dct_relative_error(predv, labelsv, train_dataset)
+        debug_plot_dct_relative_error(all_pred, all_labels, train_dataset)
     if train_dataset.ntspred_global > 1:
-        debug_plot_global_error(predv, labelsv, pred_discretev, labels_discretev, train_dataset)
+        debug_plot_global_error(all_pred, all_labels, train_dataset)
 
     # crop to nplot for plotting
-    nplot = 8000  # min(len(all_labels),8000//config['batch_size']//config['contextl']+1)
-    predv = predv[:nplot, :]
-    labelsv = labelsv[:nplot, :]
-    if len(maskv) > 0:
-        maskv = maskv[:nplot, :]
-    pred_discretev = pred_discretev[:nplot, :]
-    labels_discretev = labels_discretev[:nplot, :]
-
-    if maskv is not None and len(maskv) > 0:
-        maskidx = torch.nonzero(maskv)[:, 0]
-    else:
-        maskidx = None
+    nplot = min(len(all_labels), 8000 // config['batch_size'] // config['contextl'] + 1)
 
     ntspred_plot = np.minimum(4, train_dataset.ntspred_global)
-    featidxplot = select_featidx_plot(train_dataset, ntspred_plot)
+    featidxplot, ftplot = all_labels[0].select_featidx_plot(ntspred_plot)
     naxc = np.maximum(1, int(np.round(len(featidxplot) / nfeatures)))
-    fig, ax = debug_plot_predictions_vs_labels(predv, labelsv, pred_discretev, labels_discretev, outnames=outnames,
-                                               maskidx=maskidx, naxc=naxc, featidxplot=featidxplot, dataset=val_dataset)
+    fig, ax = debug_plot_predictions_vs_labels(all_pred[:nplot], all_labels[:nplot], naxc=naxc, featidxplot=featidxplot)
     if train_dataset.ntspred_global > 1:
-        featidxplot = select_featidx_plot(train_dataset, ntspred_plot=train_dataset.ntspred_global, ntsplot_relative=0)
+        featidxplot, ftplot = all_labels[0].select_featidx_plot(ntsplot=train_dataset.ntspred_global,
+                                                                ntsplot_relative=0)
         naxc = np.maximum(1, int(np.round(len(featidxplot) / nfeatures)))
-        fig, ax = debug_plot_predictions_vs_labels(predv, labelsv, pred_discretev, labels_discretev, outnames=outnames,
-                                                   maskidx=maskidx, naxc=naxc, featidxplot=featidxplot,
-                                                   dataset=val_dataset)
+        fig, ax = debug_plot_predictions_vs_labels(all_pred[:nplot], all_labels[:nplot], naxc=naxc,
+                                                   featidxplot=featidxplot)
+        featidxplot, _ = all_labels[0].select_featidx_plot(ntsplot=1, ntsplot_relative=1)
+        fig, ax = debug_plot_predictions_vs_labels(all_pred[:nplot], all_labels[:nplot], naxc=naxc,
+                                                   featidxplot=featidxplot)
 
-    if train_dataset.ntspred_global > 1:
-        featidxplot = train_dataset.ravel_label_index([(featglobal[0], t) for t in train_dataset.tspred_global])
-        fig, ax = debug_plot_predictions_vs_labels(predv, labelsv, pred_discretev, labels_discretev, outnames=outnames,
-                                                   maskidx=maskidx, featidxplot=featidxplot, dataset=val_dataset)
+    # if train_dataset.dct_tau > 0:
+    #   fstrs = ['left_middle_leg_tip_angle','left_front_leg_tip_angle','left_wing_angle']
+    #   fs = [mabe.posenames.index(x) for x in fstrs]
+    #   featidxplot = train_dataset.ravel_label_index([(f,i+1) for i in range(train_dataset.dct_tau+1) for f in fs])
+    #   fig,ax = debug_plot_predictions_vs_labels(predv,labelsv,pred_discretev,labels_discretev,outnames=outnames,maskidx=maskidx,featidxplot=featidxplot,dataset=val_dataset,naxc=len(fs))
 
-    if train_dataset.dct_tau > 0:
-        fstrs = ['left_middle_leg_tip_angle', 'left_front_leg_tip_angle', 'left_wing_angle']
-        fs = [posenames.index(x) for x in fstrs]
-        featidxplot = train_dataset.ravel_label_index(
-            [(f, i + 1) for i in range(train_dataset.dct_tau + 1) for f in fs])
-        fig, ax = debug_plot_predictions_vs_labels(predv, labelsv, pred_discretev, labels_discretev, outnames=outnames,
-                                                   maskidx=maskidx, featidxplot=featidxplot, dataset=val_dataset,
-                                                   naxc=len(fs))
-
-        predrelative_dct = train_dataset.get_relative_movement_dct(predv.numpy())
-        labelsrelative_dct = train_dataset.get_relative_movement_dct(labelsv.numpy())
-        fsdct = [np.array(posenames)[featrelative].tolist().index(x) for x in fstrs]
-        predrelative_dct = predrelative_dct[:, :, fsdct].astype(train_dataset.dtype)
-        labelsrelative_dct = labelsrelative_dct[:, :, fsdct].astype(train_dataset.dtype)
-        outnamescurr = [f'{f}_dt{i + 1}' for i in range(train_dataset.dct_tau) for f in fstrs]
-        fig, ax = debug_plot_predictions_vs_labels(
-            torch.as_tensor(predrelative_dct.reshape((-1, train_dataset.dct_tau * len(fsdct)))),
-            torch.as_tensor(labelsrelative_dct.reshape((-1, train_dataset.dct_tau * len(fsdct)))),
-            outnames=outnamescurr, maskidx=maskidx, naxc=len(fstrs))
+    #   predrelative_dct = train_dataset.get_relative_movement_dct(predv.numpy())
+    #   labelsrelative_dct = train_dataset.get_relative_movement_dct(labelsv.numpy())
+    #   fsdct = [np.array(mabe.posenames)[featrelative].tolist().index(x) for x in fstrs]
+    #   predrelative_dct = predrelative_dct[:,:,fsdct].astype(train_dataset.dtype)
+    #   labelsrelative_dct = labelsrelative_dct[:,:,fsdct].astype(train_dataset.dtype)
+    #   outnamescurr = [f'{f}_dt{i+1}' for i in range(train_dataset.dct_tau) for f in fstrs]
+    #   fig,ax = debug_plot_predictions_vs_labels(torch.as_tensor(predrelative_dct.reshape((-1,train_dataset.dct_tau*len(fsdct)))),
+    #                                             torch.as_tensor(labelsrelative_dct.reshape((-1,train_dataset.dct_tau*len(fsdct)))),
+    #                                             outnames=outnamescurr,maskidx=maskidx,naxc=len(fstrs))
 
     # generate an animation of open loop prediction
-    tpred = 2000 + config['contextl']
+    tpred = np.minimum(2000 + config['contextl'], valdata['isdata'].shape[0] // 2)
 
     # all frames must have real data
 
     burnin = config['contextl'] - 1
-    contextlpad = burnin + 1
+    contextlpad = burnin + train_dataset.ntspred_max
     allisdata = interval_all(valdata['isdata'], contextlpad)
     isnotsplit = interval_all(valdata['isstart'] == False, tpred)[1:, ...]
     canstart = np.logical_and(allisdata[:isnotsplit.shape[0], :], isnotsplit)
-    flynum = 2
-    t0 = np.nonzero(canstart[:, flynum])[0][40000]
+    flynum = 3  # 2
+    t0 = np.nonzero(canstart[:, flynum])[0]
+    idxstart = np.minimum(40000, len(t0) - 1)
+    if len(t0) > idxstart:
+        t0 = t0[idxstart]
+    else:
+        t0 = t0[0]
+    # t0 = np.nonzero(canstart[:,flynum])[0][40000]
     # flynum = 2
     # t0 = np.nonzero(canstart[:,flynum])[0][0]
     fliespred = np.array([flynum, ])
@@ -493,7 +773,6 @@ def main(configfile, loadmodelfile=None, restartmodelfile=None):
 
 
 if __name__ == "__main__":
-
     # parse arguments
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', type=str, required=False, help='Path to config file', metavar='configfile',
@@ -511,5 +790,6 @@ if __name__ == "__main__":
         assert os.path.isdir(args.cleandir)
         removedfiles = clean_intermediate_results(args.cleandir)
     else:
-        main(args.configfile, loadmodelfile=args.loadmodelfile, restartmodelfile=args.restartmodelfile)
+        debug_fly_example(args.configfile, loadmodelfile=args.loadmodelfile, restartmodelfile=args.restartmodelfile)
+        # main(args.configfile,loadmodelfile=args.loadmodelfile,restartmodelfile=args.restartmodelfile)
     # explore_representation(args.configfile)

@@ -2,6 +2,7 @@ import numpy as np
 import tqdm
 import re
 import torch
+import logging
 
 from apf.config import SENSORY_PARAMS, PXPERMM, keypointnames, featglobal
 from apf.features import (
@@ -91,7 +92,7 @@ def chunk_data(data, contextl, reparamfun, npad=1):
                 t0 = t0[0] + t1 + 1
             nframestotal += contextl
 
-    print(f'In total {nframestotal} frames of data after chunking')
+    logging.info(f'In total {nframestotal} frames of data after chunking')
 
     return X
 
@@ -101,8 +102,10 @@ def select_bin_edges(movement, nbins, bin_epsilon, outlierprct=0, feati=None):
     lims = np.percentile(movement, [outlierprct, 100 - outlierprct])
     max_bin_epsilon = (lims[1] - lims[0]) / (nbins + 1)
     if bin_epsilon >= max_bin_epsilon:
-        print(
-            f'{feati}: bin_epsilon {bin_epsilon} bigger than max bin epsilon {max_bin_epsilon}, setting all bins to be the same size')
+        logging.info(
+            f'{feati}: bin_epsilon {bin_epsilon} bigger than max bin epsilon {max_bin_epsilon}, '
+            f'setting all bins to be the same size'
+        )
         bin_edges = np.linspace(lims[0], lims[1], nbins + 1)
         return bin_edges
 
@@ -149,23 +152,24 @@ def weighted_sample(w, nsamples=0):
     return idx.reshape(szrest)
 
 
-def fit_discretize_labels(dataset, featidx, nbins=50, bin_epsilon=None, outlierprct=.001, fracsample=None,
-                          nsamples=None):
+def fit_discretize_labels(data, featidx, nbins=50, bin_epsilon=None, outlierprct=.001, fracsample=None, nsamples=None):
     # compute percentiles
     nfeat = len(featidx)
     prctiles_compute = np.linspace(0, 100, nbins + 1)
     prctiles_compute[0] = outlierprct
     prctiles_compute[-1] = 100 - outlierprct
-    movement = np.concatenate([example['labels'][:, featidx].numpy() for example in dataset], axis=0)
+    movement = np.concatenate([example['labels'][:, featidx] for example in data], axis=0)
+    dtype = movement.dtype
+
     # bin_edges is nfeat x nbins+1
     if bin_epsilon is not None:
-        bin_edges = np.zeros((nfeat, nbins + 1), dtype=dataset.dtype)
+        bin_edges = np.zeros((nfeat, nbins + 1), dtype=dtype)
         for feati in range(nfeat):
             bin_edges[feati, :] = select_bin_edges(movement[:, feati], nbins, bin_epsilon[feati],
                                                    outlierprct=outlierprct, feati=feati)
     else:
         bin_edges = np.percentile(movement, prctiles_compute, axis=0)
-        bin_edges = bin_edges.astype(dataset.dtype).T
+        bin_edges = bin_edges.astype(dtype).T
 
     binnum = np.zeros(movement.shape, dtype=int)
     for i in range(nfeat):
@@ -184,9 +188,15 @@ def fit_discretize_labels(dataset, featidx, nbins=50, bin_epsilon=None, outlierp
     for i in range(nfeat):
         for j in range(nbins):
             movementcurr = torch.tensor(movement[binnum[:, i] == j, i])
-            samples[:, i, j] = np.random.choice(movementcurr, size=nsamples, replace=True)
-            bin_means[i, j] = np.nanmean(movementcurr)
-            bin_medians[i, j] = np.nanmedian(movementcurr)
+            if movementcurr.shape[0] == 0:
+                bin_means[i, j] = (bin_edges[i, j] + bin_edges[i, j + 1]) / 2.
+                bin_medians[i, j] = bin_means[i, j]
+                samples[:, i, j] = bin_means[i, j]
+            else:
+                samples[:, i, j] = np.random.choice(movementcurr, size=nsamples, replace=True)
+                bin_means[i, j] = np.nanmean(movementcurr)
+                bin_medians[i, j] = np.nanmedian(movementcurr)
+
             # kde[j,i] = KernelDensity(kernel='tophat',bandwidth=kde_bandwidth).fit(movementcurr[:,None])
 
     return bin_edges, samples, bin_means, bin_medians
@@ -346,6 +356,51 @@ def sanity_check_tspred(data, compute_feature_params, npad, scale_perfly, contex
     return
 
 
+def compare_dicts(old_ex, new_ex):
+    for k, v in old_ex.items():
+        if not k in new_ex:
+            print(f'Missing key {k}')
+        elif type(v) is torch.Tensor:
+            v = v.cpu().numpy()
+            newv = new_ex[k]
+            if type(newv) is torch.Tensor:
+                newv = newv.cpu().numpy()
+            err = np.nanmax(np.abs(v - newv))
+            print(f'max diff {k}: {err:e}')
+        elif type(v) is np.ndarray:
+            err = np.nanmax(np.abs(v - new_ex[k]))
+            print(f'max diff {k}: {err:e}')
+        elif type(v) is dict:
+            print(f'Comparing dict {k}')
+            compare_dicts(v, new_ex[k])
+        else:
+            try:
+                err = np.nanmax(np.abs(v - new_ex[k]))
+                print(f'max diff {k}: {err:e}')
+            except:
+                print(f'not comparing {k}')
+    return
+
+
+def data_to_kp_from_metadata(data, metadata, ntimepoints):
+    t0 = metadata['t0']
+    flynum = metadata['flynum']
+    id = metadata['id']
+    datakp = data['X'][:, :, t0:t0 + ntimepoints + 1, flynum].transpose(2, 0, 1)
+    return datakp, id
+
+
+def debug_less_data(data, T=10000):
+    data['videoidx'] = data['videoidx'][:T, :]
+    data['ids'] = data['ids'][:T, :]
+    data['frames'] = data['frames'][:T, :]
+    data['X'] = data['X'][:, :, :T, :]
+    data['y'] = data['y'][:, :T, :]
+    data['isdata'] = data['isdata'][:T, :]
+    data['isstart'] = data['isstart'][:T, :]
+    return
+
+
 def compute_scale_allflies(data):
     maxid = np.max(data['ids'])
     maxnflies = data['X'].shape[3]
@@ -382,7 +437,7 @@ def compute_noise_params(data, scale_perfly, sig_tracking=.25 / PXPERMM,
     alld = 0.
     n = 0
     # loop through ids
-    print('Computing noise parameters...')
+    logging.info('Computing noise parameters...')
     for flynum in tqdm.trange(maxnflies):
         idx0 = data['isdata'][:, flynum] & (data['isstart'][:, flynum] == False)
         # bout starts and ends
@@ -415,25 +470,29 @@ def compute_noise_params(data, scale_perfly, sig_tracking=.25 / PXPERMM,
 """
 
 
-def load_raw_npz_data(infile):
-    """
-    data = load_raw_npz_data(inxfile,inyfile=None)
-    inxfile: npz file with pose data
-    inyfile: npz file with categories (optional). Default = None.
-    Creates dict data with the following fields:
-    'X': T x maxnflies x d0 array of floats containing pose data for all flies and frames
-    'videoidx': T x 1 array of ints containing index of video pose is computed from
-    'ids': T x maxnflies array of ints containing fly id
-    'frames': T x 1 array of ints containing video frame number
-    'y': if inyfile is not None, this will be a T x maxnflies x ncategories binary matrix
-         indicating supervised behavior categories
+def load_raw_npz_data(infile: str) -> dict:
+    """ Loads fly data that has been pre-curated via ____.
+    Args
+        infile: Datafile with .npz extension. Data is expected to have the following fields:
+            'X': nkpts x 2 x T x maxnflies array of floats containing pose data for all flies and frames
+            'videoidx': T x 1 array of ints containing index of video pose is computed from
+            'ids': T x maxnflies array of ints containing fly id
+            'frames': T x 1 array of ints containing video frame number
+            'y': ncategories x T x maxnflies binary matrix indicating supervised behavior categories
+            'categories': ncategories list of category names
+            'kpnames': nkpts list of keypoint names
+
+    Returns
+        A dictionary with the fields contained in the infile with these additional fields:
+            'isdata': T x maxnflies indicating whether data is valid
+            'isstart': T x maxnflies indicating whether frame is a start frame
     """
     data = {}
     with np.load(infile) as data1:
         for key in data1:
-            print(f'loading {key}')
+            logging.info(f'loading {key}')
             data[key] = data1[key]
-    print('data loaded')
+    logging.info('data loaded')
 
     maxnflies = data['ids'].shape[1]
     # ids start at 1, make them start at 0
@@ -467,7 +526,7 @@ def filter_data_by_categories(data, categories):
 
 def load_and_filter_data(infile, config):
     # load data
-    print(f"loading raw data from {infile}...")
+    logging.info(f"loading raw data from {infile}...")
     data = load_raw_npz_data(infile)
 
     # compute noise parameters
@@ -479,7 +538,7 @@ def load_and_filter_data(infile, config):
         config['discretize_epsilon'] = config['all_discretize_epsilon'][config['discreteidx']]
 
     # filter out data
-    print('filtering data...')
+    logging.info('filtering data...')
     if config['categories'] is not None and len(config['categories']) > 0:
         filter_data_by_categories(data, config['categories'])
 
@@ -499,11 +558,11 @@ def load_and_filter_data(infile, config):
         data['isstart'] = np.tile(data['isstart'], (2, 1))
 
     # compute scale parameters
-    print('computing scale parameters...')
+    logging.info('computing scale parameters...')
     scale_perfly = compute_scale_allflies(data)
 
     if np.isnan(SENSORY_PARAMS['otherflies_touch_mult']):
-        print('computing touch parameters...')
+        logging.info('computing touch parameters...')
         SENSORY_PARAMS['otherflies_touch_mult'] = compute_otherflies_touch_mult(data)
 
     # throw out data that is missing scale information - not so many frames
