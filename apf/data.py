@@ -356,8 +356,9 @@ def sanity_check_tspred(data, compute_feature_params, npad, scale_perfly, contex
     return
 
 
-def compare_dicts(old_ex, new_ex):
+def compare_dicts(old_ex, new_ex, maxerr=None):
     for k, v in old_ex.items():
+        err = 0.
         if not k in new_ex:
             print(f'Missing key {k}')
         elif type(v) is torch.Tensor:
@@ -379,6 +380,9 @@ def compare_dicts(old_ex, new_ex):
                 print(f'max diff {k}: {err:e}')
             except:
                 print(f'not comparing {k}')
+        if maxerr is not None:
+            assert err < maxerr
+
     return
 
 

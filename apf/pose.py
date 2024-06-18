@@ -284,7 +284,7 @@ class FlyExample:
         if example_in is not None:
             example_in = {k: v for k, v in example_in.items()}
             if 'metadata' in example_in:
-                example_in['metadata'] = {k: v for k, v in example_in['metadata'].items()}
+                example_in['metadata'] = {k: copy.deepcopy(v) for k, v in example_in['metadata'].items()}
         elif Xkp is not None:
             example_in = self.compute_features(Xkp, flynum, scale, metadata)
             dozscore = True
@@ -303,7 +303,7 @@ class FlyExample:
                     starttoff = example_in['continuous_init'].shape[-2]
                 else:
                     starttoff = 0
-                example_in['metadata']['t0'] -= starttoff
+                example_in['metadata']['frame0'] -= starttoff
 
         self.labels = PoseLabels(example_in, dozscore=dozscore, dodiscretize=dodiscretize,
                                  **self.get_poselabel_params())
@@ -584,7 +584,8 @@ class PoseLabels:
             self.set_keypoints(Xkp, scale)
 
         if 'continuous' in self.labels_raw:
-            assert self.d_multicontinuous == self.labels_raw['continuous'].shape[-1]
+            assert self.d_multicontinuous == self.labels_raw['continuous'].shape[-1], \
+                f"{self.d_multicontinuous} != {self.labels_raw['continuous'].shape[-1]}"
         if self.is_discretized() and 'discrete' in self.labels_raw:
             assert self.d_multidiscrete == self.labels_raw['discrete'].shape[-2]
 
@@ -1261,13 +1262,11 @@ class PoseLabels:
 
         return train_labels
 
-    def get_mask(self, makecopy=True):
-        if 'mask' not in self.labels_raw:
+    def get_mask(self, makecopy=True, ts=None):
+        if not self.is_masked():
             return None
-        if makecopy:
-            return self.labels_raw['mask'].copy()
-        else:
-            return self.labels_raw['mask']
+        labels_raw = self.get_raw_labels(format='standard', ts=ts, makecopy=makecopy)
+        return labels_raw['mask']
 
     def unzscore_multi(self, multi):
         if not self.is_zscored():
@@ -1367,12 +1366,6 @@ class PoseLabels:
             return np.zeros((self.pre_sz + (nts, 0, 0)), dtype=self.dtype)
         labels_raw = self.get_raw_labels(format='standard', ts=ts, makecopy=makecopy)
         return labels_raw['discrete']
-
-    def get_mask(self, makecopy=True, ts=None):
-        if not self.is_masked():
-            return None
-        labels_raw = self.get_raw_labels(format='standard', ts=ts, makecopy=makecopy)
-        return labels_raw['mask']
 
     def set_multi(self, multi, zscored=False, ts=None):
 
@@ -1818,11 +1811,13 @@ class PoseLabels:
                                    discreteidx=self.idx_nextdiscrete_to_next,
                                    simplify_in='no_sensory')
 
-        if self.is_zscored():
-            self.zscore(example)
-
-        if self.is_discretized():
-            self.discretize(example)
+        # TODO: I believe these should be deleted as this is done on set_raw_example
+        #       and it uses functions that are not defined
+        # if self.is_zscored():
+        #     self.zscore(example)
+        #
+        # if self.is_discretized():
+        #     self.discretize_multi(example)
 
         self.set_raw_example(example)
         return

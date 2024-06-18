@@ -61,13 +61,13 @@ def debug_fly_example(configfile=None, loadmodelfile=None, restartmodelfile=None
     # tmpsavefile = 'chunkeddata20240325_decimated.pkl'
     tmpsavefile = 'tmp_small_usertrainval.pkl'
 
-    # configfile = 'config_fly_llm_multitime_20230825.json'
+    configfile = 'config_fly_llm_multitime_20230825.json'
 
     # configuration parameters for this model
     config = read_config(configfile)
 
     # debug velocity representation
-    config['compute_pose_vel'] = False
+    config['compute_pose_vel'] = True
 
     # debug dct
     config['dct_tau'] = 4
@@ -178,19 +178,25 @@ def debug_fly_example(configfile=None, loadmodelfile=None, restartmodelfile=None
                                flynum=flyexample.metadata['flynum'], metadata=flyexample.metadata,
                                **train_dataset.get_flyexample_params())
     print(f"comparing flyexample initialized from FlyMLMDataset and from keypoints directly")
-    print('max diff between continuous labels: %e' % np.max(
-        np.abs(flyexample_kp.labels.labels_raw['continuous'] - flyexample.labels.labels_raw['continuous'])))
-    print('max diff between discrete labels: %e' % np.max(
-        np.abs(flyexample_kp.labels.labels_raw['discrete'] - flyexample.labels.labels_raw['discrete'])))
-    print('max diff between todiscretize: %e' % np.max(
-        np.abs(flyexample_kp.labels.labels_raw['todiscretize'] - flyexample.labels.labels_raw['todiscretize'])))
+    err = np.max(np.abs(flyexample_kp.labels.labels_raw['continuous'] - flyexample.labels.labels_raw['continuous']))
+    print('max diff between continuous labels: %e' % err)
+    assert err < 1e-9
+    err = np.max(np.abs(flyexample_kp.labels.labels_raw['discrete'] - flyexample.labels.labels_raw['discrete']))
+    print('max diff between discrete labels: %e' % err)
+    assert err < 1e-9
+    err = np.max(np.abs(flyexample_kp.labels.labels_raw['todiscretize'] - flyexample.labels.labels_raw['todiscretize']))
+    print('max diff between todiscretize: %e' % err)
+    assert err < 1e-9
     multi = flyexample.labels.get_multi(use_todiscretize=True, zscored=False)
     multi_kp = flyexample_kp.labels.get_multi(use_todiscretize=True, zscored=False)
-    print('max diff between multi labels: %e' % np.max(np.abs(multi - multi_kp)))
+    err = np.max(np.abs(multi - multi_kp))
+    print('max diff between multi labels: %e' % err)
+    assert err < 1e-9
 
-    # compare pose feature representation in and outside PoseLabels -- diff should be 0
+    # compare pose feature representation in and outside PoseLabels
     err_chunk_multi = np.max(np.abs(X[0]['labels'] - flyexample.labels.get_multi(use_todiscretize=True, zscored=False)))
     print('max diff between chunked labels and multi: %e' % err_chunk_multi)
+    assert err_chunk_multi < 1e-3
 
     # extract frames associated with metadata in flyexample
     contextl = flyexample.ntimepoints
@@ -205,6 +211,7 @@ def debug_fly_example(configfile=None, loadmodelfile=None, restartmodelfile=None
         examplenext = flyexample.labels.get_next(use_todiscretize=True, zscored=False)
         err_chunk_next = np.max(np.abs(chunknext - examplenext))
         print('max diff between chunked labels and next: %e' % err_chunk_next)
+        assert err_chunk_next < 1e-3
 
     else:
 
@@ -213,25 +220,31 @@ def debug_fly_example(configfile=None, loadmodelfile=None, restartmodelfile=None
         examplenextcossin = flyexample.labels.get_nextcossin(use_todiscretize=True, zscored=False)
         err_chunk_nextcossin = np.max(np.abs(chunknextcossin - examplenextcossin))
         print('max diff between chunked labels and nextcossin: %e' % err_chunk_nextcossin)
+        assert err_chunk_nextcossin < 1e-3
 
         chunknext = train_dataset.convert_cos_sin_to_angle(chunknextcossin)
         examplenext = flyexample.labels.get_next(use_todiscretize=True, zscored=False)
         err_chunk_next = np.max(np.abs(chunknext - examplenext))
         print('max diff between chunked labels and next: %e' % err_chunk_next)
+        assert err_chunk_next < 1e-3
 
         examplefeat = flyexample.labels.get_next_pose(use_todiscretize=True, zscored=False)
 
         err_chunk_data_feat = np.max(np.abs(chunknext[:, featrelative] - datafeat[1:, featrelative]))
         print('max diff between chunked and data relative features: %e' % err_chunk_data_feat)
+        assert err_chunk_data_feat < 1e-3
 
         err_example_chunk_feat = np.max(np.abs(chunknext[:, featrelative] - examplefeat[1:, featrelative]))
         print('max diff between chunked and example relative features: %e' % err_example_chunk_feat)
+        assert err_example_chunk_feat < 1e-3
 
-    err_example_data_global = np.max(np.abs(datafeat[:, featglobal] - examplefeat[:, featglobal]))
-    print('max diff between data and example global features: %e' % err_example_data_global)
+        err_example_data_global = np.max(np.abs(datafeat[:, featglobal] - examplefeat[:, featglobal]))
+        print('max diff between data and example global features: %e' % err_example_data_global)
+        assert err_example_data_global < 1e-3
 
-    err_example_data_feat = np.max(np.abs(datafeat[:, featrelative] - examplefeat[:, featrelative]))
-    print('max diff between data and example relative features: %e' % err_example_data_feat)
+        err_example_data_feat = np.max(np.abs(datafeat[:, featrelative] - examplefeat[:, featrelative]))
+        print('max diff between data and example relative features: %e' % err_example_data_feat)
+        assert err_example_data_feat < 1e-3
 
     examplekp = flyexample.labels.get_next_keypoints(use_todiscretize=True)
     err_mean_example_data_kp = np.mean(np.abs(datakp[:] - examplekp))
@@ -256,21 +269,25 @@ def debug_fly_example(configfile=None, loadmodelfile=None, restartmodelfile=None
         new_ex = flyexample.get_train_example()
         old_ex = old_train_dataset[0]
 
-        compare_dicts(old_ex, new_ex)
+        compare_dicts(old_ex, new_ex, maxerr=1e-3)
 
         print('\nComparing old fly llm code to new:')
         mean_err_discrete = torch.mean(
             torch.sqrt(torch.sum((old_ex['labels_discrete'] - new_ex['labels_discrete']) ** 2., dim=-1))).item()
         print('mean error between old and new discrete labels: %e' % mean_err_discrete)
+        assert mean_err_discrete < 1e-3
 
         max_err_continuous = torch.max(torch.abs(old_ex['labels'] - new_ex['labels'])).item()
         print('max error between old and new continuous labels: %e' % max_err_continuous)
+        assert max_err_continuous < 1e-3
 
         max_err_input = torch.max(torch.abs(new_ex['input'] - old_ex['input'])).item()
         print('max error between old and new input: %e' % max_err_input)
+        assert max_err_input < 1e-3
 
         max_err_init = torch.max(torch.abs(new_ex['init'] - old_ex['init'])).item()
         print('max error between old and new init: %e' % max_err_init)
+        assert max_err_init < 1e-3
 
     # check global future predictions
     print('\nChecking that representations of many frames into the future match')
@@ -282,6 +299,7 @@ def debug_fly_example(configfile=None, loadmodelfile=None, restartmodelfile=None
         datafeatfuture = kp2feat(datakpfuture, scale_perfly[:, id])[..., 0].T
         err_global_future = np.max(np.abs(datafeatfuture[:, featglobal] - examplefuture[:, 0, :]))
         print(f'max diff between data and t+{tpred} global prediction: {err_global_future:e}')
+        assert err_global_future < 1e-3
 
     # check relative future predictions
     if flyexample.labels.ntspred_relative > 1:
@@ -292,6 +310,7 @@ def debug_fly_example(configfile=None, loadmodelfile=None, restartmodelfile=None
             datafeatfuture = kp2feat(datakpfuture, scale_perfly[:, id])[..., 0].T
             err_relative_future = np.max(np.abs(datafeatfuture[:, featrelative] - examplefuture[:, tpred - 1, :]))
             print(f'max diff between data and t+{tpred} relative prediction: {err_relative_future:e}')
+            assert err_relative_future < 1e-3
 
     # get a training example
     print(
@@ -299,7 +318,7 @@ def debug_fly_example(configfile=None, loadmodelfile=None, restartmodelfile=None
     trainexample = train_dataset[0]
     flyexample1 = FlyExample(example_in=trainexample, dataset=train_dataset)
     trainexample1 = flyexample1.get_train_example()
-    compare_dicts(trainexample, trainexample1)
+    compare_dicts(trainexample, trainexample1, maxerr=1e-9)
 
     # initialize example from batch
     print('\nComparing training batch to FlyExample created from that batch converted back to a training batch')
@@ -311,7 +330,7 @@ def debug_fly_example(configfile=None, loadmodelfile=None, restartmodelfile=None
     raw_batch = next(iter(train_dataloader))
     example_batch = FlyExample(example_in=raw_batch, dataset=train_dataset)
     trainbatch1 = example_batch.get_train_example()
-    compare_dicts(raw_batch, trainbatch1)
+    compare_dicts(raw_batch, trainbatch1, maxerr=1e-9)
 
     debug_plot_pose(example_batch, data=data)
     debug_plot_sample(example_batch, train_dataset)
