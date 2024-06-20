@@ -1813,11 +1813,7 @@ class PoseLabels:
 
         # TODO: I believe these should be deleted as this is done on set_raw_example
         #       and it uses functions that are not defined
-        if self.is_zscored():
-            self.zscore(example)
-
-        if self.is_discretized():
-            self.discretize_multi(example)
+        # KB: correct!
 
         self.set_raw_example(example)
         return
