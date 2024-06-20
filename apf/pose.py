@@ -1815,7 +1815,7 @@ class PoseLabels:
         #       and it uses functions that are not defined
         # KB: correct!
 
-        self.set_raw_example(example)
+        self.set_raw_example(example,dozscore=self.is_zscored(),dodiscretize=self.is_discretized())
         return
 
     def get_next_velocity(self, **kwargs):

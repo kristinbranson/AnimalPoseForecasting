@@ -358,21 +358,32 @@ def animate_predict_open_loop(model, dataset, data, scale_perfly, config, fliesp
     if burnin is None:
         burnin = config['contextl'] - 1
 
+    # true keypoints for comparing to predictions
     Xkp_true = data['X'][..., t0:t0 + tpred + dataset.ntspred_max, :].copy()
+    # initialize Xkp with the true data, use real data for burn in
     Xkp = Xkp_true.copy()
+    # overwrite data we will predict with nans to make sure we aren't cheating
+    Xkp[...,burnin+1:,:][...,fliespred] = np.nan
 
     ids = data['ids'][t0, fliespred]
     scales = scale_perfly[:, ids]
 
     # fliespred = np.nonzero(mabe.get_real_flies(Xkp))[0]
+    Xkp_true_objs = []
+    Xkp_objs = []
     for i, flynum in enumerate(fliespred):
         id = data['ids'][t0, flynum]
         scale = scale_perfly[:, id]
         metadata = {'flynum': flynum, 'id': id, 't0': t0, 'videoidx': data['videoidx'][t0, 0],
                     'frame0': data['frames'][t0, 0]}
-        Xkp_obj = PoseLabels(Xkp=Xkp_true[..., flynum], scale=scale, metadata=metadata, dataset=dataset)
+        Xkp_true_obj = PoseLabels(Xkp=Xkp_true[..., flynum], scale=scale, metadata=metadata, dataset=dataset)
+        Xkp_true_objs.append(Xkp_true_obj)
+        Xkp_obj = PoseLabels(Xkp=Xkp[..., flynum], scale=scale, metadata=metadata, dataset=dataset)
+        Xkp_objs.append(Xkp_obj)
 
+    # TODOKB: reimplement this
     if plotfuture:
+        raise NotImplementedError
         # subtract one from tspred_global, as the tspred_global for predicted data come from the previous frame
         globalposfuture_true, relposefuture_true = get_pose_future(data, scales, [t + 1 for t in dataset.tspred_global],
                                                                    ts=np.arange(t0, t0 + tpred), fliespred=fliespred)
