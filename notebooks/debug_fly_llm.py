@@ -17,12 +17,14 @@
 # +
 import numpy as np
 import torch
+import matplotlib
+matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
-import transformers
 import tqdm
 import datetime
 import os
 from matplotlib import animation
+import pickle
 
 from flyllm.io import read_config, get_modeltype_str
 from flyllm.utils import get_dct_matrix, compute_npad
@@ -60,7 +62,11 @@ torch.cuda.is_available()
 # configuration parameters for this model
 loadmodelfile = None
 restartmodelfile = None
-config = read_config("/groups/branson/home/eyjolfsdottire/code/MABe2022/config_fly_llm_multitimeglob_discrete_20230907.json")
+configfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/config_fly_llm_debug_20240416.json'
+# set to None if you want to use the full data
+quickdebugdatafile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/tmp_small_usertrainval.pkl'
+#configfile = "/groups/branson/home/eyjolfsdottire/code/MABe2022/config_fly_llm_multitimeglob_discrete_20230907.json"
+config = read_config(configfile)
 
 print(f"batch size = {config['batch_size']}")
 
@@ -78,13 +84,23 @@ config['augment_flip'] = False
 config['intrainfile']
 
 # load raw data
-data, scale_perfly = load_and_filter_data(config['intrainfile'], config)
-valdata, val_scale_perfly = load_and_filter_data(config['invalfile'], config)
+if quickdebugdatafile is None:
+    data, scale_perfly = load_and_filter_data(config['intrainfile'], config)
+    valdata, val_scale_perfly = load_and_filter_data(config['invalfile'], config)
+    
+    # for debugging, use only a subset of the data
+    max_frames = config['contextl'] * 100
+    for data in [data, valdata]:
+        debug_less_data(data)
 
-# for debugging, use only a subset of the data
-max_frames = config['contextl'] * 100
-for data in [data, valdata]:
-    debug_less_data(data)
+else:
+    with open(quickdebugdatafile,'rb') as f:
+        tmp = pickle.load(f)
+        data = tmp['data']
+        scale_perfly = tmp['scale_perfly']
+        valdata = tmp['valdata']
+        val_scale_perfly = tmp['val_scale_perfly']
+
 
 # +
 print(config['contextl'])
@@ -246,6 +262,7 @@ print(train_dataset.nextframeidx)
 # -
 
 # set up debug plots
+
 plt.ion()
 debug_params = {}
 # if contextl is long, still just look at samples from the first 64 frames
@@ -268,9 +285,11 @@ model, criterion = initialize_model(config, train_dataset, device)
 
 # optimizer
 num_training_steps = config['num_train_epochs'] * ntrain
-optimizer = transformers.optimization.AdamW(model.parameters(), **config['optimizer_args'])
-lr_scheduler = transformers.get_scheduler('linear', optimizer, num_warmup_steps=0, num_training_steps=num_training_steps)
-
+# swith to torch versions
+optimizer = torch.optim.AdamW(model.parameters(), **config['optimizer_args']) 
+#optimizer = transformers.optimization.AdamW(model.parameters(), **config['optimizer_args'])
+lr_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1., end_factor=0., total_iters=num_training_steps)
+#lr_scheduler = transformers.get_scheduler('linear', optimizer, num_warmup_steps=0, num_training_steps=num_training_steps)
 
 # initialize structure to keep track of loss
 loss_epoch = initialize_loss(train_dataset, config)

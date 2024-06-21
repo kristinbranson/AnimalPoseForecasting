@@ -390,6 +390,8 @@ def animate_predict_open_loop(model, dataset, data, scale_perfly, config, fliesp
         # subtract one from tspred_global, as the tspred_global for predicted data come from the previous frame
         #globalposfuture_true, relposefuture_true = get_pose_future(data, scales, [t + 1 for t in dataset.tspred_global],
         #                                                           ts=np.arange(t0, t0 + tpred), fliespred=fliespred)
+        globalposfuture_true = None
+        relposefuture_true = None
 
     model.eval()
 
