@@ -63,12 +63,6 @@ scalenames = [
     'wing_length',
     'head_width',
     'head_height',
-    'std_thorax_width',
-    'std_thorax_length',
-    'std_abdomen_length',
-    'std_wing_length',
-    'std_head_width',
-    'std_head_height',
 ]
 
 vision_kpnames_v1 = [
