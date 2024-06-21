@@ -10,7 +10,7 @@ from flyllm.config import (
     featglobal, kpvision_other, kptouch_other, featthetaglobal, kpeye, kptouch,
     SENSORY_PARAMS
 )
-from flyllm.utils import modrange, rotate_2d_points, boxsum, angledist2xy
+from flyllm.utils import modrange, rotate_2d_points, boxsum, angledist2xy, mod2pi, atleast_4d
 
 
 """ Pose features
@@ -179,207 +179,238 @@ def compute_relpose_tspred(relposein, tspred_dct=[], discreteidx=[]):
     return relpose_tspred
 
 
-def compute_scale_perfly(Xcurr):
-    if np.ndim(Xcurr) >= 3:
-        T = Xcurr.shape[2]
-    else:
-        T = 1
-    if np.ndim(Xcurr) >= 4:
-        nflies = Xcurr.shape[3]
-    else:
-        nflies = 1
+def compute_scale_perfly(Xkp: np.ndarray) -> np.ndarray:
+    """Computes mean and std of the following keypoint based measures per fly:
+        thorax width, thorax length, abdomen length, wing length, head width, head height
 
-    scale_perfly = np.zeros((len(scalenames), nflies))
-    rfthorax = Xcurr[keypointnames.index('right_front_thorax'), ...]
-    lfthorax = Xcurr[keypointnames.index('left_front_thorax'), ...]
-    scale_perfly[scalenames.index('thorax_width'), :] = np.nanmedian(
-        np.sqrt(np.sum((rfthorax - lfthorax) ** 2., axis=0)), axis=0)
-    scale_perfly[scalenames.index('std_thorax_width'), :] = np.nanstd(
-        np.sqrt(np.sum((rfthorax - lfthorax) ** 2., axis=0)), axis=0)
+    Args:
+        Xkp: n_keypoints x 2 x T [x n_flies]
+
+    Returns:
+        scale_perfly: n_scales x n_flies
+    """
+    if np.ndim(Xkp) >= 4:
+        n_flies = Xkp.shape[3]
+    else:
+        n_flies = 1
+
+    scales = {}
+
+    # Thorax width
+    rfthorax = Xkp[keypointnames.index('right_front_thorax')]
+    lfthorax = Xkp[keypointnames.index('left_front_thorax')]
+    scales['thorax_width'] = np.sqrt(np.sum((rfthorax - lfthorax) ** 2., axis=0))
+
+    # Thorax length
     fthorax = (rfthorax + lfthorax) / 2.
-    bthorax = Xcurr[keypointnames.index('base_thorax'), ...]
-    midthorax = (fthorax + bthorax) / 2.
-    scale_perfly[scalenames.index('thorax_length'), :] = np.nanmedian(np.sqrt(np.sum((fthorax - bthorax) ** 2, axis=0)),
-                                                                      axis=0)
-    scale_perfly[scalenames.index('std_thorax_length'), :] = np.nanstd(
-        np.sqrt(np.sum((fthorax - bthorax) ** 2, axis=0)), axis=0)
-    abdomen = Xcurr[keypointnames.index('tip_abdomen'), ...]
-    scale_perfly[scalenames.index('abdomen_length'), :] = np.nanmedian(
-        np.sqrt(np.sum((bthorax - abdomen) ** 2., axis=0)), axis=0)
-    scale_perfly[scalenames.index('std_abdomen_length'), :] = np.nanstd(
-        np.sqrt(np.sum((bthorax - abdomen) ** 2., axis=0)), axis=0)
-    lwing = Xcurr[keypointnames.index('wing_left'), ...]
-    rwing = Xcurr[keypointnames.index('wing_right'), ...]
-    scale_perfly[scalenames.index('wing_length'), :] = np.nanmedian(
-        np.sqrt(np.sum(np.concatenate(((lwing - midthorax) ** 2., (rwing - midthorax) ** 2.), axis=1), axis=0)), axis=0)
-    scale_perfly[scalenames.index('std_wing_length'), :] = np.nanstd(
-        np.sqrt(np.sum(np.concatenate(((lwing - midthorax) ** 2., (rwing - midthorax) ** 2.), axis=1), axis=0)), axis=0)
+    bthorax = Xkp[keypointnames.index('base_thorax')]
+    scales['thorax_length'] = np.sqrt(np.sum((fthorax - bthorax) ** 2, axis=0))
 
-    reye = Xcurr[keypointnames.index('right_eye'), ...]
-    leye = Xcurr[keypointnames.index('left_eye'), ...]
+    # Abdomen length
+    abdomen = Xkp[keypointnames.index('tip_abdomen')]
+    scales['abdomen_length'] = np.sqrt(np.sum((bthorax - abdomen) ** 2., axis=0))
+
+    # Wing length
+    lwing = Xkp[keypointnames.index('wing_left')]
+    rwing = Xkp[keypointnames.index('wing_right')]
+    midthorax = (fthorax + bthorax) / 2.
+    wing_length_lr = np.concatenate(((lwing - midthorax) ** 2., (rwing - midthorax) ** 2.), axis=1)
+    scales['wing_length'] = np.sqrt(np.sum(wing_length_lr, axis=0))
+
+    # Head width
+    reye = Xkp[keypointnames.index('right_eye')]
+    leye = Xkp[keypointnames.index('left_eye')]
+    scales['head_width'] = np.sqrt(np.sum((reye - leye) ** 2., axis=0))
+
+    # Head height
     eye = (leye + reye) / 2.
-    ant = Xcurr[keypointnames.index('antennae_midpoint'), ...]
-    headwidth = np.sqrt(np.sum((reye - leye) ** 2., axis=0))
-    scale_perfly[scalenames.index('head_width'), ...] = np.nanmedian(headwidth)
-    scale_perfly[scalenames.index('std_head_width'), ...] = np.nanstd(headwidth)
-    headheight = np.sqrt(np.sum((eye - ant) ** 2., axis=0))
-    scale_perfly[scalenames.index('head_height'), ...] = np.nanmedian(headheight)
-    scale_perfly[scalenames.index('std_head_height'), ...] = np.nanstd(headheight)
+    ant = Xkp[keypointnames.index('antennae_midpoint')]
+    scales['head_height'] = np.sqrt(np.sum((eye - ant) ** 2., axis=0))
+
+    # Move to a numpy array with indices corresponding to the order of scalenames
+    scale_perfly = np.zeros((len(scalenames), n_flies))
+    for scale_name, scale_value in scales.items():
+        std_scale_name = f"std_{scale_name}"
+        scale_perfly[scalenames.index(scale_name)] = np.nanmedian(scale_value, axis=0)
+        scale_perfly[scalenames.index(std_scale_name)] = np.nanstd(scale_value, axis=0)
+
+        # TODO: In the previous code the head features were not using axis=0 for median and std, do we want that?
+        #   lets keep it perfly for now until we see why this might have been
+        # TODO: Since we are using the median, should we use mean(value - median) rather than std?
+        #   might make sense
+        #   std is not used now so just remove it
 
     return scale_perfly
 
 
-def body_centric_kp(Xkp):
-    ndim = np.ndim(Xkp)
-    if ndim >= 3:
-        T = Xkp.shape[2]
-    else:
-        T = 1
-    if ndim >= 4:
-        nflies = Xkp.shape[3]
-    else:
-        nflies = 1
+def body_centric_kp(Xkp: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Centers keypoints on mean point of "shoulders" and rotates them so that thorax points "up".
 
-    sz = Xkp.shape[:2]
-    Xkp = Xkp.reshape(sz + (T, nflies))
+    Args:
+        Xkp: n_keypoints x 2 [x T [x n_flies]]
 
-    bthorax = Xkp[keypointnames.index('base_thorax'), ...]
-    lthorax = Xkp[keypointnames.index('left_front_thorax'), ...]
-    rthorax = Xkp[keypointnames.index('right_front_thorax'), ...]
+    Returns:
+        Xn: n_keypoints x 2 x T x n_flies, keypoints transformed to be in the fly's reference frame
+        fthorax: Center of the fly's front thorax
+        thorax_theta: Orientation of the fly's thorax
+    """
+    # Reshape Xkp to be of size n_keypoints x 2 x T x n_flies
+    Xkp = atleast_4d(Xkp)
+
+    bthorax = Xkp[keypointnames.index('base_thorax')]
+    lthorax = Xkp[keypointnames.index('left_front_thorax')]
+    rthorax = Xkp[keypointnames.index('right_front_thorax')]
     fthorax = (lthorax + rthorax) / 2.
-    d = fthorax - bthorax
+    vec = fthorax - bthorax
+    thorax_theta = mod2pi(np.arctan2(vec[1, ...], vec[0, ...]) - np.pi / 2)
+    Xn = rotate_2d_points(Xkp - fthorax[np.newaxis, ...], thorax_theta)
 
-    # center on mean point of "shoulders", rotate so that thorax points "up"
-    thorax_theta = modrange(np.arctan2(d[1, ...], d[0, ...]) - np.pi / 2., -np.pi, np.pi)
-    porigin = fthorax
-    Xn = rotate_2d_points(Xkp - porigin[np.newaxis, ...], thorax_theta)
-
-    return Xn, porigin, thorax_theta
+    return Xn, fthorax, thorax_theta
 
 
-def kp2feat(Xkp, scale_perfly=None, flyid=None, return_scale=False):
+def kp2feat(
+        Xkp: np.ndarray,
+        scale_perfly: np.ndarray | None = None,
+        flyid: np.ndarray | None = None,
+        return_scale: bool = False
+) -> np.ndarray | tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Computes pose features from keypoints on a fly's body.
+
+    Args:
+        Xkp: n_keypoints x 2 [x T [x n_flies]]
+        scale_perfly: n_scales x n_flies
+        flyid: n_flies
+        return_scale: If True, returns the scale_perfly and flyid along with the feature array.
+
+    Returns:
+        Xfeat:
+        [scale_perfly]:
+        [flyid]:
     """
-    Xkp is nkeypoints x 2 [x T [x nflies]]
-    """
+    # Reshape Xkp to be of size n_keypoints x 2 x T x n_flies
+    Xkp = atleast_4d(Xkp)
+    _, _, T, n_flies = Xkp.shape
 
-    ndim = np.ndim(Xkp)
-    if ndim >= 3:
-        T = Xkp.shape[2]
-    else:
-        T = 1
-    if ndim >= 4:
-        nflies = Xkp.shape[3]
-    else:
-        nflies = 1
+    # Ensure that if scale_perfly is given, so is flyid
+    assert (flyid is None) or scale_perfly is not None, f"{flyid} --> {scale_perfly} is False"
 
-    sz = Xkp.shape[:2]
-    Xkp = Xkp.reshape(sz + (T, nflies))
-
-    assert ((flyid is None) or scale_perfly is not None)
-    # assert((flyid is None) == (scale_perfly is None))
-
+    # If scale is not given, compute it
     if scale_perfly is None:
         scale_perfly = compute_scale_perfly(Xkp)
-        flyid = np.tile(np.arange(nflies, dtype=int)[np.newaxis, :], (T, 1))
+        flyid = np.tile(np.arange(n_flies, dtype=int)[np.newaxis, :], (T, 1))
 
+    # Rotate keypoints to be in fly's frame of reference
     Xn, fthorax, thorax_theta = body_centric_kp(Xkp)
 
-    Xfeat = np.zeros((len(posenames), T, nflies))
-    Xfeat[posenames.index('thorax_front_x'), ...] = fthorax[0, ...]
-    Xfeat[posenames.index('thorax_front_y'), ...] = fthorax[1, ...]
-    Xfeat[posenames.index('orientation'), ...] = thorax_theta
+    feat = {}
 
-    # thorax_length can be a scalar or an array of size T x nflies
+    # Thorax
+    feat['thorax_front_x'] = fthorax[0]
+    feat['thorax_front_y'] = fthorax[1]
+    feat['orientation'] = thorax_theta
+
+    # Abdomen
+    # thorax_length can be a scalar or an array of size T x n_flies
     thorax_length = scale_perfly[scalenames.index('thorax_length'), flyid]
     if np.isscalar(thorax_length) or thorax_length.size == 1:
         pass
-    elif thorax_length.size == nflies:
-        thorax_length = thorax_length.reshape((1, nflies))
-    elif thorax_length.size == T * nflies:
-        thorax_length = thorax_length.reshape((T, nflies))
+    elif thorax_length.size == n_flies:
+        thorax_length = thorax_length.reshape((1, n_flies))
+    elif thorax_length.size == T * n_flies:
+        thorax_length = thorax_length.reshape((T, n_flies))
     else:
         raise ValueError(f'thorax_length size {thorax_length.size} is unexpected')
-    pthoraxbase = np.zeros((2, T, nflies))
-    pthoraxbase[1, ...] = -thorax_length
-    d = Xn[keypointnames.index('tip_abdomen'), ...] - pthoraxbase
-    Xfeat[posenames.index('abdomen_angle'), ...] = modrange(np.arctan2(d[1, ...], d[0, ...]) + np.pi / 2, -np.pi, np.pi)
+    pthoraxbase = np.zeros((2, T, n_flies))
+    pthoraxbase[1] = -thorax_length
+    # TODO: Why do we use the average length here? Can we do without scale_perfly here?
+    vec = Xn[keypointnames.index('tip_abdomen')] - pthoraxbase
+    feat['abdomen_angle'] = mod2pi(np.arctan2(vec[1], vec[0]) + np.pi / 2)
 
-    ant = Xn[keypointnames.index('antennae_midpoint'), ...]
-    eye = (Xn[keypointnames.index('right_eye'), ...] + Xn[keypointnames.index('left_eye'), ...]) / 2.
-
+    # Head
     # represent with the midpoint of the eyes and the angle from here to the antenna
-    Xfeat[posenames.index('head_base_x'), ...] = eye[0, ...]
-    Xfeat[posenames.index('head_base_y'), ...] = eye[1, ...]
-    Xfeat[posenames.index('head_angle'), ...] = np.arctan2(ant[1, :] - eye[1, :], ant[0, :] - eye[0, :]) - np.pi / 2.
+    mid_ant = Xn[keypointnames.index('antennae_midpoint')]
+    mid_eye = (Xn[keypointnames.index('right_eye')] + Xn[keypointnames.index('left_eye')]) / 2
+    feat['head_base_x'] = mid_eye[0]
+    feat['head_base_y'] = mid_eye[1]
+    feat['head_angle'] = np.arctan2(mid_ant[1] - mid_eye[1], mid_ant[0] - mid_eye[0]) - np.pi / 2
 
+    # Front leg
     # parameterize the front leg tips based on angle and distance from origin (shoulder mid-point)
-    d = Xn[keypointnames.index('left_front_leg_tip'), ...]
-    Xfeat[posenames.index('left_front_leg_tip_dist'), ...] = np.sqrt(np.sum(d ** 2, axis=0))
-    Xfeat[posenames.index('left_front_leg_tip_angle'), ...] = modrange(np.pi - np.arctan2(d[1, :], d[0, :]), -np.pi,
-                                                                       np.pi)
-    d = Xn[keypointnames.index('right_front_leg_tip'), ...]
-    Xfeat[posenames.index('right_front_leg_tip_dist'), ...] = np.sqrt(np.sum(d ** 2, axis=0))
-    Xfeat[posenames.index('right_front_leg_tip_angle'), ...] = np.arctan2(d[1, :], d[0, :])
+    vec = Xn[keypointnames.index('left_front_leg_tip')]
+    feat['left_front_leg_tip_dist'] = np.linalg.norm(vec, axis=0)
+    feat['left_front_leg_tip_angle'] = mod2pi(np.pi - np.arctan2(vec[1, :], vec[0, :]))
+    vec = Xn[keypointnames.index('right_front_leg_tip')]
+    feat['right_front_leg_tip_dist'] = np.linalg.norm(vec, axis=0)
+    feat['right_front_leg_tip_angle'] = np.arctan2(vec[1, :], vec[0, :])
 
-    # for middle leg femur base, compute angle around and distance from
-    # halfway between the thorax base and thorax front
-    pmidthorax = np.zeros((2, T, nflies))
-    pmidthorax[1, ...] = -thorax_length / 2.
-    d = Xn[keypointnames.index('left_middle_femur_base'), ...] - pmidthorax
-    Xfeat[posenames.index('left_middle_femur_base_dist'), ...] = np.sqrt(np.sum(d ** 2, axis=0))
-    Xfeat[posenames.index('left_middle_femur_base_angle'), ...] = modrange(np.pi - np.arctan2(d[1, :], d[0, :]), -np.pi,
-                                                                           np.pi)
-    d = Xn[keypointnames.index('right_middle_femur_base'), ...] - pmidthorax
-    Xfeat[posenames.index('right_middle_femur_base_dist'), ...] = np.sqrt(np.sum(d ** 2, axis=0))
-    Xfeat[posenames.index('right_middle_femur_base_angle'), ...] = np.arctan2(d[1, :], d[0, :])
+    # Middle femur base
+    # compute angle around and distance from halfway between the thorax base and thorax front
+    pmidthorax = np.zeros((2, T, n_flies))
+    pmidthorax[1] = -thorax_length / 2
+    vec = Xn[keypointnames.index('left_middle_femur_base')] - pmidthorax
+    feat['left_middle_femur_base_dist'] = np.linalg.norm(vec, axis=0)
+    left_middle_femur_base_angle = mod2pi(np.pi - np.arctan2(vec[1, :], vec[0, :]))
+    feat['left_middle_femur_base_angle'] = left_middle_femur_base_angle
+    vec = Xn[keypointnames.index('right_middle_femur_base')] - pmidthorax
+    feat['right_middle_femur_base_dist'] = np.linalg.norm(vec, axis=0)
+    right_middle_femur_base_angle = np.arctan2(vec[1, :], vec[0, :])
+    feat['right_middle_femur_base_angle'] = right_middle_femur_base_angle
 
-    # femur tibia joint is represented as distance from and angle around femur base
-    d = Xn[keypointnames.index('left_middle_femur_tibia_joint'), ...] - \
-        Xn[keypointnames.index('left_middle_femur_base'), ...]
-    Xfeat[posenames.index('left_middle_femur_tibia_joint_dist'), ...] = np.sqrt(np.sum(d ** 2, axis=0))
-    left_angle = modrange(np.pi - np.arctan2(d[1, :], d[0, :]), -np.pi, np.pi)
-    Xfeat[posenames.index('left_middle_femur_tibia_joint_angle'), ...] = \
-        modrange(left_angle - Xfeat[posenames.index('left_middle_femur_base_angle'), ...], -np.pi, np.pi)
+    # Middle femur tibia
+    # represented as distance from and angle around femur base
+    vec = Xn[keypointnames.index('left_middle_femur_tibia_joint')] - Xn[keypointnames.index('left_middle_femur_base')]
+    feat['left_middle_femur_tibia_joint_dist'] = np.linalg.norm(vec, axis=0)
+    left_angle = mod2pi(np.pi - np.arctan2(vec[1, :], vec[0, :]))
+    feat['left_middle_femur_tibia_joint_angle'] = mod2pi(left_angle - left_middle_femur_base_angle)
 
-    d = Xn[keypointnames.index('right_middle_femur_tibia_joint'), ...] - \
-        Xn[keypointnames.index('right_middle_femur_base'), ...]
-    Xfeat[posenames.index('right_middle_femur_tibia_joint_dist'), ...] = np.sqrt(np.sum(d ** 2, axis=0))
-    right_angle = np.arctan2(d[1, :], d[0, :])
-    Xfeat[posenames.index('right_middle_femur_tibia_joint_angle'), ...] = \
-        modrange(right_angle - Xfeat[posenames.index('right_middle_femur_base_angle'), ...], -np.pi, np.pi)
+    vec = Xn[keypointnames.index('right_middle_femur_tibia_joint')] - Xn[keypointnames.index('right_middle_femur_base')]
+    feat['right_middle_femur_tibia_joint_dist'] = np.linalg.norm(vec, axis=0)
+    right_angle = np.arctan2(vec[1, :], vec[0, :])
+    feat['right_middle_femur_tibia_joint_angle'] = mod2pi(right_angle - right_middle_femur_base_angle)
+    # TODO: when subtracting angles, is that safe around range boundary?
+    #   e.g. if one angle is pi and the other -pi, subtracting one from the other gives us 2pi instead of 0
 
-    # middle leg tip is represented as distance from and angle around femur tibia joint
-    d = Xn[keypointnames.index('left_middle_leg_tip'), ...] - \
-        Xn[keypointnames.index('left_middle_femur_tibia_joint'), ...]
-    Xfeat[posenames.index('left_middle_leg_tip_dist'), ...] = np.sqrt(np.sum(d ** 2, axis=0))
-    Xfeat[posenames.index('left_middle_leg_tip_angle'), ...] = \
-        modrange(np.pi - np.arctan2(d[1, :], d[0, :]) - left_angle, -np.pi, np.pi)
+    # Middle leg tip
+    # represented as distance from and angle around femur tibia joint
+    vec = Xn[keypointnames.index('left_middle_leg_tip')] - Xn[keypointnames.index('left_middle_femur_tibia_joint')]
+    feat['left_middle_leg_tip_dist'] = np.sqrt(np.sum(vec ** 2, axis=0))
+    feat['left_middle_leg_tip_angle'] = mod2pi(np.pi - np.arctan2(vec[1, :], vec[0, :]) - left_angle)
+    vec = Xn[keypointnames.index('right_middle_leg_tip')] - Xn[keypointnames.index('right_middle_femur_tibia_joint')]
+    feat['right_middle_leg_tip_dist'] = np.linalg.norm(vec, axis=0)
+    feat['right_middle_leg_tip_angle'] = mod2pi(np.arctan2(vec[1, :], vec[0, :]) - right_angle)
 
-    d = Xn[keypointnames.index('right_middle_leg_tip'), ...] - \
-        Xn[keypointnames.index('right_middle_femur_tibia_joint'), ...]
-    Xfeat[posenames.index('right_middle_leg_tip_dist'), ...] = np.sqrt(np.sum(d ** 2, axis=0))
-    Xfeat[posenames.index('right_middle_leg_tip_angle'), ...] = \
-        modrange(np.arctan2(d[1, :], d[0, :]) - right_angle, -np.pi, np.pi)
+    # Back leg
+    # use the thorax base as the origin
+    vec = Xn[keypointnames.index('left_back_leg_tip')] - pthoraxbase
+    feat['left_back_leg_tip_dist'] = np.linalg.norm(vec, axis=0)
+    feat['left_back_leg_tip_angle'] = mod2pi(np.pi - np.arctan2(vec[1, :], vec[0, :]))
+    vec = Xn[keypointnames.index('right_back_leg_tip')] - pthoraxbase
+    feat['right_back_leg_tip_dist'] = np.linalg.norm(vec, axis=0)
+    feat['right_back_leg_tip_angle'] = np.arctan2(vec[1, :], vec[0, :])
 
-    # for the back legs, use the thorax base as the origin
-    d = Xn[keypointnames.index('left_back_leg_tip'), ...] - pthoraxbase
-    Xfeat[posenames.index('left_back_leg_tip_dist'), ...] = np.sqrt(np.sum(d ** 2, axis=0))
-    Xfeat[posenames.index('left_back_leg_tip_angle'), ...] = modrange(np.pi - np.arctan2(d[1, :], d[0, :]), -np.pi,
-                                                                      np.pi)
-    d = Xn[keypointnames.index('right_back_leg_tip'), ...] - pthoraxbase
-    Xfeat[posenames.index('right_back_leg_tip_dist'), ...] = np.sqrt(np.sum(d ** 2, axis=0))
-    Xfeat[posenames.index('right_back_leg_tip_angle'), ...] = np.arctan2(d[1, :], d[0, :])
+    # Wings
+    # relative to thorax middle
+    vec = Xn[keypointnames.index('wing_left')] - pmidthorax
+    feat['left_wing_angle'] = mod2pi(-np.pi + np.arctan2(vec[1, :], vec[0, :]))
+    vec = Xn[keypointnames.index('wing_right')]  # TODO: - pmidthorax? - yes
+    feat['right_wing_angle'] = -np.arctan2(vec[1, :], vec[0, :])
+    # TODO: Should all features with _angle go through modrange?
+    #   test1: add mod2pi after all angle features, result is different
+    #   test2: skip mod2pi on intermediate features, result is different
+    #   Should we just do it everywhere to be sure?
 
-    # wings relative to thorax middle
-    d = Xn[keypointnames.index('wing_left'), ...] - pmidthorax
-    Xfeat[posenames.index('left_wing_angle'), ...] = modrange(-np.pi + np.arctan2(d[1, :], d[0, :]), -np.pi, np.pi)
-    d = Xn[keypointnames.index('wing_right'), ...]
-    Xfeat[posenames.index('right_wing_angle'), ...] = -np.arctan2(d[1, :], d[0, :])
+    # Move to a numpy array with indices corresponding to the order of posenames
+    Xfeat = np.zeros((len(posenames), T, n_flies))
+    for feat_name, feat_value in feat.items():
+        # if feat_name.endswith('_angle'):
+        #     feat_value = mod2pi(feat_value)
+        Xfeat[posenames.index(feat_name)] = feat_value
 
     if return_scale:
         return Xfeat, scale_perfly, flyid
     else:
         return Xfeat
+
 
 
 def compute_pose_features(X, scale):

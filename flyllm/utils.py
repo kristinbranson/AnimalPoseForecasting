@@ -1,9 +1,35 @@
 import numpy as np
+from numpy.typing import ArrayLike
 import torch
 
 
 def modrange(x, l, u):
     return np.mod(x - l, u - l) + l
+
+
+def mod2pi(radian: ArrayLike) -> ArrayLike:
+    """Wraps modrange with l=-np.pi and u=np.pi"""
+    return modrange(radian, -np.pi, np.pi)
+
+
+def atleast_4d(array: np.ndarray) -> np.ndarray:
+    """Expands the input array to have 4 dimensions if it doesn't have them already (adding to the back).
+
+    Args:
+        array: a numpy array of any size.
+
+    Returns:
+        An array with ndim >= 4, with new dimensions (if any) added to the back of the input.
+    """
+    ndim = np.ndim(array)
+    if ndim >= 4:
+        return array
+    if ndim == 3:
+        return array[:, :, :, None]
+    if ndim == 2:
+        return array[:, :, None, None]
+    if ndim == 1:
+        return array[:, None, None, None]
 
 
 def rotate_2d_points(X, theta):
