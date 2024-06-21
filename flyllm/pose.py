@@ -1,24 +1,24 @@
 import numpy as np
 import torch
-
-from apf.config import featglobal, featrelative, featangle
-from apf.features import relfeatidx_to_cossinidx, ravel_label_index, unravel_label_index, zscore, unzscore, feat2kp
-from apf.data import weighted_sample
-from apf.utils import modrange
-
-
 import copy
-from apf.features import (
+
+from flyllm.config import featglobal, featrelative, featangle, posenames, nfeatures
+from flyllm.data import weighted_sample, discretize_labels
+from flyllm.utils import modrange, rotate_2d_points, len_wrapper, dict_convert_torch_to_numpy
+from flyllm.features import (
     compute_features,
     combine_inputs,
     split_features,
     get_sensory_feature_idx,
     get_sensory_feature_shapes,
-    compute_sensory_wrapper
+    compute_sensory_wrapper,
+    relfeatidx_to_cossinidx,
+    ravel_label_index,
+    unravel_label_index,
+    zscore,
+    unzscore,
+    feat2kp
 )
-from apf.data import discretize_labels
-from apf.utils import rotate_2d_points, len_wrapper, dict_convert_torch_to_numpy
-from apf.config import posenames, nfeatures
 
 
 class ObservationInputs:

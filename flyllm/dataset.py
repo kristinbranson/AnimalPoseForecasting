@@ -4,53 +4,103 @@ import copy
 import tqdm
 import torch
 
-from apf.config import (
-    posenames,
-    featrelative, featglobal, featorigin, feattheta, featthetaglobal,
-    nrelative, nglobal, nfeatures
-)
-from apf.features import (
-    compute_movement, compute_pose_features, compute_sensory_wrapper,
-    combine_inputs, combine_relative_global,
+from flyllm.config import featrelative, featglobal, featorigin, feattheta, nrelative, nglobal, nfeatures
+from flyllm.features import (
     feat2kp,
-    featidx_to_relfeatidx, relfeatidx_to_featidx,
     relfeatidx_to_cossinidx, relpose_cos_sin_to_angle,
     ravel_label_index, unravel_label_index,
     split_features,
     zscore, unzscore,
-    get_sensory_feature_shapes, get_sensory_feature_idx,
+    get_sensory_feature_shapes,
 )
-from apf.data import fit_discretize_labels, discretize_labels, weighted_sample, labels_discrete_to_continuous
-from apf.utils import modrange, rotate_2d_points, compute_npad
-from apf.models import (  # TODO: dataset should not depend on models
+from flyllm.data import fit_discretize_labels, discretize_labels, weighted_sample, labels_discrete_to_continuous
+from flyllm.utils import rotate_2d_points, compute_npad
+from flyllm.models import (  # TODO: dataset should not depend on models
     generate_square_full_mask,
     apply_mask,
     unpack_input,
     get_output_and_attention_weights,
     pred_apply_fun
 )
-from apf.pose import FlyExample, PoseLabels, ObservationInputs
+from flyllm.pose import FlyExample, PoseLabels, ObservationInputs
 
 
 class FlyMLMDataset(torch.utils.data.Dataset):
-    def __init__(self, data, max_mask_length=None, pmask=None, masktype='block',
-                 simplify_out=None, simplify_in=None, pdropout_past=0., maskflag=None,
-                 input_labels=True,
-                 dozscore=False,
-                 zscore_params={},
-                 discreteidx=None,
-                 discrete_tspred=[1, ],
-                 discretize_nbins=50,
-                 discretize_epsilon=None,
-                 discretize_params={},
-                 flatten_labels=False,
-                 flatten_obs_idx=None,
-                 flatten_do_separate_inputs=False,
-                 input_noise_sigma=None,
-                 p_add_input_noise=0,
-                 dct_ms=None,
-                 tspred_global=[1, ],
-                 compute_pose_vel=True):
+    def __init__(
+            self,
+            data: list[dict[str, np.ndarray | dict[str, int]]],
+            max_mask_length: int | None = None,
+            pmask: float | None = None,
+            masktype: str | None = 'block',
+            simplify_out: str | None = None,
+            simplify_in: str | None = None,
+            pdropout_past: float = 0.,
+            maskflag: bool | None = None,
+            input_labels: bool = True,
+            dozscore: bool = False,
+            zscore_params: dict[str, np.ndarray] | None = None,
+            discreteidx: np.ndarray | None = None,
+            discrete_tspred: tuple[int, ...] = (1, ),
+            discretize_nbins: int = 50,
+            discretize_epsilon: np.ndarray | None = None,
+            discretize_params: dict[str: np.ndarray] | None = None,
+            flatten_labels: bool = False,
+            flatten_obs_idx: dict[str, list[int]] | None = None,
+            flatten_do_separate_inputs: bool = False,
+            input_noise_sigma: np.ndarray | None = None,
+            p_add_input_noise: float = 0,
+            dct_ms: tuple[np.ndarray | None, np.ndarray | None] | None = None,
+            tspred_global: tuple[int, ...] = (1, ),
+            compute_pose_vel: bool = True,
+    ) -> None:
+        """
+        Args
+            data: List of dictionaries per batch. Each dictionary contains:
+                'input': np.ndarray float32 of size len_context x n_features
+                'labels': np.ndarray float32 of size len_context x n_labels
+                'init': np.ndarray float32 of size 3 x 2 (n_features x n_buff_frames)
+                    TODO: Not sure what this is
+                        Two frames of info when predicting velocities for next frame (fwd, side, and ori feats)
+                        Sometimes it is the full pose, then its n_pose x 2
+                        Sometimes it has only one frame
+                'scale': np.ndarray float32 of size n_scales
+                'metadata': dict containing:
+                    'flynum': int
+                    'id': int
+                    't0': int
+                    'videoidx': int
+                    'frame0': int
+                'categories': np.ndarray float32 of size n_categories x ?
+            max_mask_length:
+            pmask:
+            masktype:
+            simplify_out: One of {'relative', ...}
+            simplify_in: One of {'no_sensory', ...}
+            pdropout_past:
+            maskflag:
+            input_labels:
+            dozscore:
+            zscore_params:
+            discreteidx:
+            discrete_tspred:
+            discretize_nbins:
+            discretize_epsilon:
+            discretize_params:
+            flatten_labels:
+            flatten_obs_idx:
+            flatten_do_separate_inputs:
+            input_noise_sigma:
+            p_add_input_noise:
+            dct_ms:
+            tspred_global:
+            compute_pose_vel:
+        """
+
+        # set mutable defaults
+        if zscore_params is None:
+            zscore_params = {}
+        if discretize_params is None:
+            discretize_params = {}
 
         # copy dicts
         data = [example.copy() for example in data]

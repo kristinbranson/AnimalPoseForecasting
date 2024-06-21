@@ -3,10 +3,10 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib import animation
 
-from apf.features import compute_pose_features, split_features
-from apf.config import ARENA_RADIUS_MM
-from apf.plotting import plot_flies, plot_arena
-from apf.pose import PoseLabels, FlyExample
+from flyllm.features import compute_pose_features, split_features
+from flyllm.config import ARENA_RADIUS_MM
+from flyllm.plotting import plot_flies, plot_arena
+from flyllm.pose import PoseLabels, FlyExample
 
 
 def get_real_flies(x, tgtdim=-1):
@@ -358,43 +358,29 @@ def animate_predict_open_loop(model, dataset, data, scale_perfly, config, fliesp
     if burnin is None:
         burnin = config['contextl'] - 1
 
-    # true keypoints for comparing to predictions
     Xkp_true = data['X'][..., t0:t0 + tpred + dataset.ntspred_max, :].copy()
-    # initialize Xkp with the true data, use real data for burn in
     Xkp = Xkp_true.copy()
-    # overwrite data we will predict with nans to make sure we aren't cheating
-    Xkp[...,burnin+1:,:][...,fliespred] = np.nan
 
     ids = data['ids'][t0, fliespred]
     scales = scale_perfly[:, ids]
 
     # fliespred = np.nonzero(mabe.get_real_flies(Xkp))[0]
-    labels_true = []
-    examples_pred = []
     for i, flynum in enumerate(fliespred):
         id = data['ids'][t0, flynum]
         scale = scale_perfly[:, id]
         metadata = {'flynum': flynum, 'id': id, 't0': t0, 'videoidx': data['videoidx'][t0, 0],
                     'frame0': data['frames'][t0, 0]}
-        label_true = PoseLabels(Xkp=Xkp_true[..., flynum], scale=scale, metadata=metadata, dataset=dataset)
-        labels_true.append(label_true)
-        example_pred = FlyExample(Xkp=Xkp, flynum=flynum, scale=scale, metadata=metadata, dataset=dataset)
-        examples_pred.append(example_pred)
+        Xkp_obj = PoseLabels(Xkp=Xkp_true[..., flynum], scale=scale, metadata=metadata, dataset=dataset)
 
-    # TODOKB: reimplement this
     if plotfuture:
-        plotfuture = False
-        # warn that plot future is not implemented currently
-        print('TODO Plot future is not implemented currently')
-
         # subtract one from tspred_global, as the tspred_global for predicted data come from the previous frame
-        #globalposfuture_true, relposefuture_true = get_pose_future(data, scales, [t + 1 for t in dataset.tspred_global],
-        #                                                           ts=np.arange(t0, t0 + tpred), fliespred=fliespred)
+        globalposfuture_true, relposefuture_true = get_pose_future(data, scales, [t + 1 for t in dataset.tspred_global],
+                                                                   ts=np.arange(t0, t0 + tpred), fliespred=fliespred)
 
     model.eval()
 
     # capture all outputs of predict_open_loop in a tuple
-    res = dataset.predict_open_loop(examples_pred, burnin, model, maxcontextl=config['contextl'],
+    res = dataset.predict_open_loop(Xkp, fliespred, scales, burnin, model, maxcontextl=config['contextl'],
                                     debug=debug, need_weights=plotattnweights, nsamples=nsamplesfuture)
     Xkp_pred, zinputs, globalposfuture_pred, relposefuture_pred = res[:4]
     if plotattnweights:
