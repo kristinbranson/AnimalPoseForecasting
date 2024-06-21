@@ -921,9 +921,21 @@ def compute_features(X, id=None, flynum=0, scale_perfly=None, smush=True, outtyp
             idxinfo['input'] = {}
             idxinfo['input']['relpose'] = [0, relpose.shape[0]]
     else:
-        out = compute_sensory_wrapper(X[:, :, :endidx, :], flynum, theta_main=globalpos[featthetaglobal, :endidx],
+        # some frames may have all nan data, just for pre-allocating. ignore those
+        isdata = np.any(np.isfinite(X[...,flynum]), axis=(0, 1))
+        if endidx is not None:
+            isdata[endidx:] = False
+        out = compute_sensory_wrapper(X[:, :, isdata, :], flynum, theta_main=globalpos[featthetaglobal, isdata],
                                       returnall=True, returnidx=returnidx)
+        out = list(out)
+
+        for i in range(4):
+            outcurr = np.zeros(out[i].shape[:-1]+isdata.shape) + np.nan
+            outcurr[...,isdata] = out[i]
+            outcurr = outcurr[...,:endidx]
+            out[i] = outcurr
         sensory, wall_touch, otherflies_vision, otherflies_touch = out[:4]
+        
         if returnidx:
             idxinfo = {}
             idxinfo['input'] = out[4]

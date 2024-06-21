@@ -280,13 +280,19 @@ class FlyExample:
         if self.dct_m is not None and self.idct_m is None:
             self.idct_m = np.linalg.inv(self.dct_m)
 
-        # copy the dicts
         if example_in is not None:
+            # copy the dict, not the arrays
             example_in = {k: v for k, v in example_in.items()}
-            if 'metadata' in example_in:
-                example_in['metadata'] = {k: copy.deepcopy(v) for k, v in example_in['metadata'].items()}
+            # copy the metadata, deep copy
+            if (example_in is not None) and ('metadata' in example_in):
+                example_in['metadata'] = copy.deepcopy(example_in['metadata'])
         elif Xkp is not None:
+            # compute pose and observation representations from keypoints
             example_in = self.compute_features(Xkp, flynum, scale, metadata)
+            # copy the metadata, deep copy
+            example_in['metadata'] = copy.deepcopy(metadata)
+            # if params set that zscoring and discretizing are to be done, then set 
+            # that the example_in requires these
             dozscore = True
             dodiscretize = True
 
@@ -354,14 +360,17 @@ class FlyExample:
         if ts is not None:
             # hasn't been tested yet...
             ks = ['continuous', 'discrete', 'todiscretize', 'input']
-            cattextra = example['categories'].shape[-1] - example['continuous'].shape[-2]
             if hasattr(ts, '__len__'):
                 assert np.all(np.diff(ts) == 1), 'ts must be consecutive'
                 toff = ts[0]
-                example['categories'] = example['categories'][..., ts[0]:ts[-1] + cattextra, :]
             else:
                 toff = ts
-                example['categories'] = example['categories'][..., ts:ts + cattextra, :]
+            if example['categories'] is not None:
+                cattextra = example['categories'].shape[-1] - example['continuous'].shape[-2]
+                if hasattr(ts, '__len__'):
+                    example['categories'] = example['categories'][..., ts[0]:ts[-1] + cattextra, :]
+                else:
+                    example['categories'] = example['categories'][..., ts:ts + cattextra, :]
             for k in ks:
                 if k == 'discrete':
                     example[k] = example[k][..., ts, :, :]
@@ -605,19 +614,23 @@ class PoseLabels:
             s += f'  nbins: {self.labels_raw["discrete"].shape[-1]}\n'
         return s
 
-    def set_prediction(self, pred):
+    def set_prediction(self, pred,ts=None):
+        if ts is None:
+            ts = slice(self.starttoff,None)
+        else:
+            ts = ts+self.starttoff
         if self.is_continuous():
             if 'continuous' in pred:
-                self.labels_raw['continuous'][..., self.starttoff:, :] = pred['continuous']
+                self.labels_raw['continuous'][..., ts, :] = pred['continuous']
             elif 'labels' in pred:
-                self.labels_raw['continuous'][..., self.starttoff:, :] = pred['labels']
+                self.labels_raw['continuous'][..., ts, :] = pred['labels']
             else:
                 raise ValueError('pred must contain continuous or labels')
         if self.is_discretized():
             if 'discrete' in pred:
-                self.labels_raw['discrete'][..., self.starttoff:, :, :] = pred['discrete']
+                self.labels_raw['discrete'][..., ts, :, :] = pred['discrete']
             elif 'labels_discrete' in pred:
-                self.labels_raw['discrete'][..., self.starttoff:, :, :] = pred['labels_discrete']
+                self.labels_raw['discrete'][..., ts, :, :] = pred['labels_discrete']
             else:
                 raise ValueError('pred must contain discrete or labels_discrete')
         return
@@ -911,6 +924,8 @@ class PoseLabels:
             return self.scale
 
     def get_categories(self, makecopy=True):
+        if self.categories is None:
+            return None
         if makecopy:
             return self.categories.copy()
         else:
@@ -1227,7 +1242,8 @@ class PoseLabels:
         train_labels['init_all'] = raw_labels['init']
         train_labels['init'] = raw_labels['init'][..., self.starttoff]
         train_labels['scale'] = raw_labels['scale']
-        train_labels['categories'] = raw_labels['categories']
+        if 'categories' in raw_labels:
+            train_labels['categories'] = raw_labels['categories']
 
         if not self.flatten_labels:
             train_labels['continuous'] = raw_labels['continuous'][..., self.starttoff:, :]

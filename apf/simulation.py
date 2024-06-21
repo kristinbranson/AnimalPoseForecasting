@@ -6,7 +6,7 @@ from matplotlib import animation
 from apf.features import compute_pose_features, split_features
 from apf.config import ARENA_RADIUS_MM
 from apf.plotting import plot_flies, plot_arena
-from apf.pose import PoseLabels
+from apf.pose import PoseLabels, FlyExample
 
 
 def get_real_flies(x, tgtdim=-1):
@@ -369,29 +369,32 @@ def animate_predict_open_loop(model, dataset, data, scale_perfly, config, fliesp
     scales = scale_perfly[:, ids]
 
     # fliespred = np.nonzero(mabe.get_real_flies(Xkp))[0]
-    Xkp_true_objs = []
-    Xkp_objs = []
+    labels_true = []
+    examples_pred = []
     for i, flynum in enumerate(fliespred):
         id = data['ids'][t0, flynum]
         scale = scale_perfly[:, id]
         metadata = {'flynum': flynum, 'id': id, 't0': t0, 'videoidx': data['videoidx'][t0, 0],
                     'frame0': data['frames'][t0, 0]}
-        Xkp_true_obj = PoseLabels(Xkp=Xkp_true[..., flynum], scale=scale, metadata=metadata, dataset=dataset)
-        Xkp_true_objs.append(Xkp_true_obj)
-        Xkp_obj = PoseLabels(Xkp=Xkp[..., flynum], scale=scale, metadata=metadata, dataset=dataset)
-        Xkp_objs.append(Xkp_obj)
+        label_true = PoseLabels(Xkp=Xkp_true[..., flynum], scale=scale, metadata=metadata, dataset=dataset)
+        labels_true.append(label_true)
+        example_pred = FlyExample(Xkp=Xkp, flynum=flynum, scale=scale, metadata=metadata, dataset=dataset)
+        examples_pred.append(example_pred)
 
     # TODOKB: reimplement this
     if plotfuture:
-        raise NotImplementedError
+        plotfuture = False
+        # warn that plot future is not implemented currently
+        print('TODO Plot future is not implemented currently')
+
         # subtract one from tspred_global, as the tspred_global for predicted data come from the previous frame
-        globalposfuture_true, relposefuture_true = get_pose_future(data, scales, [t + 1 for t in dataset.tspred_global],
-                                                                   ts=np.arange(t0, t0 + tpred), fliespred=fliespred)
+        #globalposfuture_true, relposefuture_true = get_pose_future(data, scales, [t + 1 for t in dataset.tspred_global],
+        #                                                           ts=np.arange(t0, t0 + tpred), fliespred=fliespred)
 
     model.eval()
 
     # capture all outputs of predict_open_loop in a tuple
-    res = dataset.predict_open_loop(Xkp, fliespred, scales, burnin, model, maxcontextl=config['contextl'],
+    res = dataset.predict_open_loop(examples_pred, burnin, model, maxcontextl=config['contextl'],
                                     debug=debug, need_weights=plotattnweights, nsamples=nsamplesfuture)
     Xkp_pred, zinputs, globalposfuture_pred, relposefuture_pred = res[:4]
     if plotattnweights:

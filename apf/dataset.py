@@ -1268,26 +1268,24 @@ class FlyMLMDataset(torch.utils.data.Dataset):
 
         return net_mask, is_causal
 
-    def predict_open_loop(self, Xkp, fliespred, scales, burnin, model, maxcontextl=np.inf, debug=False,
+    def predict_open_loop(self, examples_pred, burnin, model, maxcontextl=np.inf, debug=False,
                           need_weights=False, nsamples=0, movement_true=None):
         """
-      Xkp = predict_open_loop(self,Xkp,fliespred,scales,burnin,model,sensory_params,maxcontextl=np.inf,debug=False)
+      predict_open_loop(self,Xkp,fliespred,scales,burnin,model,sensory_params,maxcontextl=np.inf,debug=False)
 
       Args:
-        Xkp (ndarray, nkpts x 2 x tpred x nflies): keypoints for all flies for all frames.
-        Can be nan for frames/flies to be predicted. Will be overwritten.
-        fliespred (ndarray, nfliespred): indices of flies to predict
-        scales (ndarray, nscale x nfliespred): scale parameters for the flies to be predicted
+        examples_pred: list of FlyExample objects to be predicted in open loop. labels can be nan 
+        for frames/flies to be predicted. Will be overwritten
+        #Xkp (ndarray, nkpts x 2 x tpred x nflies): keypoints for all flies for all frames.
+        #Can be nan for frames/flies to be predicted. Will be overwritten.
+        #fliespred (ndarray, nfliespred): indices of flies to predict
+        #scales (ndarray, nscale x nfliespred): scale parameters for the flies to be predicted
         burnin (int): number of frames to use for initialization
         maxcontextl (int, optional): maximum number of frames to use for context. Default np.inf
         debug (bool, optional): whether to fill in from movement computed from Xkp_all
 
-      Returns:
-        Xkp (ndarray, nkpts x 2 x tpred x nflies): keypoints for all flies for all frames,
-        with predicted frames/flies filled in.
-
       Example call:
-      res = dataset.predict_open_loop(Xkp,fliespred,scales,burnin,model,maxcontextl=config['contextl'],
+      dataset.predict_open_loop(examples_pred,burnin,model,maxcontextl=config['contextl'],
                                 debug=debug,need_weights=plotattnweights,nsamples=nsamplesfuture)
       """
         model.eval()
@@ -1305,119 +1303,13 @@ class FlyMLMDataset(torch.utils.data.Dataset):
         # propagate forward with the 0th sample
         selectsample = 0
 
-        tpred = Xkp.shape[-2]
-        nfliespred = len(fliespred)
-        # relpose = np.zeros((nsamples1,tpred,nrelative,nfliespred),dtype=dtype)
-        # globalpos = np.zeros((nsamples1,tpred,nglobal,nfliespred),dtype=dtype)
-        # if self.dct_tau == 0:
-        #   ntspred_rel = 1
-        # else:
-        #   ntspred_rel = self.dct_tau
-        # relposefuture = np.zeros((nsamples1,tpred,ntspred_rel,nrelative,nfliespred),dtype=dtype)
-        # globalposfuture = np.zeros((nsamples1,tpred,self.ntspred_global,nglobal,nfliespred),dtype=dtype)
-        # relposefuture[:] = np.nan
-        # globalposfuture[:] = np.nan
-        # sensory = None
-        # zinputs = None
+        tpred = examples_pred[0].ntimepoints
+        nfliespred = len(examples_pred)
         if need_weights:
             attn_weights = [None, ] * tpred
 
         if debug:
-            labels_true = []
-            for i, fly in enumerate(fliespred):
-                # compute the pose for pred flies for first burnin frames
-                labelscurr = PoseLabels(Xkp=Xkp[..., fly], scale=scales[..., i],
-                                        simplify_out=self.simplify_out,
-                                        discreteidx=self.discretefeat,
-                                        tspred_global=self.tspred_global,
-                                        ntspred_relative=self.ntspred_relative,
-                                        zscore_params=self.zscore_params,
-                                        is_velocity=self.compute_pose_vel,
-                                        flatten_labels=self.flatten_labels)
-                labels_true.append(labelscurr)
-
-        labels = []
-        inputs = []
-        for i, fly in enumerate(fliespred):
-            # compute the pose for pred flies for first burnin frames
-            labelscurr = PoseLabels(Xkp=Xkp[..., :burnin, fly], scale=scales[..., i],
-                                    simplify_out=self.simplify_out,
-                                    discreteidx=self.discretefeat,
-                                    tspred_global=self.tspred_global,
-                                    ntspred_relative=self.ntspred_relative,
-                                    zscore_params=self.zscore_params,
-                                    is_velocity=self.compute_pose_vel,
-                                    flatten_labels=self.flatten_labels)
-            labels.append(labelscurr)
-            # compute sensory features for first burnin frames
-            inputscurr = ObservationInputs(Xkp=Xkp[:, :, 1:burnin + 1, fly], fly=fly,
-                                           zscore_params=self.zscore_params,
-                                           simplify_in=self.simplify_in)
-            inputs.append(inputscurr)
-
-        # movement_true = compute_movement(X=Xkp[...,fliespred],scale=scales,simplify=self.simplify_out,
-        #                                  compute_pose_vel=self.compute_pose_vel).transpose((1,0,2)).astype(dtype)
-
-        # # outputs -- hide frames past burnin
-        # Xkp[:,:,burnin:,fliespred] = np.nan
-
-        # # compute the pose for pred flies for first burnin frames
-        # relpose0,globalpos0 = compute_pose_features(Xkp[...,:burnin,fliespred],scales)
-        # relpose[:,:burnin] = relpose0.transpose((1,0,2))
-        # globalpos[:,:burnin] = globalpos0.transpose((1,0,2))
-        # # compute one-frame movement for pred flies between first burnin frames
-        # # total length: burnin-1
-        # movement0 = compute_movement(relpose=relpose0,
-        #                             globalpos=globalpos0,
-        #                             simplify=self.simplify_out,
-        #                             compute_pose_vel=self.compute_pose_vel)
-
-        # to-do: flattening not yet implemented in PoseLabels
-        # movement0 = movement0.transpose((1,0,2))
-        # if self.flatten:
-        #   zmovement = np.zeros((tpred-1,self.noutput_tokens_per_timepoint,self.flatten_max_doutput,nfliespred),dtype=dtype)
-        # else:
-        #   zmovement = np.zeros((tpred-1,movement0.shape[1],nfliespred),dtype=dtype)
-
-        # for i in range(nfliespred):
-        #   zmovementcurr = self.zscore_nextframe_labels(movement0[...,i])
-        #   if self.flatten:
-        #     if self.discretize:
-        #       zmovement_todiscretize = zmovementcurr[...,self.discreteidx]
-        #       zmovement_discrete = discretize_labels(zmovement_todiscretize,self.discretize_bin_edges,soften_to_ends=True)
-        #       zmovement[:burnin-1,:len(self.discreteidx),:self.discretize_nbins,i] = zmovement_discrete
-        #     if self.continuous:
-        #       zmovement[:burnin-1,-1,:len(self.continuous_idx),i] = zmovementcurr[...,self.continuous_idx]
-        #   else:
-        #     zmovement[:burnin-1,:,i] = zmovementcurr
-
-        # # compute sensory features for first burnin frames
-        # if self.simplify_in is None:
-        #   for i in range(nfliespred):
-        #     flynum = fliespred[i]
-        #     sensorycurr = compute_sensory_wrapper(Xkp[...,:burnin,:],flynum,
-        #                                           theta_main=globalpos[0,:burnin,featthetaglobal,i]) # 0th sample
-        #     if sensory is None:
-        #       nsensory = sensorycurr.shape[0]
-        #       sensory = np.zeros((tpred,nsensory,nfliespred),dtype=dtype)
-        #     sensory[:burnin,:,i] = sensorycurr.T
-
-        # for i in range(nfliespred):
-        #   if self.simplify_in is None:
-        #     rawinputscurr = combine_inputs(relpose=relpose[0,:burnin,:,i],
-        #                                    sensory=sensory[:burnin,:,i],dim=1)
-        #   else:
-        #     rawinputscurr = relpose[:burnin,:,i,0]
-
-        #   zinputscurr = self.zscore_input(rawinputscurr)
-
-        # if self.flatten_obs:
-        #   zinputscurr = self.apply_flatten_input(zinputscurr)
-        # elif self.flatten:
-        #   zinputscurr = zinputscurr[:,None,:]
-        # if zinputs is None:
-        #   zinputs = np.zeros((tpred,)+zinputscurr.shape[1:]+(nfliespred,),dtype=dtype)
-        # zinputs[:burnin,...,i] = zinputscurr
+            examples_true = copy.deepcopy(examples_pred)
 
         if self.ismasked():
             # to do: figure this out for flattened models
@@ -1433,56 +1325,20 @@ class FlyMLMDataset(torch.utils.data.Dataset):
             t0 = int(np.maximum(t - maxcontextl, 0))
 
             for i in range(nfliespred):
-                flynum = fliespred[i]
-                # t should be the last element of inputs
-                assert t == inputs[i].ntimesteps
-                zinputcurr = inputs[i].get_raw_inputs()
-                if self.input_labels:
-                    assert t == inputs[i].ntimesteps
-                    zmovementin = labels[i].get_input_labels()
-                    if self.ismasked():
-                        # to do: figure this out for flattened model
-                        zmovementin = np.r_[zmovementin, dummy]
-                else:
-                    zmovementin = None
-                # construct_input crops off the first frame of zinputcurr -
-                # zinputcurr should be one frame longer than zmovementin
-                xcurr = self.construct_input(zinputcurr, movement=zmovementin)
-
-                # zinputcurr = zinputs[t0:t,...,i] # t-t0 length, last frame corresponds to t-1
-                # relposecurr = relpose[0,t-1,:,i] # 0th sample, t-1th frame
-                # globalposcurr = globalpos[0,t-1,:,i] # 0th sample, t-1th frame
-
-                # if self.input_labels:
-                #   zmovementin = zmovement[t0:t-1,...,i] # t-t0-1 length, last frame corresponds to t-2
-                #   if self.ismasked():
-                #     # to do: figure this out for flattened model
-                #     zmovementin = np.r_[zmovementin,dummy]
-                # else:
-                #   zmovementin = None
-                # xcurr = self.construct_input(zinputcurr,movement=zmovementin)
-
-                # if self.flatten:
-                #     xcurr = np.zeros((zinputcurr.shape[0],self.ntokens_per_timepoint,self.flatten_max_dinput),dtype=dtype)
-                #     xcurr[:,:self.flatten_nobs_types,:] = zinputcurr
-                #     # movement not set for last time points, will be 0s
-                #     xcurr[:-1,self.flatten_nobs_types:,:self.flatten_max_doutput] = zmovementin
-                #     xcurr = np.reshape(xcurr,(xcurr.shape[0]*xcurr.shape[1],xcurr.shape[2]))
-                #     lastidx = xcurr.shape[0]-self.noutput_tokens_per_timepoint
-                #   else:
-                #     xcurr = np.concatenate((zmovementin,zinputcurr[1:,...]),axis=-1)
-                # else:
-                #   xcurr = zinputcurr
-
-                xcurr = torch.tensor(xcurr)
+                example_pred = examples_pred[i].copy_subindex(ts=np.arange(t0, t))
+                inputs_curr = example_pred.get_inputs().get_train_inputs()
+                xcurr = inputs_curr['input']
                 xcurr, _, _ = self.mask_input(xcurr, masktype)
 
                 if debug:
-                    zmovementout = np.tile(self.zscore_labels(movement_true[t - 1, :, i]).astype(dtype)[None],
-                                           (nsamples1, 1))
+                    raise NotImplementedError("Debug not yet implemented")
+                    #zmovementout = np.tile(self.zscore_labels(movement_true[t - 1, :, i]).astype(dtype)[None],
+                    #                       (nsamples1, 1))
                 else:
 
                     if self.flatten:
+                        raise NotImplementedError("Flattening not yet implemented")
+                        # not implemented yet
                         # to do: not sure if multiple samples here works
 
                         zmovementout = np.zeros((nsamples1, self.d_output), dtype=dtype)
@@ -1551,70 +1407,15 @@ class FlyMLMDataset(torch.utils.data.Dataset):
                         if model.model_type == 'TransformerBestState' or model.model_type == 'TransformerState':
                             pred = model.randpred(pred)
                         # z-scored movement from t to t+1
-                        pred = pred_apply_fun(pred, lambda x: x[0, -1, ...].cpu())
-                        labels[i].append_raw(pred)
-                        # zmovementout = self.get_full_pred(pred,sample=True,nsamples=nsamples)
-                        # zmovementout = zmovementout.numpy()
+                        pred = pred_apply_fun(pred, lambda x: x[0, -1, ...].cpu().numpy())
+                        examples_pred[i].set_prediction(pred,ts=t)
                     # end else flatten
                 # end else debug
 
-                Xkp_next = labels[i].get_next_keypoints(ts=[t, ], nsamples=nsamples)
-                # if nsamples == 0:
-                #   zmovementout = zmovementout[None,...]
-                # # relposenext is nsamples x ntspred_relative x nrelative
-                # # globalposnext is nsamples x ntspred_global x nglobal
-                # relposenext,globalposnext = self.pred2pose(relposecurr,globalposcurr,zmovementout)
-                # relpose[:,t,:,i] = relposenext[:,0] # select next time point, all samples, all features
-                # globalpos[:,t,:,i] = globalposnext[:,0]
-                # # relposefuture is (nsamples1,tpred,ntspred_rel,nrelative,nfliespred)
-                # relposefuture[:,t,:,:,i] = relposenext
-                # globalposfuture[:,t,:,:,i] = globalposnext
-                # if self.flatten:
-                #   zmovement[t-1,:,:,i] = zmovementout_flattened
-                # else:
-                #   zmovement[t-1,:,i] = zmovementout[selectsample,self.nextframeidx]
-                # # next frame
-                # featnext = combine_relative_global(relposenext[selectsample,0,:],globalposnext[selectsample,0,:])
-                # Xkp_next = mabe.feat2kp(featnext,scales[...,i])
-                # Xkp_next = Xkp_next[:,:,0,0]
-                Xkp[:, :, t, flynum] = Xkp_next
-
-                # we could probably save a little computation by using labels here
-                inputs[i].append_keypoints(Xkp[:, :, t, :], fly=flynum, scale=scales[..., i])
-
-            # end loop over flies
-
-            # if self.simplify_in is None:
-            #   for i in range(nfliespred):
-            #     flynum = fliespred[i]
-            #     sensorynext = compute_sensory_wrapper(Xkp[...,[t,],:],flynum,
-            #                                           theta_main=globalpos[selectsample,[t,],featthetaglobal,i])
-            #     sensory[t,:,i] = sensorynext.T
-
-            # for i in range(nfliespred):
-            #   if self.simplify_in is None:
-            #     rawinputsnext = combine_inputs(relpose=relpose[selectsample,[t,],:,i],
-            #                                   sensory=sensory[[t,],:,i],dim=1)
-            #   else:
-            #     rawinputsnext = relpose[selectsample,[t,],:,i]
-            #   zinputsnext = self.zscore_input(rawinputsnext)
-            #   zinputs[t,...,i] = zinputsnext
-            # end loop over flies
-        # end loop over time points
-
-        # if self.flatten:
-        #   if self.flatten_obs:
-        #     zinputs_unflattened = np.zeros((zinputs.shape[0],self.dfeat,nfliespred))
-        #     for i,v in enumerate(self.flatten_obs_idx.values()):
-        #       zinputs_unflattened[:,v[0]:v[1],:] = zinputs[:,i,:self.flatten_dinput_pertype[i],:]
-        #     zinputs = zinputs_unflattened
-        #   else:
-        #     zinputs = zinputs[:,0,...]
-
         if need_weights:
-            return Xkp, inputs, labels, attn_weights
+            return examples_pred, attn_weights
         else:
-            return Xkp, inputs, labels
+            return examples_pred
 
     def get_movement_names_global(self):
         return self.data[0].labels.get_nextglobal_names()
