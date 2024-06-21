@@ -387,7 +387,7 @@ def kp2feat(
     # relative to thorax middle
     vec = Xn[keypointnames.index('wing_left')] - pmidthorax
     feat['left_wing_angle'] = mod2pi(-np.pi + np.arctan2(vec[1, :], vec[0, :]))
-    vec = Xn[keypointnames.index('wing_right')]  # TODO: - pmidthorax? - yes
+    vec = Xn[keypointnames.index('wing_right')] - pmidthorax
     feat['right_wing_angle'] = -np.arctan2(vec[1, :], vec[0, :])
     # TODO: Should all features with _angle go through modrange?
     #   test1: add mod2pi after all angle features, result is different
