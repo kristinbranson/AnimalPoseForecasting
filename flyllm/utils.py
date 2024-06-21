@@ -1,5 +1,4 @@
 import numpy as np
-from numpy.typing import ArrayLike
 import torch
 
 
@@ -7,7 +6,7 @@ def modrange(x, l, u):
     return np.mod(x - l, u - l) + l
 
 
-def mod2pi(radian: ArrayLike) -> ArrayLike:
+def mod2pi(radian: np.ndarray | float) -> np.ndarray | float:
     """Wraps modrange with l=-np.pi and u=np.pi"""
     return modrange(radian, -np.pi, np.pi)
 

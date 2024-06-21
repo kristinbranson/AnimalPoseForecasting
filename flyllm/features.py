@@ -283,9 +283,9 @@ def kp2feat(
         return_scale: If True, returns the scale_perfly and flyid along with the feature array.
 
     Returns:
-        Xfeat:
-        [scale_perfly]:
-        [flyid]:
+        Xfeat: n_features x T x n_flies
+        [scale_perfly]: n_scales x n_flies
+        [flyid]: n_flies
     """
     # Reshape Xkp to be of size n_keypoints x 2 x T x n_flies
     Xkp = atleast_4d(Xkp)
@@ -322,7 +322,7 @@ def kp2feat(
         raise ValueError(f'thorax_length size {thorax_length.size} is unexpected')
     pthoraxbase = np.zeros((2, T, n_flies))
     pthoraxbase[1] = -thorax_length
-    # TODO: Why do we use the average length here? Can we do without scale_perfly here?
+    # TODO: Why do we use the average length here? Can we do without scale_perfly as input to this function?
     vec = Xn[keypointnames.index('tip_abdomen')] - pthoraxbase
     feat['abdomen_angle'] = mod2pi(np.arctan2(vec[1], vec[0]) + np.pi / 2)
 
@@ -402,15 +402,12 @@ def kp2feat(
     # Move to a numpy array with indices corresponding to the order of posenames
     Xfeat = np.zeros((len(posenames), T, n_flies))
     for feat_name, feat_value in feat.items():
-        # if feat_name.endswith('_angle'):
-        #     feat_value = mod2pi(feat_value)
         Xfeat[posenames.index(feat_name)] = feat_value
 
     if return_scale:
         return Xfeat, scale_perfly, flyid
     else:
         return Xfeat
-
 
 
 def compute_pose_features(X, scale):
