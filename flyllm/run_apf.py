@@ -12,9 +12,9 @@ import datetime
 import argparse
 import pickle
 
-from apf.config import posenames, featglobal, featrelative, nfeatures
-from apf.features import compute_features, kp2feat
-from apf.plotting import (
+from flyllm.config import posenames, featglobal, featrelative, nfeatures
+from flyllm.features import compute_features, kp2feat
+from flyllm.plotting import (
     debug_plot_dct_relative_error,
     debug_plot_global_error,
     debug_plot_global_histograms,
@@ -26,7 +26,7 @@ from apf.plotting import (
     initialize_loss_plots, update_loss_plots,
     select_featidx_plot,
 )
-from apf.data import (
+from flyllm.data import (
     load_and_filter_data,
     interval_all,
     chunk_data,
@@ -35,10 +35,10 @@ from apf.data import (
     data_to_kp_from_metadata,
     compare_dicts,
 )
-from apf.dataset import FlyMLMDataset
-from apf.simulation import animate_predict_open_loop
-from apf.utils import get_dct_matrix, compute_npad
-from apf.models import (
+from flyllm.dataset import FlyMLMDataset
+from flyllm.simulation import animate_predict_open_loop
+from flyllm.utils import get_dct_matrix, compute_npad
+from flyllm.models import (
     initialize_model, initialize_loss,
     generate_square_full_mask,
     criterion_wrapper,
@@ -48,8 +48,8 @@ from apf.models import (
     sanity_check_temporal_dep,
     stack_batch_list,
 )
-from apf.pose import FlyExample
-from apf.io import (
+from flyllm.pose import FlyExample
+from flyllm.io import (
     read_config, load_config_from_model_file, get_modeltype_str,
     load_model, save_model, parse_modelfile,
     clean_intermediate_results

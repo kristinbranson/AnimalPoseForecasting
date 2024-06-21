@@ -3,14 +3,14 @@ import warnings
 import collections
 import torch
 
-from apf.config import (
+from flyllm.config import (
     posenames, keypointnames, scalenames,
     nglobal, nrelative, nfeatures, nkptouch, nkptouch_other,
     featangle, featrelative,
     featglobal, kpvision_other, kptouch_other, featthetaglobal, kpeye, kptouch,
     SENSORY_PARAMS
 )
-from apf.utils import modrange, rotate_2d_points, boxsum, angledist2xy
+from flyllm.utils import modrange, rotate_2d_points, boxsum, angledist2xy
 
 
 """ Pose features

@@ -5,8 +5,8 @@ import json
 import numpy as np
 import pathlib
 
-from apf.config import SENSORY_PARAMS, featglobal, posenames
-from apf.features import get_sensory_feature_idx
+from flyllm.config import SENSORY_PARAMS, featglobal, posenames
+from flyllm.features import get_sensory_feature_idx
 
 codedir = pathlib.Path(__file__).parent.resolve()
 DEFAULTCONFIGFILE = os.path.join(codedir, 'config_fly_llm_default.json')

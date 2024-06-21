@@ -3,10 +3,10 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib import animation
 
-from apf.features import compute_pose_features, split_features
-from apf.config import ARENA_RADIUS_MM
-from apf.plotting import plot_flies, plot_arena
-from apf.pose import PoseLabels
+from flyllm.features import compute_pose_features, split_features
+from flyllm.config import ARENA_RADIUS_MM
+from flyllm.plotting import plot_flies, plot_arena
+from flyllm.pose import PoseLabels
 
 
 def get_real_flies(x, tgtdim=-1):

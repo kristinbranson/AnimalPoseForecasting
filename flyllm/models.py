@@ -3,8 +3,8 @@ import math
 import typing
 import torch
 
-from apf.config import nfeatures
-from apf.pose import FlyExample
+from flyllm.config import nfeatures
+from flyllm.pose import FlyExample
 # TODO: remove specific knowledge about the data in this file
 
 

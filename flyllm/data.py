@@ -4,8 +4,8 @@ import re
 import torch
 import logging
 
-from apf.config import SENSORY_PARAMS, PXPERMM, keypointnames, featglobal
-from apf.features import (
+from flyllm.config import SENSORY_PARAMS, PXPERMM, keypointnames, featglobal
+from flyllm.features import (
     compute_features,
     compute_scale_perfly,
     compute_pose_features,
@@ -13,7 +13,7 @@ from apf.features import (
     compute_otherflies_touch_mult
 )
 # TODO: would be nice if data did not depend on features
-from apf.utils import get_interval_ends
+from flyllm.utils import get_interval_ends
 
 
 def interval_all(x, l):
