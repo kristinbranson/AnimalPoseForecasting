@@ -4,12 +4,12 @@ import copy
 import tqdm
 import torch
 
-from apf.config import (
+from flyllm.config import (
     posenames,
     featrelative, featglobal, featorigin, feattheta, featthetaglobal,
     nrelative, nglobal, nfeatures
 )
-from apf.features import (
+from flyllm.features import (
     compute_movement, compute_pose_features, compute_sensory_wrapper,
     combine_inputs, combine_relative_global,
     feat2kp,
@@ -20,16 +20,16 @@ from apf.features import (
     zscore, unzscore,
     get_sensory_feature_shapes, get_sensory_feature_idx,
 )
-from apf.data import fit_discretize_labels, discretize_labels, weighted_sample, labels_discrete_to_continuous
-from apf.utils import modrange, rotate_2d_points, compute_npad
-from apf.models import (  # TODO: dataset should not depend on models
+from flyllm.data import fit_discretize_labels, discretize_labels, weighted_sample, labels_discrete_to_continuous
+from flyllm.utils import modrange, rotate_2d_points, compute_npad
+from flyllm.models import (  # TODO: dataset should not depend on models
     generate_square_full_mask,
     apply_mask,
     unpack_input,
     get_output_and_attention_weights,
     pred_apply_fun
 )
-from apf.pose import FlyExample, PoseLabels, ObservationInputs
+from flyllm.pose import FlyExample, PoseLabels, ObservationInputs
 
 
 class FlyMLMDataset(torch.utils.data.Dataset):

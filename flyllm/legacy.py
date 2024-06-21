@@ -7,8 +7,8 @@ import matplotlib.pyplot as plt
 import gzip
 import pickle
 
-from apf.plotting import debug_plot_batch_pose
-from apf.features import compute_features
+from flyllm.plotting import debug_plot_batch_pose
+from flyllm.features import compute_features
 
 
 def to_size(sz):
