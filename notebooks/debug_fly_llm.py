@@ -24,13 +24,13 @@ import datetime
 import os
 from matplotlib import animation
 
-from apf.io import read_config, get_modeltype_str
-from apf.utils import get_dct_matrix, compute_npad
-from apf.config import scalenames, nfeatures, featglobal
-from apf.features import compute_features, compute_scale_perfly
-from apf.data import load_and_filter_data, sanity_check_tspred, chunk_data, interval_all, debug_less_data
-from apf.dataset import FlyMLMDataset
-from apf.plotting import (
+from flyllm.io import read_config, get_modeltype_str
+from flyllm.utils import get_dct_matrix, compute_npad
+from flyllm.config import scalenames, nfeatures, featglobal
+from flyllm.features import compute_features, compute_scale_perfly
+from flyllm.data import load_and_filter_data, sanity_check_tspred, chunk_data, interval_all, debug_less_data
+from flyllm.dataset import FlyMLMDataset
+from flyllm.plotting import (
     initialize_debug_plots, 
     initialize_loss_plots, 
     update_debug_plots,
@@ -40,7 +40,7 @@ from apf.plotting import (
     debug_plot_predictions_vs_labels,
     select_featidx_plot,
 )
-from apf.models import (
+from flyllm.models import (
     initialize_model, 
     initialize_loss, 
     generate_square_full_mask, 
@@ -49,7 +49,7 @@ from apf.models import (
     criterion_wrapper,
     stack_batch_list,
 )
-from apf.simulation import animate_predict_open_loop
+from flyllm.simulation import animate_predict_open_loop
 # -
 
 torch.cuda.is_available()
