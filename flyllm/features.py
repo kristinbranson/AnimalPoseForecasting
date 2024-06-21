@@ -230,15 +230,10 @@ def compute_scale_perfly(Xkp: np.ndarray) -> np.ndarray:
     # Move to a numpy array with indices corresponding to the order of scalenames
     scale_perfly = np.zeros((len(scalenames), n_flies))
     for scale_name, scale_value in scales.items():
-        std_scale_name = f"std_{scale_name}"
         scale_perfly[scalenames.index(scale_name)] = np.nanmedian(scale_value, axis=0)
-        scale_perfly[scalenames.index(std_scale_name)] = np.nanstd(scale_value, axis=0)
 
         # TODO: In the previous code the head features were not using axis=0 for median and std, do we want that?
         #   lets keep it perfly for now until we see why this might have been
-        # TODO: Since we are using the median, should we use mean(value - median) rather than std?
-        #   might make sense
-        #   std is not used now so just remove it
 
     return scale_perfly
 
@@ -392,7 +387,7 @@ def kp2feat(
     # relative to thorax middle
     vec = Xn[keypointnames.index('wing_left')] - pmidthorax
     feat['left_wing_angle'] = mod2pi(-np.pi + np.arctan2(vec[1, :], vec[0, :]))
-    vec = Xn[keypointnames.index('wing_right')]  # TODO: - pmidthorax? - yes
+    vec = Xn[keypointnames.index('wing_right')] - pmidthorax
     feat['right_wing_angle'] = -np.arctan2(vec[1, :], vec[0, :])
     # TODO: Should all features with _angle go through modrange?
     #   test1: add mod2pi after all angle features, result is different
