@@ -1,0 +1,136 @@
+{
+    
+    "datadir": "/groups/branson/home/bransonk/behavioranalysis/code/MABe2022",
+    "_comment_datadir": "parent directory of data",
+    
+    "_comment_trainfilestr": "names of files containing training and validation data",
+    "intrainfilestr": "usertrain.npz",
+    "invalfilestr": "testtrain.npz",
+
+    "_comment_savedir": "where to save output",
+    "savedir": "/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets",
+
+    "_comment_savedir": "how often to save trained models",
+    "save_epoch": 2,
+
+    "_comment_categories": "types of flies to train on",
+    "categories": ["71G01","male"],
+
+    "_comment_simplify": "subset of outputs and inputs to use, used while debugging",
+    "simplify_out": null,
+    "simplify_in": null,
+
+    "_comment_compute_sensory_diffs": "whether to compute sensory diffs as additional inputs",
+    "compute_sensory_diffs": false,
+
+    "dct_tau": null,
+    "tspred_global": [1],
+    "discrete_tspred": [1],
+    
+    "obs_embedding": false,
+    "obs_embedding_types": null,
+    "obs_embedding_params": null,
+    
+    "_comment_input_labels": "whether labels are inputs",
+    "input_labels": true,
+
+    "_comment_flatten_labels": "whether to string out labels into multiple tokens per timepoint",
+    "flatten_labels": true,
+
+    "_comment_flatten_obs_idx": "how to divide observations into separate tokens per timepoint. if sensory, then each type of sensory data is a token",
+    "flatten_obs_idx": "sensory",
+
+    "flatten_do_separate_inputs": true,
+    "_comment_flatten_do_separate_inputs": "whether to separate the input features used by different input types for flattened models",
+
+    "_comment_discreteidx": "which label indices should be discretized. if global, then global movement is discretized",
+    "discreteidx": "global",
+
+    "_comment_discretize_nbins": "number of bins to discretize each output into",
+    "discretize_nbins": 25,
+
+    "p_add_input_noise": 0,
+    "input_noise_sigma": null,
+
+
+    "_comment_all_discretize_epsilon": "smallest bin for each output type, related to tracking noise",
+    "all_discretize_epsilon": [0.01322199, 0.01349601, 0.02598117, 0.02033068, 0.01859137, 0.05900833, 0.05741996, 0.02196621, 0.0558432 , 0.02196207, 0.05579313, 0.02626397, 0.12436298, 0.02276208, 0.04065661, 0.02275847, 0.04038093, 0.02625952, 0.12736998, 0.02628111, 0.13280959, 0.02628102, 0.13049692, 0.02439783, 0.0367505, 0.02445746, 0.03742915, 0.02930942, 0.02496748],
+
+    "_comment_discretize_epsilon": "smallest bin for discretized outputs. if null, will use all_discretize_epsilon",
+    "discretize_epsilon": null,
+    
+    "_comment_device": "cuda or cpu",
+    "device": "cuda",
+    
+    "_comment_contextl": "number of timepoints of context during training",
+    "contextl": 65,
+
+    "_comment_masktype": "if mlm model, type of masking to do. options: ind, block, null",
+    "masktype": null,
+
+    "_comment_max_mask_length": "how long to mask out at a time (maximum) if masktype = block",
+    "max_mask_length": 4,
+
+    "_comment_pmask": "probability of masking if masktype = ind",
+    "pmask": 0.15,
+
+    "_comment_batch_size": "training batch size",
+    "batch_size": 8,
+
+    "_comment_num_train_epochs": "total number of training epochs",
+    "num_train_epochs": 100,
+
+    "_comment_optimizer_args": "dict containing gradient descent parameters",
+    "optimizer_args": {"lr": 5e-5, "betas": [0.9,0.999], "eps": 1e-8},
+
+    "_comment_max_grad_norm": "gradient clipping",
+    "max_grad_norm": 1.0,
+
+    "_comment_numpy_seed": "random seed for numpy",
+    "numpy_seed": 123,
+
+    "_comment_torch_seed": "random seed for torch",
+    "torch_seed": 456,
+
+    "_comment_modeltype": "mlm for masked model, clm for causal",
+    "modeltype": "clm",
+
+    "_comment_modelstatetype": "depricated? whether to try to fit discrete states as part of the model. this did not work. options: null, prob, best",
+    "modelstatetype": null,
+
+    "_comment_d_model": "embedding dimension",
+    "d_model": 2048,
+
+    "_comment_nhead": "number of attention heads",
+    "nhead": 8,
+
+    "_comment_d_hid": "hidden dimension",
+    "d_hid": 512,
+
+    "_comment_nlayers": "number of attention layers",
+    "nlayers": 10,
+
+    "_comment_dropout": "dropout probability during training",
+    "dropout": 0.3,
+
+    "_comment_pdropout_past": "probability of dropping out labels as inputs",
+    "pdropout_past": 0.0,
+
+    "epochs_rechunk": 1,
+
+    "_comment_nstates": "deprecated? if learning discrete states as part of the model, how many to learn",
+    "nstates": null,
+
+    "_comment_minstateprob": "deprecated? if learning discrete states, state probabilities were going to 0, epsilon added to probability for a state",
+    "minstateprob": null,
+
+    "_comment_niterplot": "how often (in training iterations) to plot debugging plots",
+    "niterplot": 64,
+
+    "_comment_model_nickname": "nickname used when saving files related to this model",
+    "model_nickname": null,
+
+    "_comment_compute_pose_vel": "whether to predict the relative pose velocity (true) or position (false)",
+    "compute_pose_vel": true
+}
+
