@@ -374,11 +374,6 @@ compare_dicts(train_example0,train_example_kp,maxerr=1e-9)
 
 
 # %%
-print(train_example_kp.keys())
-print(train_example0.keys())
-
-
-# %%
 ## done
 print('Goodbye!')
 plt.show(block=True)
