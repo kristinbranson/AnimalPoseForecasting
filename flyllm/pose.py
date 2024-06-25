@@ -4,7 +4,7 @@ import copy
 
 from flyllm.config import featglobal, featrelative, featangle, posenames, nfeatures
 from flyllm.data import weighted_sample, discretize_labels
-from flyllm.utils import modrange, rotate_2d_points, len_wrapper, dict_convert_torch_to_numpy
+from flyllm.utils import modrange, rotate_2d_points, len_wrapper, dict_convert_torch_to_numpy, compute_npad
 from flyllm.features import (
     compute_features,
     combine_inputs,
@@ -268,6 +268,9 @@ class ObservationInputs:
         return {'input': train_inputs, 'eta': eta, 'input_init': train_inputs_init}
 
 
+# The above code is attempting to define a Python class named `FlyExample`, but it contains a syntax
+# error. In Python, the class definition should include a colon `:` after the class name. The correct
+# syntax should be:
 class FlyExample:
     def __init__(self, example_in=None, dataset=None, Xkp=None, flynum=None, scale=None, metadata=None,
                  dozscore=False, dodiscretize=False, **kwargs):
@@ -330,16 +333,22 @@ class FlyExample:
             self.metadata = example_in['metadata']
 
         return
+      
+    def get_compute_features_npad(self):
+        npad = compute_npad(self.tspred_global, self.dct_m)
+        return npad
 
     def compute_features(self, Xkp, flynum=0, scale=None, metadata=None):
 
+        npad = self.get_compute_features_npad()
         example = compute_features(Xkp, flynum=flynum, scale_perfly=scale, outtype=np.float32,
                                    simplify_in=self.simplify_in,
                                    simplify_out=self.simplify_out,
                                    dct_m=self.dct_m,
                                    tspred_global=self.tspred_global,
                                    compute_pose_vel=self.is_velocity,
-                                   discreteidx=self.discreteidx)
+                                   discreteidx=self.discreteidx,
+                                   npad=npad)
 
         return example
 
@@ -503,7 +512,7 @@ class FlyExample:
 
         flatten = self.flatten_labels or self.flatten_obs
         assert flatten == False, 'flatten not implemented'
-
+        
         res = {'input': train_inputs['input'], 'labels': train_labels['continuous'],
                'labels_discrete': train_labels['discrete'],
                'labels_todiscretize': train_labels['todiscretize'],
@@ -1244,6 +1253,8 @@ class PoseLabels:
         train_labels['scale'] = raw_labels['scale']
         if 'categories' in raw_labels:
             train_labels['categories'] = raw_labels['categories']
+        else:
+            train_labels['categories'] = None
 
         if not self.flatten_labels:
             train_labels['continuous'] = raw_labels['continuous'][..., self.starttoff:, :]

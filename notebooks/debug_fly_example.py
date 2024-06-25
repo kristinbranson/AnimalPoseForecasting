@@ -15,6 +15,10 @@
 
 # %%
 ## Imports
+
+# %load_ext autoreload
+# %autoreload 2
+
 import numpy as np
 import torch
 import matplotlib
@@ -173,6 +177,8 @@ def compare_dicts(old_ex,new_ex,maxerr=None):
     err = 0.
     if not k in new_ex:
       print(f'Missing key {k}')
+    elif type(v) is not type(new_ex[k]):
+      print(f'Type mismatch for key {k}: {type(v)} vs {type(new_ex[k])}')
     elif type(v) is torch.Tensor:
       v = v.cpu().numpy()
       newv = new_ex[k]
@@ -355,14 +361,22 @@ _ = debug_plot_batch_traj(example_batch,train_dataset,nsamplesplot=1)
 
 # %%
 ## check constructor from keypoints
+print('Comparing FlyExample created from keypoints to FlyExample created from training example')
 flyexample = train_dataset.data[0]
-Xkp0 = data['X'][:,:,flyexample.metadata['t0']:flyexample.metadata['t0']+contextlpad,:]
-Xkp = flyexample.labels.get_next_keypoints()
 train_example0 = flyexample.get_train_example()
-flyexample_kp = FlyExample(Xkp=Xkp,scale=scale_perfly[:,flyexample.metadata['id']],
+
+Xkp0 = data['X'][:,:,flyexample.metadata['t0']:flyexample.metadata['t0']+contextlpad,:]
+flyexample_kp = FlyExample(Xkp=Xkp0,scale=scale_perfly[:,flyexample.metadata['id']],
                             flynum=flyexample.metadata['flynum'],metadata=flyexample.metadata,
                             **flyexample.get_params())
 train_example_kp = flyexample_kp.get_train_example()
+compare_dicts(train_example0,train_example_kp,maxerr=1e-9)
+
+
+# %%
+print(train_example_kp.keys())
+print(train_example0.keys())
+
 
 # %%
 ## done
