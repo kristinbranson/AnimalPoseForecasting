@@ -45,7 +45,7 @@ config = read_config(configfile)
 
 # override parameters in config file for testing
 # debug velocity representation
-config['compute_pose_vel'] = True
+#config['compute_pose_vel'] = True
 # debug dct
 config['dct_tau'] = 4
 # debug no multi time-scale predictions
@@ -356,7 +356,8 @@ compare_dicts(raw_batch,trainbatch1,maxerr=1e-9)
 
 _ = debug_plot_pose(example_batch,data=data)
 _ = debug_plot_sample(example_batch,train_dataset)
-_ = debug_plot_batch_traj(example_batch,train_dataset,nsamplesplot=1)
+fig = plt.figure(figsize=(12,12))
+_ = debug_plot_batch_traj(example_batch,train_dataset,pred=raw_batch,nsamplesplot=1,fig=fig,ntsplot_global=3,ntsplot_relative=1)
 #old_fly_llm.debug_plot_sample_inputs(old_train_dataset,raw_batch)
 
 # %%

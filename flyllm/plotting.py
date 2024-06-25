@@ -533,7 +533,10 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
         mask = None
 
     if ax is None:
-        fig, ax = plt.subplots(1, nsamplesplot, squeeze=False)
+        if fig is None:
+          fig, ax = plt.subplots(1, nsamplesplot, squeeze=False)
+        else:
+          ax = fig.subplots(1, nsamplesplot, squeeze=False)
         ax = ax[0, :]
 
     featidxplot, ftplot = example[0].labels.select_featidx_plot(ntsplot=ntsplot,
@@ -555,8 +558,13 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
             rawpred = get_batch_idx(pred, iplot)
             if 'continuous' in rawpred:
                 zmovement_continuous_pred = rawpred['continuous']
+            elif 'labels' in rawpred:
+                zmovement_continuous_pred = rawpred['labels']
             if 'discrete' in rawpred:
                 zmovement_discrete_pred = rawpred['discrete']
+                zmovement_discrete_pred = torch.softmax(zmovement_discrete_pred, dim=-1)
+            elif 'labels_discrete' in rawpred:
+                zmovement_discrete_pred = rawpred['labels_discrete']
                 zmovement_discrete_pred = torch.softmax(zmovement_discrete_pred, dim=-1)
             if criterion is not None:
                 err_total, err_discrete, err_continuous = criterion_wrapper(rawlabelstrue, rawpred, criterion,
