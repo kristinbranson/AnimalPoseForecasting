@@ -200,6 +200,10 @@ def compare_dicts(old_ex,new_ex,maxerr=None):
         print(f'not comparing {k}')
     if maxerr is not None:
       assert err < maxerr
+      
+  missing_keys = [k for k in new_ex.keys() if not k in old_ex]
+  if len(missing_keys) > 0:
+    print(f'Missing keys: {missing_keys}')
 
   return
 
@@ -362,7 +366,6 @@ _ = debug_plot_batch_traj(example_batch,train_dataset,pred=raw_batch,nsamplesplo
 
 # %%
 ## check constructor from keypoints
-print('Comparing FlyExample created from keypoints to FlyExample created from training example')
 flyexample = train_dataset.data[0]
 train_example0 = flyexample.get_train_example()
 
@@ -371,7 +374,15 @@ flyexample_kp = FlyExample(Xkp=Xkp0,scale=scale_perfly[:,flyexample.metadata['id
                             flynum=flyexample.metadata['flynum'],metadata=flyexample.metadata,
                             **flyexample.get_params())
 train_example_kp = flyexample_kp.get_train_example()
+print('Comparing FlyExample created from keypoints to FlyExample created from training example')
 compare_dicts(train_example0,train_example_kp,maxerr=1e-9)
+poselabels_kp = PoseLabels(Xkp=Xkp0[...,flynum],scale=scale_perfly[:,flyexample.metadata['id']],
+                           metadata=flyexample.metadata,
+                           **flyexample.get_poselabel_params()) 
+train_labels_kp = poselabels_kp.get_train_labels(namingscheme='train')
+print('\nComparing PoseLabels created from keypoints to FlyExample created from training example')
+compare_dicts(train_labels_kp,train_example0,maxerr=1e-9)
+
 
 
 # %%

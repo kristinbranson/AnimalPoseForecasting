@@ -4,7 +4,7 @@ import copy
 
 from flyllm.config import featglobal, featrelative, featangle, posenames, nfeatures
 from flyllm.data import weighted_sample, discretize_labels
-from flyllm.utils import modrange, rotate_2d_points, len_wrapper, dict_convert_torch_to_numpy, compute_npad
+from flyllm.utils import modrange, rotate_2d_points, len_wrapper, dict_convert_torch_to_numpy
 from flyllm.features import (
     compute_features,
     combine_inputs,
@@ -17,7 +17,8 @@ from flyllm.features import (
     unravel_label_index,
     zscore,
     unzscore,
-    feat2kp
+    feat2kp,
+    kp2feat
 )
 
 
@@ -334,21 +335,15 @@ class FlyExample:
 
         return
       
-    def get_compute_features_npad(self):
-        npad = compute_npad(self.tspred_global, self.dct_m)
-        return npad
-
     def compute_features(self, Xkp, flynum=0, scale=None, metadata=None):
 
-        npad = self.get_compute_features_npad()
         example = compute_features(Xkp, flynum=flynum, scale_perfly=scale, outtype=np.float32,
                                    simplify_in=self.simplify_in,
                                    simplify_out=self.simplify_out,
                                    dct_m=self.dct_m,
                                    tspred_global=self.tspred_global,
                                    compute_pose_vel=self.is_velocity,
-                                   discreteidx=self.discreteidx,
-                                   npad=npad)
+                                   discreteidx=self.discreteidx)
 
         return example
 
@@ -601,7 +596,6 @@ class PoseLabels:
         elif Xkp is not None:
             self.set_keypoints(Xkp, scale)
 
-        # TODO: This assert fails in notebook debug_fly_llm.py, with 24 != 65
         if 'continuous' in self.labels_raw:
             assert self.d_multicontinuous == self.labels_raw['continuous'].shape[-1]
         if self.is_discretized() and 'discrete' in self.labels_raw:
@@ -1227,7 +1221,7 @@ class PoseLabels:
     def get_flatten_max_doutput(self):
         return np.max(self.d_multicontinuous, self.discretize_nbins)
 
-    def get_train_labels(self, added_noise=None):
+    def get_train_labels(self, added_noise=None, namingscheme='standard'):
 
         # makes a copy
         raw_labels = self.get_raw_labels_tensor_copy()
@@ -1235,18 +1229,33 @@ class PoseLabels:
         # to do: add noise
         assert added_noise is None, 'not implemented'
 
+        rename_dict = {'discrete': 'discrete', 
+                       'continuous': 'continuous', 
+                       'todiscretize': 'todiscretize',
+                       'continuous_init': 'continuous_init',
+                       'discrete_init': 'discrete_init', 
+                       'todiscretize_init': 'todiscretize_init'}
+                        
+        if namingscheme == 'train':
+          rename_dict['discrete'] = 'labels_discrete'
+          rename_dict['continuous'] = 'labels'
+          rename_dict['todiscretize'] = 'labels_todiscretize'
+          rename_dict['continuous_init'] = 'labels_init'
+          rename_dict['discrete_init'] = 'labels_discrete_init'
+          rename_dict['todiscretize_init'] = 'labels_todiscretize_init'
+
         train_labels = {}
 
         if self.is_discretized():
-            train_labels['discrete'] = raw_labels['discrete'][..., self.starttoff:, :, :]
-            train_labels['todiscretize'] = raw_labels['todiscretize'][..., self.starttoff:, :]
-            train_labels['discrete_init'] = raw_labels['discrete'][..., :self.starttoff, :, :]
-            train_labels['todiscretize_init'] = raw_labels['todiscretize'][..., :self.starttoff, :]
+            train_labels[rename_dict['discrete']] = raw_labels['discrete'][..., self.starttoff:, :, :]
+            train_labels[rename_dict['todiscretize']] = raw_labels['todiscretize'][..., self.starttoff:, :]
+            train_labels[rename_dict['discrete_init']] = raw_labels['discrete'][..., :self.starttoff, :, :]
+            train_labels[rename_dict['todiscretize_init']] = raw_labels['todiscretize'][..., :self.starttoff, :]
         else:
-            train_labels['discrete'] = None
-            train_labels['todiscretize'] = None
-            train_labels['discrete_init'] = None
-            train_labels['todiscretize_init'] = None
+            train_labels[rename_dict['discrete']] = None
+            train_labels[rename_dict['todiscretize']] = None
+            train_labels[rename_dict['discrete_init']] = None
+            train_labels[rename_dict['todiscretize_init']] = None
 
         train_labels['init_all'] = raw_labels['init']
         train_labels['init'] = raw_labels['init'][..., self.starttoff]
@@ -1257,8 +1266,8 @@ class PoseLabels:
             train_labels['categories'] = None
 
         if not self.flatten_labels:
-            train_labels['continuous'] = raw_labels['continuous'][..., self.starttoff:, :]
-            train_labels['continuous_init'] = raw_labels['continuous'][..., :self.starttoff, :]
+            train_labels[rename_dict['continuous']] = raw_labels['continuous'][..., self.starttoff:, :]
+            train_labels[rename_dict['continuous_init']] = raw_labels['continuous'][..., :self.starttoff, :]
             if 'mask' in raw_labels:
                 train_labels['mask'] = raw_labels['mask'][..., self.starttoff:]
         else:
@@ -1283,9 +1292,9 @@ class PoseLabels:
                 #   newmask[:,-1] = True
                 # else:
                 #   newmask[:,-1] = mask.clone()
-            train_labels['continuous'] = flatlabels
+            train_labels[rename_dict['continuous']] = flatlabels
             train_labels['continuous_stacked'] = raw_labels['continuous']
-            train_labels['continuous_init'] = None
+            train_labels[rename_dict['continuous_init']] = None
 
         return train_labels
 
@@ -1838,11 +1847,11 @@ class PoseLabels:
                                    discreteidx=self.idx_nextdiscrete_to_next,
                                    simplify_in='no_sensory')
 
-        # TODO: I believe these should be deleted as this is done on set_raw_example
-        #       and it uses functions that are not defined
-        # KB: correct!
-
         self.set_raw_example(example,dozscore=self.is_zscored(),dodiscretize=self.is_discretized())
+        
+        if self.init_pose is None:
+          self.init_pose = kp2feat(Xkp[:,:,:2],scale)[...,0]
+        
         return
 
     def get_next_velocity(self, **kwargs):

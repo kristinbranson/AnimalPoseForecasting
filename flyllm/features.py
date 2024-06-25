@@ -10,7 +10,7 @@ from flyllm.config import (
     featglobal, kpvision_other, kptouch_other, featthetaglobal, kpeye, kptouch,
     SENSORY_PARAMS
 )
-from flyllm.utils import modrange, rotate_2d_points, boxsum, angledist2xy, mod2pi, atleast_4d
+from flyllm.utils import modrange, rotate_2d_points, boxsum, angledist2xy, mod2pi, atleast_4d, compute_npad
 
 
 """ Pose features
@@ -920,7 +920,7 @@ def combine_inputs(relpose=None, sensory=None, input=None, labels=None, dim=0):
 
 def compute_features(X, id=None, flynum=0, scale_perfly=None, smush=True, outtype=None,
                      simplify_out=None, simplify_in=None, dct_m=None, tspred_global=[1, ],
-                     npad=1, compute_pose_vel=True, discreteidx=[], returnidx=False):
+                     npad=None, compute_pose_vel=True, discreteidx=[], returnidx=False):
     res = {}
 
     # convert to relative locations of body parts
@@ -932,6 +932,10 @@ def compute_features(X, id=None, flynum=0, scale_perfly=None, smush=True, outtyp
     relpose, globalpos = compute_pose_features(X[..., flynum], scale)
     relpose = relpose[..., 0]
     globalpos = globalpos[..., 0]
+    
+    if npad is None:
+        npad = compute_npad(tspred_global,dct_m)
+    
     if npad == 0:
         endidx = None
     else:
