@@ -1485,7 +1485,8 @@ class FlyMLMDataset(torch.utils.data.Dataset):
             
             # update observations for this frame
             for i,fly in enumerate(fliespred):
-                examples_pred[i].inputs.set_inputs_from_keypoints(Xkp_fill[:,:,[t,],:],fly,scale=scales[:,i],ts=[t,])
+                # this is just one frame of inputs, so don't crop the end
+                examples_pred[i].inputs.set_inputs_from_keypoints(Xkp_fill[:,:,[t,],:],fly,scale=scales[:,i],ts=[t,],npad=0)
 
         if need_weights:
             return examples_pred, attn_weights

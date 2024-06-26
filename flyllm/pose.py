@@ -24,7 +24,7 @@ from flyllm.features import (
 
 class ObservationInputs:
 
-    def __init__(self, example_in=None, Xkp=None, fly=0, scale=None, dataset=None, dozscore=False, **kwargs):
+    def __init__(self, example_in=None, Xkp=None, fly=0, scale=None, dataset=None, dozscore=False, npad=None, **kwargs):
 
         # to do: deal with flattening
 
@@ -44,7 +44,9 @@ class ObservationInputs:
         if example_in is not None:
             self.set_example(example_in, dozscore=dozscore)
         elif Xkp is not None:
-            self.set_inputs_from_keypoints(Xkp, fly, scale)
+            # use npad to set number of frames to crop from the end manually, 
+            # particularly if there is no label sequence associated with this observation object
+            self.set_inputs_from_keypoints(Xkp, fly, scale, npad=npad)
 
         if self.flatten_obs_idx is not None:
             self.flatten_max_dinput = np.max(list(self.flatten_obs_idx.values()))
@@ -206,8 +208,8 @@ class ObservationInputs:
         self.input = np.concatenate((self.input, toappend), axis=-2)
         return
 
-    def set_inputs_from_keypoints(self, Xkp, fly, scale=None, ts=None):
-        example = compute_features(Xkp, flynum=fly, scale_perfly=scale, **self.get_compute_features_params())
+    def set_inputs_from_keypoints(self, Xkp, fly, scale=None, ts=None, npad=None):
+        example = compute_features(Xkp, flynum=fly, scale_perfly=scale, **self.get_compute_features_params(), npad=npad, compute_labels=False)
         input = example['input']
         self.set_inputs(input, zscored=False, ts=ts)
         return

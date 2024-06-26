@@ -920,7 +920,8 @@ def combine_inputs(relpose=None, sensory=None, input=None, labels=None, dim=0):
 
 def compute_features(X, id=None, flynum=0, scale_perfly=None, smush=True, outtype=None,
                      simplify_out=None, simplify_in=None, dct_m=None, tspred_global=[1, ],
-                     npad=None, compute_pose_vel=True, discreteidx=[], returnidx=False):
+                     npad=None, compute_pose_vel=True, discreteidx=[], returnidx=False,
+                     compute_labels=True):
     res = {}
 
     # convert to relative locations of body parts
@@ -933,9 +934,12 @@ def compute_features(X, id=None, flynum=0, scale_perfly=None, smush=True, outtyp
     relpose = relpose[..., 0]
     globalpos = globalpos[..., 0]
     
+    # how many frames should we cut from the end because of future frame predictions
+    # use the minimum value by default
+    min_npad = compute_npad(tspred_global,dct_m)
     if npad is None:
-        npad = compute_npad(tspred_global,dct_m)
-    
+      npad = min_npad
+      
     if npad == 0:
         endidx = None
     else:
@@ -972,32 +976,7 @@ def compute_features(X, id=None, flynum=0, scale_perfly=None, smush=True, outtyp
             idxinfo['input'] = {k: [vv + relpose.shape[0] for vv in v] for k, v in idxinfo['input'].items()}
             idxinfo['input']['relpose'] = [0, relpose.shape[0]]
 
-    out = compute_movement(relpose=relpose, globalpos=globalpos, simplify=simplify_out, dct_m=dct_m,
-                           tspred_global=tspred_global, compute_pose_vel=compute_pose_vel,
-                           discreteidx=discreteidx, returnidx=returnidx)
-    if returnidx:
-        movement, idxinfo['labels'] = out
-    else:
-        movement = out
-
-    if simplify_out is not None:
-        if simplify_out == 'global':
-            movement = movement[featglobal, ...]
-        else:
-            raise
-
-    res['labels'] = movement.T
-    res['init'] = globalpos[:, :2]
-    res['scale'] = scale
-
-    if not smush:
-        res['global'] = globalpos[:, :-1]
-        res['relative'] = relpose[:, :-1]
-        res['nextglobal'] = globalpos[:, -1]
-        res['nextrelative'] = relpose[:, -1]
-        if simplify_in == 'no_sensory':
-            pass
-        else:
+        if not smush:
             res['wall_touch'] = wall_touch[:, :-1]
             res['otherflies_vision'] = otherflies_vision[:, :-1]
             res['next_wall_touch'] = wall_touch[:, -1]
@@ -1006,8 +985,48 @@ def compute_features(X, id=None, flynum=0, scale_perfly=None, smush=True, outtyp
                 res['otherflies_touch'] = otherflies_touch[:, :-1]
                 res['next_otherflies_touch'] = otherflies_touch[:, -1]
 
+    res['scale'] = scale
+
+    # if we can't/shouldn't compute labels, just output the inputs
+    if relpose.shape[-1] <= min_npad or not compute_labels:
+        # sequence to short to compute movement
+        res['labels'] = None
+        res['init'] = None
+        
+        if not smush:
+            res['global'] = None
+            res['relative'] = None
+            res['nextglobal'] = None
+            res['nextrelative'] = None
+        
+    else:
+        out = compute_movement(relpose=relpose, globalpos=globalpos, simplify=simplify_out, dct_m=dct_m,
+                              tspred_global=tspred_global, compute_pose_vel=compute_pose_vel,
+                              discreteidx=discreteidx, returnidx=returnidx)
+        if returnidx:
+            movement, idxinfo['labels'] = out
+        else:
+            movement = out
+
+        if simplify_out is not None:
+            if simplify_out == 'global':
+                movement = movement[featglobal, ...]
+            else:
+                raise
+
+        res['labels'] = movement.T
+        res['init'] = globalpos[:, :2]
+
+        if not smush:
+            res['global'] = globalpos[:, :-1]
+            res['relative'] = relpose[:, :-1]
+            res['nextglobal'] = globalpos[:, -1]
+            res['nextrelative'] = relpose[:, -1]
+
     if outtype is not None:
-        res = {key: val.astype(outtype) for key, val in res.items()}
+      for key, val in res.items():
+        if val is not None:
+          res[key] = val.astype(outtype)
 
     if returnidx:
         return res, idxinfo
