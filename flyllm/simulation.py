@@ -396,7 +396,7 @@ def animate_predict_open_loop(model, dataset, data, scale_perfly, config, fliesp
     model.eval()
 
     # capture all outputs of predict_open_loop in a tuple
-    res = dataset.predict_open_loop(examples_pred, burnin, model, maxcontextl=config['contextl'],
+    res = dataset.predict_open_loop(examples_pred, fliespred, scales, Xkp, burnin, model, maxcontextl=config['contextl'],
                                     debug=debug, need_weights=plotattnweights, nsamples=nsamplesfuture)
     Xkp_pred, zinputs, globalposfuture_pred, relposefuture_pred = res[:4]
     if plotattnweights:

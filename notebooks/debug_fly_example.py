@@ -382,6 +382,13 @@ poselabels_kp = PoseLabels(Xkp=Xkp0[...,flynum],scale=scale_perfly[:,flyexample.
 train_labels_kp = poselabels_kp.get_train_labels(namingscheme='train')
 print('\nComparing PoseLabels created from keypoints to FlyExample created from training example')
 compare_dicts(train_labels_kp,train_example0,maxerr=1e-9)
+obs_kp = ObservationInputs(Xkp=Xkp0,scale=scale_perfly[:,flyexample.metadata['id']],
+                           **flyexample.get_observationinputs_params())
+train_input_kp = obs_kp.get_train_inputs(input_labels=flyexample_kp.get_input_labels())
+err = torch.max(torch.abs(train_input_kp['input']-train_example0['input'])).item()
+print('\nComparing ObservationInputs created from keypoints to FlyExample created from training example')
+print(f'max diff input: {err:e}')
+assert err < 1e-9
 
 
 

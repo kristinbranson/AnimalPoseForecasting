@@ -67,18 +67,9 @@ class ObservationInputs:
 
     @staticmethod
     def flyexample_to_observationinput_params(params):
+        kwinputs = copy.deepcopy(params)
         zscore_params_input, _ = FlyExample.split_zscore_params(params['zscore_params'])
-        kwinputs = {'zscore_params': zscore_params_input, }
-        if 'simplify_in' in params:
-            kwinputs['simplify_in'] = params['simplify_in']
-        if 'flatten_obs' in params:
-            kwinputs['flatten_obs'] = params['flatten_obs']
-        if 'starttoff' in params:
-            kwinputs['starttoff'] = params['starttoff']
-        if 'flatten_obs_idx' in params:
-            kwinputs['flatten_obs_idx'] = params['flatten_obs_idx']
-        if 'do_input_labels' in params:
-            kwinputs['do_input_labels'] = params['do_input_labels']
+        kwinputs['zscore_params'] = zscore_params_input
         return kwinputs
 
     @staticmethod
@@ -105,7 +96,23 @@ class ObservationInputs:
         params = FlyExample.get_params_from_dataset(dataset)
         params = ObservationInputs.flyexample_to_observationinput_params(params)
         return params
-
+      
+    def get_compute_features_params(self):
+        cfparams = {'outtype': np.float32}
+        if hasattr(self, 'simplify_in'):
+          cfparams['simplify_in'] = self.simplify_in
+        if hasattr(self, 'simplify_out'):
+          cfparams['simplify_out'] = self.simplify_out
+        if hasattr(self, 'dct_m'):
+          cfparams['dct_m'] = self.dct_m
+        if hasattr(self, 'tspred_global'):
+          cfparams['tspred_global'] = self.tspred_global
+        if hasattr(self, 'is_velocity'):
+          cfparams['compute_pose_vel'] = self.is_velocity
+        if hasattr(self, 'discreteidx'):
+          cfparams['discreteidx'] = self.discreteidx
+        return cfparams
+      
     def set_example(self, example_in, dozscore=False):
         self.input = example_in['input']
         if 'init_all' in example_in:
@@ -122,7 +129,7 @@ class ObservationInputs:
 
         if 'metadata' in example_in:
             self.metadata = example_in['metadata']
-
+            
     @property
     def ntimepoints(self):
         if self.input is None:
@@ -184,10 +191,13 @@ class ObservationInputs:
         train_inputs[..., idx[0]:idx[1]] += eta_pose
         return train_inputs
 
-    def set_inputs(self, input, zscored=False):
+    def set_inputs(self, input, zscored=False, ts=None):
         if zscored == False and self.is_zscored():
             input = zscore(input, self.zscore_params['mu_input'], self.zscore_params['sig_input'])
-        self.input = input
+        if ts is None:
+            self.input = input
+        else:
+            self.input[..., ts, :] = input
         return
 
     def append_inputs(self, toappend, zscored=False):
@@ -196,12 +206,10 @@ class ObservationInputs:
         self.input = np.concatenate((self.input, toappend), axis=-2)
         return
 
-    def set_inputs_from_keypoints(self, Xkp, fly, scale=None):
-        sensory = compute_sensory_wrapper(Xkp, fly)
-        labels = PoseLabels(Xkp=Xkp[..., fly], scale=scale, is_velocity=False)
-        pose_relative = labels.get_next_pose_relative()
-        input = combine_inputs(relpose=pose_relative, sensory=sensory, dim=-1)
-        self.set_inputs(input, zscored=False)
+    def set_inputs_from_keypoints(self, Xkp, fly, scale=None, ts=None):
+        example = compute_features(Xkp, flynum=fly, scale_perfly=scale, **self.get_compute_features_params())
+        input = example['input']
+        self.set_inputs(input, zscored=False, ts=ts)
         return
 
     def append_keypoints(self, Xkp, fly, scale=None):
@@ -620,8 +628,6 @@ class PoseLabels:
     def set_prediction(self, pred,ts=None):
         if ts is None:
             ts = slice(self.starttoff,None)
-        else:
-            ts = ts+self.starttoff
         if self.is_continuous():
             if 'continuous' in pred:
                 self.labels_raw['continuous'][..., ts, :] = pred['continuous']
@@ -636,6 +642,16 @@ class PoseLabels:
                 self.labels_raw['discrete'][..., ts, :, :] = pred['labels_discrete']
             else:
                 raise ValueError('pred must contain discrete or labels_discrete')
+            
+        if 'todiscretize' in self.labels_raw:
+            if 'labels_todiscretize' in pred:
+                self.labels_raw['todiscretize'][...,ts,:] = pred['labels_todiscretize']
+            elif 'todiscretize' in pred:
+                self.labels_raw['todiscretize'][...,ts,:] = pred['todiscretize']
+            else:
+                self.labels_raw['todiscretize'][...,ts,:] = np.nan
+
+            
         return
 
     def set_raw_example(self, example_in, dozscore=False, dodiscretize=False):
@@ -1199,7 +1215,10 @@ class PoseLabels:
             else:
                 labels_out[kout] = self.labels_raw[kin]
             if ts is not None:
-                labels_out[kout] = labels_out[kout][..., ts, :]
+                if kin == 'discrete':
+                    labels_out[kout] = labels_out[kout][..., ts, :, :]
+                else:
+                    labels_out[kout] = labels_out[kout][..., ts, :]
 
         labels_out['init'] = self.get_init_global(makecopy=makecopy)
         labels_out['scale'] = self.get_scale(makecopy=makecopy)
@@ -1666,7 +1685,8 @@ class PoseLabels:
         n = globalvel.shape[0]
         T = globalvel.shape[1]
 
-        globalpos0 = self.init_pose[..., self.idx_nextglobal_to_next, starttoff]
+        if globalpos0 is None:
+            globalpos0 = self.init_pose[..., self.idx_nextglobal_to_next, starttoff]
         xorigin0 = globalpos0[..., :2]
         xtheta0 = globalpos0[..., 2]
 
@@ -1695,16 +1715,15 @@ class PoseLabels:
 
         return relpose
 
-    def next_to_nextpose(self, next):
+    def next_to_nextpose(self, next, globalpos0=None):
 
         szrest = next.shape[:-2]
         n = int(np.prod(szrest))
         starttoff = 0
         T = next.shape[-2]
         next = next.reshape((n, T, self.d_next))
-
         globalvel = next[..., self.idx_nextglobal_to_next]
-        globalpos = self.globalvel_to_globalpos(globalvel, starttoff=starttoff)
+        globalpos = self.globalvel_to_globalpos(globalvel, starttoff=starttoff, globalpos0=globalpos0)
 
         relrep = next[..., self.idx_nextrelative_to_next]
         relpose = self.relrep_to_relpose(relrep, starttoff=starttoff)
@@ -1754,11 +1773,11 @@ class PoseLabels:
 
         return vel
 
-    def get_next_pose(self, **kwargs):
+    def get_next_pose(self, globalpos0=None, **kwargs):
 
         next = self.get_next(**kwargs)
         # global will always be velocity, still need to do an integration
-        next_pose = self.next_to_nextpose(next)
+        next_pose = self.next_to_nextpose(next, globalpos0=globalpos0)
         return next_pose
 
     def next_to_nextrelative(self, next):
@@ -1853,7 +1872,7 @@ class PoseLabels:
           self.init_pose = kp2feat(Xkp[:,:,:2],scale)[...,0]
         
         return
-
+    
     def get_next_velocity(self, **kwargs):
 
         next = self.get_next(**kwargs)

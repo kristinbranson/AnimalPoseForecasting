@@ -1318,7 +1318,7 @@ class FlyMLMDataset(torch.utils.data.Dataset):
 
         return net_mask, is_causal
 
-    def predict_open_loop(self, examples_pred, burnin, model, maxcontextl=np.inf, debug=False,
+    def predict_open_loop(self, examples_pred, fliespred, scales, Xkp_fill, burnin, model, maxcontextl=np.inf, debug=False,
                           need_weights=False, nsamples=0, movement_true=None):
         """
       predict_open_loop(self,Xkp,fliespred,scales,burnin,model,sensory_params,maxcontextl=np.inf,debug=False)
@@ -1371,13 +1371,24 @@ class FlyMLMDataset(torch.utils.data.Dataset):
 
         # start predicting motion from frame burnin-1 to burnin = t
         masksizeprev = None
+        
+        # global position of each fly in the previous frame, so that we don't have to integrate to compute position
+        globalpos_prev = []
+        for i in range(nfliespred):
+            globalpos_curr = examples_pred[i].labels.get_next_pose_global(ts=np.arange(burnin),use_todiscretize=True)[-1]
+            globalpos_prev.append(globalpos_curr)
+        
         for t in tqdm.trange(burnin, tpred):
             t0 = int(np.maximum(t - maxcontextl, 0))
 
-            for i in range(nfliespred):
-                example_pred = examples_pred[i].copy_subindex(ts=np.arange(t0, t))
-                inputs_curr = example_pred.get_inputs().get_train_inputs()
-                xcurr = inputs_curr['input']
+            for i,fly in enumerate(fliespred):
+                # copy frames up to t
+                example_pred = examples_pred[i].copy_subindex(ts=np.arange(t0, t+1))
+                # inputs will go from t0 through t
+                # labels (unused) will go from t0+example_pred.starttoff through t+example_pred.starttoff
+                test_example = example_pred.get_train_example()
+                xcurr = test_example['input']
+                assert not torch.any(torch.isnan(xcurr))
                 xcurr, _, _ = self.mask_input(xcurr, masktype)
 
                 if debug:
@@ -1458,9 +1469,23 @@ class FlyMLMDataset(torch.utils.data.Dataset):
                             pred = model.randpred(pred)
                         # z-scored movement from t to t+1
                         pred = pred_apply_fun(pred, lambda x: x[0, -1, ...].cpu().numpy())
-                        examples_pred[i].set_prediction(pred,ts=t)
+                        
+                        # set the label for frame t, but not the inputs yet
+                        examples_pred[i].labels.set_prediction(pred,ts=t)
+                        
+                        # store keypoints predicted for this frame
+                        Xkpcurr = examples_pred[i].labels.get_next_keypoints(ts=[t,],globalpos0=globalpos_prev[i])
+                        Xkp_fill[:,:,t,fly] = Xkpcurr[-1]
+                        globapos_curr = examples_pred[i].labels.get_next_pose_global(ts=[t,],globalpos0=globalpos_prev[i])
+                        globalpos_prev[i] = globapos_curr
+                        
                     # end else flatten
                 # end else debug
+            # end loop over flies
+            
+            # update observations for this frame
+            for i,fly in enumerate(fliespred):
+                examples_pred[i].inputs.set_inputs_from_keypoints(Xkp_fill[:,:,[t,],:],fly,scale=scales[:,i],ts=[t,])
 
         if need_weights:
             return examples_pred, attn_weights
