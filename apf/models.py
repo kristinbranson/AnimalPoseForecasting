@@ -3,10 +3,6 @@ import math
 import typing
 import torch
 
-from flyllm.config import nfeatures
-from flyllm.pose import FlyExample
-# TODO: remove specific knowledge about the data in this file
-
 
 lossfcn_discrete = torch.nn.CrossEntropyLoss()
 lossfcn_continuous = torch.nn.L1Loss()
@@ -975,8 +971,8 @@ def initialize_model(config, train_dataset, device):
         model = TransformerModel(d_input, d_output, **MODEL_ARGS).to(device)
 
         if train_dataset.discretize:
-            # this should be maybe be len(train_dataset.discreteidx) / train_dataset.d_output
-            config['weight_discrete'] = len(config['discreteidx']) / nfeatures
+            # Before refactor this was: config['weight_discrete'] = len(config['discreteidx']) / nfeatures
+            config['weight_discrete'] = len(train_dataset.discreteidx) / train_dataset.d_output
             if config['modeltype'] == 'mlm':
                 criterion = mixed_masked_criterion
             else:
@@ -1048,53 +1044,6 @@ def update_loss_nepochs(loss_epoch, nepochs):
             n = torch.zeros(nepochs - v.numel(), dtype=v.dtype, device=v.device) + torch.nan
             loss_epoch[k] = torch.cat((v, n))
     return
-
-
-def predict_all(dataloader, dataset, model, config, mask):
-    is_causal = dataset.ismasked() == False
-
-    with torch.no_grad():
-        w = next(iter(model.parameters()))
-        device = w.device
-
-    example_params = dataset.get_flyexample_params()
-
-    # compute predictions and labels for all validation data using default masking
-    all_pred = []
-    all_mask = []
-    all_labels = []
-    # all_pred_discrete = []
-    # all_labels_discrete = []
-    with torch.no_grad():
-        for example in dataloader:
-            pred = model.output(example['input'].to(device=device), mask=mask, is_causal=is_causal)
-            if config['modelstatetype'] == 'prob':
-                pred = model.maxpred(pred)
-            elif config['modelstatetype'] == 'best':
-                pred = model.randpred(pred)
-            if isinstance(pred, dict):
-                pred = {k: v.cpu() for k, v in pred.items()}
-            else:
-                pred = pred.cpu()
-            # pred1 = dataset.get_full_pred(pred)
-            # labels1 = dataset.get_full_labels(example=example,use_todiscretize=True)
-            example_obj = FlyExample(example_in=example, **example_params)
-            label_obj = example_obj.labels
-            pred_obj = label_obj.copy()
-            pred_obj.erase_labels()
-            pred_obj.set_prediction(pred)
-
-            for i in range(np.prod(label_obj.pre_sz)):
-                all_pred.append(pred_obj.copy_subindex(idx_pre=i))
-                all_labels.append(label_obj.copy_subindex(idx_pre=i))
-
-            # if dataset.discretize:
-            #   all_pred_discrete.append(pred['discrete'])
-            #   all_labels_discrete.append(example['labels_discrete'])
-            # if 'mask' in example:
-            #   all_mask.append(example['mask'])
-
-    return all_pred, all_labels  # ,all_mask,all_pred_discrete,all_labels_discrete
 
 
 def pred_apply_fun(pred, fun):

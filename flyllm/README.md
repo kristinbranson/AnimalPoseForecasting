@@ -10,13 +10,11 @@ Reorganization of flyllm.py and a subset of MABeFlyUtils.py, copied from https:/
 
 **features.py**: Functions for extracting features from tracking data.
 
-**data.py**: Functions for loading data, chunking data, splitting data, flipping data, etc.
-
 **dataset.py**: FlyMLMDataset class.
 
 **model.py**: Neural network modules and related functions.
 
-**io.py**: Functions for loading and saving models and config.
+**io.py**: Functions for loading and saving models, data and config.
 
 **plotting.py**: Functions for plotting flies, features, and other debugging information.
 

@@ -3,8 +3,8 @@ import torch
 import copy
 
 from flyllm.config import featglobal, featrelative, featangle, posenames, nfeatures
-from flyllm.data import weighted_sample, discretize_labels
-from flyllm.utils import modrange, rotate_2d_points, len_wrapper, dict_convert_torch_to_numpy
+from apf.data import weighted_sample, discretize_labels
+from apf.utils import modrange, rotate_2d_points, len_wrapper, dict_convert_torch_to_numpy
 from flyllm.features import (
     compute_features,
     combine_inputs,

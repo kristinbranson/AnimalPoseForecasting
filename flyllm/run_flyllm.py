@@ -12,8 +12,24 @@ import datetime
 import argparse
 import pickle
 
-from flyllm.config import posenames, featglobal, featrelative, nfeatures
-from flyllm.features import compute_features, kp2feat
+from apf.utils import get_dct_matrix, compute_npad
+from apf.data import (
+    interval_all,
+    chunk_data,
+    debug_less_data,
+    data_to_kp_from_metadata,
+    compare_dicts,
+)
+from apf.models import (
+    initialize_model, initialize_loss,
+    generate_square_full_mask,
+    criterion_wrapper,
+    compute_loss,
+    update_loss_nepochs,
+    sanity_check_temporal_dep,
+)
+from flyllm.config import featglobal, featrelative, nfeatures
+from flyllm.features import compute_features, kp2feat, sanity_check_tspred
 from flyllm.plotting import (
     debug_plot_dct_relative_error,
     debug_plot_global_error,
@@ -24,36 +40,16 @@ from flyllm.plotting import (
     debug_plot_batch_traj,
     initialize_debug_plots, update_debug_plots,
     initialize_loss_plots, update_loss_plots,
-    select_featidx_plot,
-)
-from flyllm.data import (
-    load_and_filter_data,
-    interval_all,
-    chunk_data,
-    sanity_check_tspred,
-    debug_less_data,
-    data_to_kp_from_metadata,
-    compare_dicts,
 )
 from flyllm.dataset import FlyMLMDataset
 from flyllm.simulation import animate_predict_open_loop
-from flyllm.utils import get_dct_matrix, compute_npad
-from flyllm.models import (
-    initialize_model, initialize_loss,
-    generate_square_full_mask,
-    criterion_wrapper,
-    compute_loss,
-    predict_all,
-    update_loss_nepochs,
-    sanity_check_temporal_dep,
-    stack_batch_list,
-)
 from flyllm.pose import FlyExample
 from flyllm.io import (
     read_config, load_config_from_model_file, get_modeltype_str,
     load_model, save_model, parse_modelfile,
-    clean_intermediate_results
+    clean_intermediate_results, load_and_filter_data
 )
+from flyllm.prediction import predict_all
 
 
 def debug_fly_example(configfile=None, loadmodelfile=None, restartmodelfile=None):

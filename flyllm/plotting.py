@@ -4,18 +4,18 @@ import matplotlib.pyplot as plt
 from matplotlib import cm, colors
 import torch
 
+from apf.models import criterion_wrapper
+from apf.utils import npindex
+from apf.data import get_batch_idx, split_data_by_id, select_bin_edges, get_real_agents
 from flyllm.config import (
     SENSORY_PARAMS, ARENA_RADIUS_MM,
     posenames, keypointnames, scalenames, skeleton_edges, keypointidx,
     featglobal, featrelative, kpvision_other,
     nglobal, nrelative, nkptouch, nfeatures
 )
-from flyllm.data import get_batch_idx, load_and_filter_data, split_data_by_id, select_bin_edges, get_real_flies
-from flyllm.features import compute_features, get_sensory_feature_idx, zscore, unzscore
+from flyllm.features import compute_features, zscore, unzscore
 from flyllm.pose import FlyExample
-from flyllm.models import criterion_wrapper
-from flyllm.utils import npindex
-from flyllm.io import read_config
+from flyllm.io import read_config, load_and_filter_data
 
 
 def select_featidx_plot(train_dataset, ntspred_plot, ntsplot_global=None, ntsplot_relative=None):
@@ -122,7 +122,7 @@ def plot_fly(pose=None, kptidx=keypointidx, skelidx=skeleton_edges, fig=None, ax
     assert (skelidx is not None)
 
     fig, ax, isnewaxis = set_fig_ax(fig=fig, ax=ax)
-    isreal = get_real_flies(pose[:, :, np.newaxis])
+    isreal = get_real_agents(pose[:, :, np.newaxis])
 
     hkpts = None
     hedges = None
