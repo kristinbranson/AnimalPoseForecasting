@@ -12,8 +12,24 @@ import datetime
 import argparse
 import pickle
 
-from flyllm.config import posenames, featglobal, featrelative, nfeatures
-from flyllm.features import compute_features, kp2feat
+from apf.utils import get_dct_matrix, compute_npad
+from apf.data import (
+    interval_all,
+    chunk_data,
+    debug_less_data,
+    data_to_kp_from_metadata,
+    compare_dicts,
+)
+from apf.models import (
+    initialize_model, initialize_loss,
+    generate_square_full_mask,
+    criterion_wrapper,
+    compute_loss,
+    update_loss_nepochs,
+    sanity_check_temporal_dep,
+)
+from flyllm.config import featglobal, featrelative, nfeatures
+from flyllm.features import compute_features, kp2feat, sanity_check_tspred
 from flyllm.plotting import (
     debug_plot_dct_relative_error,
     debug_plot_global_error,
@@ -24,36 +40,62 @@ from flyllm.plotting import (
     debug_plot_batch_traj,
     initialize_debug_plots, update_debug_plots,
     initialize_loss_plots, update_loss_plots,
-    select_featidx_plot,
-)
-from flyllm.data import (
-    load_and_filter_data,
-    interval_all,
-    chunk_data,
-    sanity_check_tspred,
-    debug_less_data,
-    data_to_kp_from_metadata,
-    compare_dicts,
 )
 from flyllm.dataset import FlyMLMDataset
 from flyllm.simulation import animate_predict_open_loop
-from flyllm.utils import get_dct_matrix, compute_npad
-from flyllm.models import (
-    initialize_model, initialize_loss,
-    generate_square_full_mask,
-    criterion_wrapper,
-    compute_loss,
-    predict_all,
-    update_loss_nepochs,
-    sanity_check_temporal_dep,
-    stack_batch_list,
-)
 from flyllm.pose import FlyExample
 from flyllm.io import (
     read_config, load_config_from_model_file, get_modeltype_str,
     load_model, save_model, parse_modelfile,
-    clean_intermediate_results
+    clean_intermediate_results, load_and_filter_data
 )
+
+
+def predict_all(dataloader, dataset, model, config, mask):
+    is_causal = dataset.ismasked() == False
+
+    with torch.no_grad():
+        w = next(iter(model.parameters()))
+        device = w.device
+
+    example_params = dataset.get_flyexample_params()
+
+    # compute predictions and labels for all validation data using default masking
+    all_pred = []
+    all_mask = []
+    all_labels = []
+    # all_pred_discrete = []
+    # all_labels_discrete = []
+    with torch.no_grad():
+        for example in dataloader:
+            pred = model.output(example['input'].to(device=device), mask=mask, is_causal=is_causal)
+            if config['modelstatetype'] == 'prob':
+                pred = model.maxpred(pred)
+            elif config['modelstatetype'] == 'best':
+                pred = model.randpred(pred)
+            if isinstance(pred, dict):
+                pred = {k: v.cpu() for k, v in pred.items()}
+            else:
+                pred = pred.cpu()
+            # pred1 = dataset.get_full_pred(pred)
+            # labels1 = dataset.get_full_labels(example=example,use_todiscretize=True)
+            example_obj = FlyExample(example_in=example, **example_params)
+            label_obj = example_obj.labels
+            pred_obj = label_obj.copy()
+            pred_obj.erase_labels()
+            pred_obj.set_prediction(pred)
+
+            for i in range(np.prod(label_obj.pre_sz)):
+                all_pred.append(pred_obj.copy_subindex(idx_pre=i))
+                all_labels.append(label_obj.copy_subindex(idx_pre=i))
+
+            # if dataset.discretize:
+            #   all_pred_discrete.append(pred['discrete'])
+            #   all_labels_discrete.append(example['labels_discrete'])
+            # if 'mask' in example:
+            #   all_mask.append(example['mask'])
+
+    return all_pred, all_labels  # ,all_mask,all_pred_discrete,all_labels_discrete
 
 
 def debug_fly_example(configfile=None, loadmodelfile=None, restartmodelfile=None):

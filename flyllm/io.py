@@ -4,9 +4,18 @@ import torch
 import json
 import numpy as np
 import pathlib
+import logging
 
-from flyllm.config import SENSORY_PARAMS, featglobal, posenames
-from flyllm.features import get_sensory_feature_idx
+from apf.data import flip_agents, filter_data_by_categories, load_raw_npz_data
+from flyllm.config import SENSORY_PARAMS, featglobal, posenames, keypointnames
+from flyllm.features import (
+    get_sensory_feature_idx,
+    compute_scale_allflies,
+    compute_otherflies_touch_mult,
+    compute_noise_params,
+)
+
+LOG = logging.getLogger(__name__)
 
 codedir = pathlib.Path(__file__).parent.resolve()
 DEFAULTCONFIGFILE = os.path.join(codedir, 'config_fly_llm_default.json')
@@ -304,3 +313,50 @@ def clean_intermediate_results(savedir):
     print(f'Removed {nremoved} files')
     return removed
 
+
+def load_and_filter_data(infile, config):
+    # load data
+    LOG.info(f"loading raw data from {infile}...")
+    data = load_raw_npz_data(infile)
+
+    # compute noise parameters
+    if (len(config['discreteidx']) > 0) and config['discretize_epsilon'] is None:
+        if (config['all_discretize_epsilon'] is None):
+            scale_perfly = compute_scale_allflies(data)
+            config['all_discretize_epsilon'] = compute_noise_params(data, scale_perfly,
+                                                                    simplify_out=config['simplify_out'])
+        config['discretize_epsilon'] = config['all_discretize_epsilon'][config['discreteidx']]
+
+    # filter out data
+    LOG.info('filtering data...')
+    if config['categories'] is not None and len(config['categories']) > 0:
+        filter_data_by_categories(data, config['categories'])
+
+    # augment by flipping
+    if 'augment_flip' in config and config['augment_flip']:
+        flipvideoidx = np.max(data['videoidx']) + 1 + data['videoidx']
+        data['videoidx'] = np.concatenate((data['videoidx'], flipvideoidx), axis=0)
+        firstid = np.max(data['ids']) + 1
+        flipids = data['ids'].copy()
+        flipids[flipids >= 0] += firstid
+        data['ids'] = np.concatenate((data['ids'], flipids), axis=0)
+        data['frames'] = np.tile(data['frames'], (2, 1))
+        flipX = flip_agents(data['X'], keypointnames)
+        data['X'] = np.concatenate((data['X'], flipX), axis=2)
+        data['y'] = np.tile(data['y'], (1, 2, 1))
+        data['isdata'] = np.tile(data['isdata'], (2, 1))
+        data['isstart'] = np.tile(data['isstart'], (2, 1))
+
+    # compute scale parameters
+    LOG.info('computing scale parameters...')
+    scale_perfly = compute_scale_allflies(data)
+
+    if np.isnan(SENSORY_PARAMS['otherflies_touch_mult']):
+        LOG.info('computing touch parameters...')
+        SENSORY_PARAMS['otherflies_touch_mult'] = compute_otherflies_touch_mult(data)
+
+    # throw out data that is missing scale information - not so many frames
+    idsremove = np.nonzero(np.any(np.isnan(scale_perfly), axis=0))[0]
+    data['isdata'][np.isin(data['ids'], idsremove)] = False
+
+    return data, scale_perfly
