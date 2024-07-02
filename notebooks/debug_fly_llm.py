@@ -25,6 +25,7 @@ import os
 from matplotlib import animation
 
 from apf.utils import get_dct_matrix, compute_npad
+from apf.data import chunk_data, interval_all, debug_less_data
 from apf.models import (
     initialize_model,
     initialize_loss,
@@ -34,8 +35,7 @@ from apf.models import (
 )
 from flyllm.io import read_config, get_modeltype_str, load_and_filter_data
 from flyllm.config import scalenames, nfeatures
-from flyllm.features import compute_features
-from apf.data import chunk_data, interval_all, debug_less_data
+from flyllm.features import compute_features, sanity_check_tspred
 from flyllm.dataset import FlyMLMDataset
 from flyllm.plotting import (
     initialize_debug_plots, 
@@ -47,7 +47,7 @@ from flyllm.plotting import (
     debug_plot_predictions_vs_labels,
 )
 from flyllm.simulation import animate_predict_open_loop
-from flyllm.run_flyllm import predict_all
+from flyllm.prediction import predict_all
 # -
 torch.cuda.is_available()
 
