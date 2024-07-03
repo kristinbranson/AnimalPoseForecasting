@@ -51,6 +51,9 @@ from flyllm.prediction import predict_all
 # -
 torch.cuda.is_available()
 
+# %load_ext autoreload
+# %autoreload 2
+
 # ## Load data
 
 # +
@@ -79,9 +82,11 @@ data, scale_perfly = load_and_filter_data(config['intrainfile'], config)
 valdata, val_scale_perfly = load_and_filter_data(config['invalfile'], config)
 
 # for debugging, use only a subset of the data
+n_frames_per_video = 2000
+max_n_videos = 5
 max_frames = config['contextl'] * 100
 for data in [data, valdata]:
-    debug_less_data(data)
+    debug_less_data(data, n_frames_per_video, max_n_videos)
 
 # +
 print(config['contextl'])

@@ -6,6 +6,8 @@ import logging
 
 from apf.utils import get_interval_ends
 
+LOG = logging.getLogger(__name__)
+
 #TODO: Change flynum to agent_num safely
 
 
@@ -85,7 +87,7 @@ def chunk_data(data, contextl, reparamfun, npad=1):
                 t0 = t0[0] + t1 + 1
             nframestotal += contextl
 
-    logging.info(f'In total {nframestotal} frames of data after chunking')
+    LOG.info(f'In total {nframestotal} frames of data after chunking')
 
     return X
 
@@ -95,7 +97,7 @@ def select_bin_edges(movement, nbins, bin_epsilon, outlierprct=0, feati=None):
     lims = np.percentile(movement, [outlierprct, 100 - outlierprct])
     max_bin_epsilon = (lims[1] - lims[0]) / (nbins + 1)
     if bin_epsilon >= max_bin_epsilon:
-        logging.info(
+        LOG.info(
             f'{feati}: bin_epsilon {bin_epsilon} bigger than max bin epsilon {max_bin_epsilon}, '
             f'setting all bins to be the same size'
         )
@@ -313,26 +315,26 @@ def compare_dicts(old_ex, new_ex, maxerr=None):
     for k, v in old_ex.items():
         err = 0.
         if not k in new_ex:
-            logging.info(f'Missing key {k}')
+            LOG.info(f'Missing key {k}')
         elif type(v) is torch.Tensor:
             v = v.cpu().numpy()
             newv = new_ex[k]
             if type(newv) is torch.Tensor:
                 newv = newv.cpu().numpy()
             err = np.nanmax(np.abs(v - newv))
-            logging.info(f'max diff {k}: {err:e}')
+            LOG.info(f'max diff {k}: {err:e}')
         elif type(v) is np.ndarray:
             err = np.nanmax(np.abs(v - new_ex[k]))
-            logging.info(f'max diff {k}: {err:e}')
+            LOG.info(f'max diff {k}: {err:e}')
         elif type(v) is dict:
-            logging.info(f'Comparing dict {k}')
+            LOG.info(f'Comparing dict {k}')
             compare_dicts(v, new_ex[k])
         else:
             try:
                 err = np.nanmax(np.abs(v - new_ex[k]))
-                logging.info(f'max diff {k}: {err:e}')
+                LOG.info(f'max diff {k}: {err:e}')
             except:
-                logging.info(f'not comparing {k}')
+                LOG.info(f'not comparing {k}')
         if maxerr is not None:
             assert err < maxerr
 
@@ -347,18 +349,18 @@ def data_to_kp_from_metadata(data, metadata, ntimepoints):
     return datakp, id
 
 
-def debug_less_data(data, T=10000):
-    data['videoidx'] = data['videoidx'][:T, :]
-    data['ids'] = data['ids'][:T, :]
-    data['frames'] = data['frames'][:T, :]
-    data['X'] = data['X'][:, :, :T, :]
-    data['y'] = data['y'][:, :T, :]
-    data['isdata'] = data['isdata'][:T, :]
-    data['isstart'] = data['isstart'][:T, :]
+def debug_less_data(data, n_frames_per_video=10000, max_n_videos=1):
+    frame_ids = [np.where(data['videoidx'] == idx)[0][:n_frames_per_video] for idx in np.unique(data['videoidx'])]
+    frame_ids = np.concatenate(frame_ids[:max_n_videos])
+
+    data['videoidx'] = data['videoidx'][frame_ids, :]
+    data['ids'] = data['ids'][frame_ids, :]
+    data['frames'] = data['frames'][frame_ids, :]
+    data['X'] = data['X'][:, :, frame_ids, :]
+    data['y'] = data['y'][:, frame_ids, :]
+    data['isdata'] = data['isdata'][frame_ids, :]
+    data['isstart'] = data['isstart'][frame_ids, :]
     return
-
-
-
 
 
 """ Load and filter data
@@ -385,22 +387,24 @@ def load_raw_npz_data(infile: str) -> dict:
     data = {}
     with np.load(infile) as data1:
         for key in data1:
-            logging.info(f'loading {key}')
+            LOG.info(f'loading {key}')
             data[key] = data1[key]
-    logging.info('data loaded')
+    LOG.info('data loaded')
 
-    max_n_agents = data['ids'].shape[1]
-    # ids start at 1, make them start at 0
-    data['ids'][data['ids'] >= 0] -= 1
+    # if ids start at 1, make them start at 0
+    min_valid_id = data['ids'][data['ids'] > -1].min()
+    if min_valid_id > 0:
+        data['ids'][data['ids'] >= 0] -= 1
+
     # starts of sequences, either because video changes or identity tracking issues
     # or because of filtering of training data
+    max_n_agents = data['ids'].shape[1]
     isstart = (data['ids'][1:, :] != data['ids'][:-1, :]) | \
               (data['frames'][1:, :] != (data['frames'][:-1, :] + 1))
     isstart = np.concatenate((np.ones((1, max_n_agents), dtype=bool), isstart), axis=0)
-
-    data['isdata'] = data['ids'] >= 0
     data['isstart'] = isstart
 
+    data['isdata'] = data['ids'] >= 0
     data['categories'] = list(data['categories'])
 
     return data
