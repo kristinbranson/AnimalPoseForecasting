@@ -3,8 +3,6 @@ import numpy as np
 from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
 from matplotlib import animation
-import matplotlib
-matplotlib.use('tkagg')
 import tqdm
 import torch
 import transformers
@@ -742,6 +740,10 @@ def main(configfile, loadmodelfile=None, restartmodelfile=None):
     #                                             torch.as_tensor(labelsrelative_dct.reshape((-1,train_dataset.dct_tau*len(fsdct)))),
     #                                             outnames=outnamescurr,maskidx=maskidx,naxc=len(fstrs))
 
+
+    return
+    # TODO: Remove this return once animation is working with FlyExample
+
     # generate an animation of open loop prediction
     tpred = np.minimum(2000 + config['contextl'], valdata['isdata'].shape[0] // 2)
 
@@ -788,6 +790,9 @@ def main(configfile, loadmodelfile=None, restartmodelfile=None):
 
 
 if __name__ == "__main__":
+    import matplotlib
+    matplotlib.use('tkagg')
+
     # parse arguments
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', type=str, required=False, help='Path to config file', metavar='configfile',
