@@ -86,7 +86,7 @@ n_frames_per_video = 2000
 max_n_videos = 5
 max_frames = config['contextl'] * 100
 for data in [data, valdata]:
-    debug_less_data(data)
+    debug_less_data(data, n_frames_per_video, max_n_videos)
 
 # +
 print(config['contextl'])
