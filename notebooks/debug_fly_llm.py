@@ -54,17 +54,6 @@ torch.cuda.is_available()
 # %load_ext autoreload
 # %autoreload 2
 
-
-
-# +
-agent_type='fly'
-
-tmp1 = r'fly(.*)_epoch\d+_(\d{8}T\d{6})'
-
-tmp2 = '(.*)_epoch\d+_(\d{8}T\d{6})'
-
-# tmp1 == tmp2
-
 # -
 
 # ## Load data
