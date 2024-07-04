@@ -3,7 +3,7 @@ import os
 import numpy as np
 
 from apf.data import load_raw_npz_data, debug_less_data
-from flyllm.io import json_load_helper
+from apf.io import json_load_helper
 
 
 def make_test_data() -> str:

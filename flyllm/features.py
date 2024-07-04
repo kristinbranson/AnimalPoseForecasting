@@ -832,6 +832,12 @@ def compute_otherflies_touch_mult(data, prct=99):
     return otherflies_touch_mult
 
 
+def ensure_otherflies_touch_mult(data):
+    if np.isnan(SENSORY_PARAMS['otherflies_touch_mult']):
+        LOG.info('computing touch parameters...')
+        SENSORY_PARAMS['otherflies_touch_mult'] = compute_otherflies_touch_mult(data)
+
+
 def compute_sensory_wrapper(Xkp, flynum, theta_main=None, returnall=False, returnidx=False):
     # other flies positions
     idxother = np.ones(Xkp.shape[-1], dtype=bool)
@@ -1239,24 +1245,3 @@ def compute_noise_params(data, scale_perfly, sig_tracking=.25 / PXPERMM,
     epsilon = np.sqrt(alld / n)
 
     return epsilon.flatten()
-
-
-def compute_scale_allflies(data):
-    maxid = np.max(data['ids'])
-    maxnflies = data['X'].shape[3]
-    scale_perfly = None
-
-    for flynum in range(maxnflies):
-
-        idscurr = np.unique(data['ids'][data['ids'][:, flynum] >= 0, flynum])
-        for id in idscurr:
-            idx = data['ids'][:, flynum] == id
-            s = compute_scale_perfly(data['X'][..., idx, flynum])
-            if scale_perfly is None:
-                scale_perfly = np.zeros((s.size, maxid + 1))
-                scale_perfly[:] = np.nan
-            else:
-                assert (np.all(np.isnan(scale_perfly[:, id])))
-            scale_perfly[:, id] = s.flatten()
-
-    return scale_perfly

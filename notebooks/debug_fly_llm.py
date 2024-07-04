@@ -33,9 +33,9 @@ from apf.models import (
     sanity_check_temporal_dep,
     criterion_wrapper,
 )
-from flyllm.io import read_config, get_modeltype_str, load_and_filter_data
-from flyllm.config import scalenames, nfeatures
-from flyllm.features import compute_features, sanity_check_tspred
+from apf.io import read_config, get_modeltype_str, load_and_filter_data
+from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames
+from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx
 from flyllm.dataset import FlyMLMDataset
 from flyllm.plotting import (
     initialize_debug_plots, 
@@ -54,13 +54,20 @@ torch.cuda.is_available()
 # %load_ext autoreload
 # %autoreload 2
 
+# -
+
 # ## Load data
 
 # +
 # configuration parameters for this model
 loadmodelfile = None
 restartmodelfile = None
-config = read_config("/groups/branson/home/eyjolfsdottire/code/MABe2022/config_fly_llm_multitimeglob_discrete_20230907.json")
+configfile = "/groups/branson/home/eyjolfsdottire/code/MABe2022/config_fly_llm_multitimeglob_discrete_20230907.json"
+config = read_config(configfile,
+                     default_configfile=DEFAULTCONFIGFILE,
+                     get_sensory_feature_idx=get_sensory_feature_idx,
+                     featglobal=featglobal,
+                     posenames=posenames)
 
 print(f"batch size = {config['batch_size']}")
 
@@ -413,12 +420,7 @@ for epoch in range(epoch, config['num_train_epochs']):
         X = chunk_data(data,config['contextl'],reparamfun,**chunk_data_params)
       
         train_dataset = FlyMLMDataset(X,**train_dataset_params,**dataset_params)
-        print('New training data set created')
-    
-    if (epoch+1)%config['save_epoch'] == 0:
-        savefile = os.path.join(config['savedir'],f"fly{modeltype_str}_epoch{epoch+1}_{savetime}.pth")
-        print(f'Saving to file {savefile}')
-        save_model(savefile,model,lr_optimizer=optimizer,scheduler=lr_scheduler,loss=loss_epoch,config=config)
+        print('New training data set created'))
 
 print('Done training')
 # -
