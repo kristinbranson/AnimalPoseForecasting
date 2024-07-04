@@ -8,14 +8,17 @@ from apf.models import criterion_wrapper
 from apf.utils import npindex
 from apf.data import get_batch_idx, split_data_by_id, select_bin_edges, get_real_agents
 from flyllm.config import (
-    SENSORY_PARAMS, ARENA_RADIUS_MM,
+    DEFAULTCONFIGFILE, SENSORY_PARAMS, ARENA_RADIUS_MM,
     posenames, keypointnames, scalenames, skeleton_edges, keypointidx,
     featglobal, featrelative, kpvision_other,
     nglobal, nrelative, nkptouch, nfeatures
 )
-from flyllm.features import compute_features, zscore, unzscore
+from flyllm.features import (
+    compute_features, zscore, unzscore, get_sensory_feature_idx,
+    compute_noise_params, compute_scale_perfly, ensure_otherflies_touch_mult,
+)
 from flyllm.pose import FlyExample
-from flyllm.io import read_config, load_and_filter_data
+from apf.io import read_config, load_and_filter_data
 
 
 def select_featidx_plot(train_dataset, ntspred_plot, ntsplot_global=None, ntsplot_relative=None):
@@ -1330,7 +1333,11 @@ def update_loss_plots(hloss, loss_epoch):
 
 
 def explore_representation(configfile):
-    config = read_config(configfile)
+    config = read_config(configfile,
+                         default_configfile=DEFAULTCONFIGFILE,
+                         get_sensory_feature_idx=get_sensory_feature_idx,
+                         featglobal=featglobal,
+                         posenames=posenames)
 
     np.random.seed(config['numpy_seed'])
     torch.manual_seed(config['torch_seed'])
@@ -1338,7 +1345,11 @@ def explore_representation(configfile):
 
     plt.ion()
 
-    data, scale_perfly = load_and_filter_data(config['intrainfile'], config)
+    data, scale_perfly = load_and_filter_data(config['intrainfile'], config,
+                                              compute_scale_per_agent=compute_scale_perfly,
+                                              compute_noise_params=compute_noise_params,
+                                              keypointnames=keypointnames)
+    ensure_otherflies_touch_mult(data)
     splitdata = split_data_by_id(data)
 
     for i in range(len(splitdata)):
@@ -1388,6 +1399,9 @@ def explore_representation(configfile):
         ax[i].set_ylabel(outnames[feati[1]])
     fig.tight_layout()
 
-    valdata, val_scale_perfly = load_and_filter_data(config['invalfile'], config)
-
-
+    valdata, val_scale_perfly = load_and_filter_data(
+        config['invalfile'], config,
+        compute_scale_per_agent=compute_scale_perfly,
+        compute_noise_params=compute_noise_params,
+        keypointnames=keypointnames
+    )

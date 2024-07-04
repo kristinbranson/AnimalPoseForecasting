@@ -1,5 +1,12 @@
 import numpy as np
 import re
+import pathlib
+import os
+
+codedir = pathlib.Path(__file__).parent.resolve()
+DEFAULTCONFIGFILE = os.path.join(codedir, 'config_fly_llm_default.json')
+assert os.path.exists(DEFAULTCONFIGFILE), f"{DEFAULTCONFIGFILE} does not exist."
+
 
 # Names of features
 keypointnames = [

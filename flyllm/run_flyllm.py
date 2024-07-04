@@ -26,8 +26,20 @@ from apf.models import (
     update_loss_nepochs,
     sanity_check_temporal_dep,
 )
-from flyllm.config import featglobal, featrelative, nfeatures
-from flyllm.features import compute_features, kp2feat, sanity_check_tspred
+from flyllm.config import (
+    featglobal, featrelative, nfeatures,
+    SENSORY_PARAMS, DEFAULTCONFIGFILE,
+    posenames, keypointnames,
+)
+from flyllm.features import (
+    compute_features,
+    kp2feat,
+    sanity_check_tspred,
+    get_sensory_feature_idx,
+    compute_scale_perfly,
+    ensure_otherflies_touch_mult,
+    compute_noise_params,
+)
 from flyllm.plotting import (
     debug_plot_dct_relative_error,
     debug_plot_global_error,
@@ -42,7 +54,7 @@ from flyllm.plotting import (
 from flyllm.dataset import FlyMLMDataset
 from flyllm.simulation import animate_predict_open_loop
 from flyllm.pose import FlyExample
-from flyllm.io import (
+from apf.io import (
     read_config, load_config_from_model_file, get_modeltype_str,
     load_model, save_model, parse_modelfile,
     clean_intermediate_results, load_and_filter_data
@@ -58,7 +70,11 @@ def debug_fly_example(configfile=None, loadmodelfile=None, restartmodelfile=None
     configfile = 'config_fly_llm_multitime_20230825.json'
 
     # configuration parameters for this model
-    config = read_config(configfile)
+    config = read_config(configfile,
+                default_configfile=DEFAULTCONFIGFILE,
+                get_sensory_feature_idx=get_sensory_feature_idx,
+                featglobal=featglobal,
+                posenames=posenames)
 
     # debug velocity representation
     config['compute_pose_vel'] = True
@@ -76,8 +92,16 @@ def debug_fly_example(configfile=None, loadmodelfile=None, restartmodelfile=None
             data = tmp['data']
             scale_perfly = tmp['scale_perfly']
     else:
-        data, scale_perfly = load_and_filter_data(config['intrainfile'], config)
-        valdata, val_scale_perfly = load_and_filter_data(config['invalfile'], config)
+        data, scale_perfly = load_and_filter_data(config['intrainfile'], config,
+                                                  compute_scale_per_agent=compute_scale_perfly,
+                                                  compute_noise_params=compute_noise_params,
+                                                  keypointnames=keypointnames)
+        ensure_otherflies_touch_mult(data)
+        valdata, val_scale_perfly = load_and_filter_data(config['invalfile'], config,
+                                                         compute_scale_per_agent=compute_scale_perfly,
+                                                         compute_noise_params=compute_noise_params,
+                                                         keypointnames=keypointnames)
+
         T = 10000
         debug_less_data(data, T)
         debug_less_data(valdata, T)
@@ -348,7 +372,11 @@ def main(configfile, loadmodelfile=None, restartmodelfile=None):
     isdebug = len(debugdatafile) > 0
 
     # configuration parameters for this model
-    config = read_config(configfile)
+    config = read_config(configfile,
+                         default_configfile=DEFAULTCONFIGFILE,
+                         get_sensory_feature_idx=get_sensory_feature_idx,
+                         featglobal=featglobal,
+                         posenames=posenames)
 
     # set loadmodelfile and restartmodelfile from config if not specified
     if loadmodelfile is None and 'loadmodelfile' in config:
@@ -358,10 +386,10 @@ def main(configfile, loadmodelfile=None, restartmodelfile=None):
 
     # if loadmodelfile or restartmodelfile specified, use its config
     if loadmodelfile is not None:
-        load_config_from_model_file(loadmodelfile, config)
+        load_config_from_model_file(loadmodelfile, config, sensory_params=SENSORY_PARAMS)
     elif restartmodelfile is not None:
         no_overwrite = ['num_train_epochs', ]
-        load_config_from_model_file(restartmodelfile, config, no_overwrite=no_overwrite)
+        load_config_from_model_file(restartmodelfile, config, no_overwrite=no_overwrite, sensory_params=SENSORY_PARAMS)
 
     print(f"batch size = {config['batch_size']}")
 
@@ -396,8 +424,15 @@ def main(configfile, loadmodelfile=None, restartmodelfile=None):
             val_scale_perfly = tmp['val_scale_perfly']
     else:
         # load raw data
-        data, scale_perfly = load_and_filter_data(config['intrainfile'], config)
-        valdata, val_scale_perfly = load_and_filter_data(config['invalfile'], config)
+        data, scale_perfly = load_and_filter_data(config['intrainfile'], config,
+                                                  compute_scale_per_agent=compute_scale_perfly,
+                                                  compute_noise_params=compute_noise_params,
+                                                  keypointnames=keypointnames)
+        ensure_otherflies_touch_mult(data)
+        valdata, val_scale_perfly = load_and_filter_data(config['invalfile'], config,
+                                                         compute_scale_per_agent=compute_scale_perfly,
+                                                         compute_noise_params=compute_noise_params,
+                                                         keypointnames=keypointnames)
 
     # if using discrete cosine transform, create dct matrix
     # this didn't seem to work well, so probably won't use in the future
@@ -667,11 +702,20 @@ def main(configfile, loadmodelfile=None, restartmodelfile=None):
             if (epoch + 1) % config['save_epoch'] == 0:
                 savefile = os.path.join(config['savedir'], f"fly{modeltype_str}_epoch{epoch + 1}_{savetime}.pth")
                 print(f'Saving to file {savefile}')
-                save_model(savefile, model, lr_optimizer=optimizer, scheduler=lr_scheduler, loss=loss_epoch,
-                           config=config)
+                save_model(savefile, model,
+                           lr_optimizer=optimizer,
+                           scheduler=lr_scheduler,
+                           loss=loss_epoch,
+                           config=config,
+                           sensory_params=SENSORY_PARAMS)
 
         savefile = os.path.join(config['savedir'], f'fly{modeltype_str}_epoch{epoch + 1}_{savetime}.pth')
-        save_model(savefile, model, lr_optimizer=optimizer, scheduler=lr_scheduler, loss=loss_epoch, config=config)
+        save_model(savefile, model,
+                   lr_optimizer=optimizer,
+                   scheduler=lr_scheduler,
+                   loss=loss_epoch,
+                   config=config,
+                   sensory_params=SENSORY_PARAMS)
 
         print('Done training')
     else:

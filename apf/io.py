@@ -7,22 +7,11 @@ import pathlib
 import logging
 
 from apf.data import flip_agents, filter_data_by_categories, load_raw_npz_data
-from flyllm.config import SENSORY_PARAMS, featglobal, posenames, keypointnames
-from flyllm.features import (
-    get_sensory_feature_idx,
-    compute_scale_allflies,
-    compute_otherflies_touch_mult,
-    compute_noise_params,
-)
 
 LOG = logging.getLogger(__name__)
 
-codedir = pathlib.Path(__file__).parent.resolve()
-DEFAULTCONFIGFILE = os.path.join(codedir, 'config_fly_llm_default.json')
-assert os.path.exists(DEFAULTCONFIGFILE), f"{DEFAULTCONFIGFILE} does not exist."
 
-
-def save_model(savefile, model, lr_optimizer=None, scheduler=None, loss=None, config=None):
+def save_model(savefile, model, lr_optimizer=None, scheduler=None, loss=None, config=None, sensory_params=None):
     tosave = {'model': model.state_dict()}
     if lr_optimizer is not None:
         tosave['lr_optimizer'] = lr_optimizer.state_dict()
@@ -32,13 +21,14 @@ def save_model(savefile, model, lr_optimizer=None, scheduler=None, loss=None, co
         tosave['loss'] = loss
     if config is not None:
         tosave['config'] = config
-    tosave['SENSORY_PARAMS'] = SENSORY_PARAMS
+    if sensory_params is not None:
+        tosave['SENSORY_PARAMS'] = sensory_params
     torch.save(tosave, savefile)
     return
 
 
 def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, config=None):
-    print(f'Loading model from file {loadfile}...')
+    LOG.info(f'Loading model from file {loadfile}...')
     state = torch.load(loadfile, map_location=device)
     if model is not None:
         model.load_state_dict(state['model'])
@@ -61,20 +51,20 @@ def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, confi
     return loss
 
 
-def load_config_from_model_file(loadmodelfile=None, config=None, state=None, no_overwrite=[]):
+def load_config_from_model_file(loadmodelfile=None, config=None, state=None, no_overwrite=(), sensory_params=None):
     if state is None:
         assert loadmodelfile is not None
-        print(f'Loading config from file {loadmodelfile}...')
+        LOG.info(f'Loading config from file {loadmodelfile}...')
         state = torch.load(loadmodelfile)
     if config is not None and 'config' in state:
         overwrite_config(config, state['config'], no_overwrite=no_overwrite)
     else:
-        print(f'config not stored in model file {loadmodelfile}')
+        LOG.info(f'config not stored in model file {loadmodelfile}')
     if 'SENSORY_PARAMS' in state:
-        for k, v in state['SENSORY_PARAMS'].items():
-            SENSORY_PARAMS[k] = v
+        assert sensory_params is not None, "SENSORY_PARAMS stored with model but no sensory_params provided for update"
+        sensory_params.update(state['SENSORY_PARAMS'])
     else:
-        print(f'SENSORY_PARAMS not stored in model file {loadmodelfile}')
+        LOG.info(f'SENSORY_PARAMS not stored in model file {loadmodelfile}')
     return
 
 
@@ -85,18 +75,21 @@ def json_load_helper(jsonfile):
     return config
 
 
-def read_config(jsonfile):
-    config = json_load_helper(DEFAULTCONFIGFILE)
-    config1 = json_load_helper(jsonfile)
-
-    # destructive to config
-    overwrite_config(config, config1)
+def read_config(jsonfile, default_configfile=None, get_sensory_feature_idx=None, featglobal=None, posenames=None):
+    if default_configfile is None:
+        config = json_load_helper(jsonfile)
+    else:
+        config = json_load_helper(default_configfile)
+        config1 = json_load_helper(jsonfile)
+        # destructive to config
+        overwrite_config(config, config1)
 
     config['intrainfile'] = os.path.join(config['datadir'], config['intrainfilestr'])
     config['invalfile'] = os.path.join(config['datadir'], config['invalfilestr'])
 
     if type(config['flatten_obs_idx']) == str:
         if config['flatten_obs_idx'] == 'sensory':
+            assert get_sensory_feature_idx is not None, "Need 'get_sensory_feature_idx' to set 'flatten_obs_idx'"
             config['flatten_obs_idx'] = get_sensory_feature_idx()
         else:
             raise ValueError(f"Unknown type {config['flatten_obs_idx']} for flatten_obs_idx")
@@ -104,12 +97,14 @@ def read_config(jsonfile):
     # discreteidx will reference apf.config.posenames
     if type(config['discreteidx']) == str:
         if config['discreteidx'] == 'global':
+            assert featglobal is not None, "Need 'feat_global' to set 'discreteidx'"
             config['discreteidx'] = featglobal.copy()
         else:
             raise ValueError(f"Unknown type {config['discreteidx']} for discreteidx")
     if type(config['discreteidx']) == list:
         for i, v in enumerate(config['discreteidx']):
             if type(v) == str:
+                assert posenames is not None, "Need 'posenames' to set 'discreteidx'"
                 config['discreteidx'][i] = posenames.index(v)
         config['discreteidx'] = np.array(config['discreteidx'])
 
@@ -202,7 +197,7 @@ def read_config(jsonfile):
     return config
 
 
-def overwrite_config(config0, config1, no_overwrite=[]):
+def overwrite_config(config0, config1, no_overwrite=()):
     # maybe fix: no_overwrite is just a list of parameter names. this may fail in recursive calls
     for k, v in config1.items():
         if k in no_overwrite:
@@ -213,34 +208,6 @@ def overwrite_config(config0, config1, no_overwrite=[]):
             config0[k] = v
     return
 
-
-# MLM - no sensory
-# loadmodelfile = os.path.join(savedir,'flymlm_71G01_male_epoch100_202301215712.pth')
-# MLM with sensory
-# loadmodelfile = os.path.join(savedir,'flymlm_71G01_male_epoch100_202301003317.pth')
-# CLM with sensory
-# loadmodelfile = os.path.join(savedir,'flyclm_71G01_male_epoch100_202301211242.pth')
-# CLM with sensory but only global motion output
-# loadmodelfile = os.path.join(savedir,'flyclm_71G01_male_epoch15_202301014322.pth')
-# loadmodelfile = None
-# CLM, predicting forward, sideways vel
-# loadmodelfile = os.path.join(savedir,'flyclm_71G01_male_epoch100_202302060458.pth')
-# CLM, trained with dropout = 0.8 on movement
-# loadmodelfile = os.path.join(savedir,'flyclm_71G01_male_epoch100_20230228T193725.pth')
-# CLM, trained with dropout = 0.8 on movement, more wall touch keypoints
-# loadmodelfile = os.path.join(savedir,'flyclm_71G01_male_epoch100_20230302T221828.pth')
-# CLM, trained with dropout = 0.8 on movement, other fly touch features
-# loadmodelfile = os.path.join(savedir,'flyclm_71G01_male_epoch100_20230303T230750.pth')
-# CLM, trained with dropout = 1.0 on movement, other fly touch features, 10 layers, 512 context
-# loadmodelfile = os.path.join(savedir,'flyclm_71G01_male_epoch100_20230305T135655.pth')
-# CLM with mixed continuous and discrete state
-# loadmodelfile = os.path.join(savedir,'flyclm_71G01_male_epoch100_20230419T175759.pth')
-# CLM with mixed continuous and discrete state, movement input
-# loadmodelfile = os.path.join(savedir,'flyclm_71G01_male_epoch100_20230421T223920.pth')
-# flattened CLM, forward, sideways, orientation are binned outputs
-# loadmodelfile = os.path.join(savedir,'flyclm_71G01_male_epoch100_20230512T202000.pth')
-# flattened CLM, forward, sideways, orientation are binned outputs, do_separate_inputs = True
-# loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flyclm_flattened_mixed_71G01_male_epoch54_20230517T153613.pth'
 
 def get_modeltype_str(config, dataset):
     if config['modelstatetype'] is not None:
@@ -265,10 +232,10 @@ def get_modeltype_str(config, dataset):
     return modeltype_str
 
 
-def parse_modelfile(modelfile):
+def parse_modelfile(modelfile, modelname_pattern=r'fly(.*)_epoch\d+_(\d{8}T\d{6})'):
     _, filestr = os.path.split(modelfile)
     filestr, _ = os.path.splitext(filestr)
-    m = re.match(r'fly(.*)_epoch\d+_(\d{8}T\d{6})', filestr)
+    m = re.match(modelname_pattern, filestr)
     if m is None:
         modeltype_str = ''
         savetime = ''
@@ -301,7 +268,7 @@ def clean_intermediate_results(savedir):
             r = input('(y/n) ?  ')
             if r == 'y':
                 for k in idxremove:
-                    print(f'Removing {modelfiles[k]}')
+                    LOG.info(f'Removing {modelfiles[k]}')
                     os.remove(modelfiles[k])
                     removed.append(modelfiles[k])
                     nremoved += 1
@@ -309,12 +276,33 @@ def clean_intermediate_results(savedir):
             elif r == 'n':
                 break
             else:
-                print('Bad input, response must be y or n')
-    print(f'Removed {nremoved} files')
+                LOG.warning('Bad input, response must be y or n')
+    LOG.info(f'Removed {nremoved} files')
     return removed
 
 
-def load_and_filter_data(infile, config):
+def compute_scale_all_agents(data, compute_scale_per_agent):
+    maxid = np.max(data['ids'])
+    max_n_agents = data['X'].shape[3]
+    scale_per_agent = None
+
+    for agent_num in range(max_n_agents):
+
+        idscurr = np.unique(data['ids'][data['ids'][:, agent_num] >= 0, agent_num])
+        for id in idscurr:
+            idx = data['ids'][:, agent_num] == id
+            s = compute_scale_per_agent(data['X'][..., idx, agent_num])
+            if scale_per_agent is None:
+                scale_per_agent = np.zeros((s.size, maxid + 1))
+                scale_per_agent[:] = np.nan
+            else:
+                assert (np.all(np.isnan(scale_per_agent[:, id])))
+            scale_per_agent[:, id] = s.flatten()
+
+    return scale_per_agent
+
+
+def load_and_filter_data(infile, config, compute_scale_per_agent, compute_noise_params=None, keypointnames=None):
     # load data
     LOG.info(f"loading raw data from {infile}...")
     data = load_raw_npz_data(infile)
@@ -322,8 +310,10 @@ def load_and_filter_data(infile, config):
     # compute noise parameters
     if (len(config['discreteidx']) > 0) and config['discretize_epsilon'] is None:
         if (config['all_discretize_epsilon'] is None):
-            scale_perfly = compute_scale_allflies(data)
-            config['all_discretize_epsilon'] = compute_noise_params(data, scale_perfly,
+            assert compute_noise_params is not None, \
+                "Need 'compute_noise_params' to compute 'all_discrete_epsilon'"
+            scale_per_agent = compute_scale_all_agents(data, compute_scale_per_agent)
+            config['all_discretize_epsilon'] = compute_noise_params(data, scale_per_agent,
                                                                     simplify_out=config['simplify_out'])
         config['discretize_epsilon'] = config['all_discretize_epsilon'][config['discreteidx']]
 
@@ -334,6 +324,7 @@ def load_and_filter_data(infile, config):
 
     # augment by flipping
     if 'augment_flip' in config and config['augment_flip']:
+        assert keypointnames is not None, "Need keypointnames to perform flip augmentation"
         flipvideoidx = np.max(data['videoidx']) + 1 + data['videoidx']
         data['videoidx'] = np.concatenate((data['videoidx'], flipvideoidx), axis=0)
         firstid = np.max(data['ids']) + 1
@@ -349,14 +340,10 @@ def load_and_filter_data(infile, config):
 
     # compute scale parameters
     LOG.info('computing scale parameters...')
-    scale_perfly = compute_scale_allflies(data)
-
-    if np.isnan(SENSORY_PARAMS['otherflies_touch_mult']):
-        LOG.info('computing touch parameters...')
-        SENSORY_PARAMS['otherflies_touch_mult'] = compute_otherflies_touch_mult(data)
+    scale_per_agent = compute_scale_all_agents(data, compute_scale_per_agent)
 
     # throw out data that is missing scale information - not so many frames
-    idsremove = np.nonzero(np.any(np.isnan(scale_perfly), axis=0))[0]
+    idsremove = np.nonzero(np.any(np.isnan(scale_per_agent), axis=0))[0]
     data['isdata'][np.isin(data['ids'], idsremove)] = False
 
-    return data, scale_perfly
+    return data, scale_per_agent
