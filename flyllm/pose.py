@@ -23,15 +23,37 @@ from flyllm.features import (
 
 
 class ObservationInputs:
+    """
+    ObservationInputs
+    Class for handling observations/inputs to network
+    Represents the observation inputs for a fly for multiple time points. 
+    Can be used with batches of observations. 
+
+    Main properties:
+    input: ( pre_sz x ) ntimepoints x d_input. ndarray with the observations of the fly at each time point
+    metadata: dictionary with metadata about which fly and video frames the observations were derived from
+    d_input: number of observation features
+    ntimepoints: number of time points
+    pre_sz: size of the input, not empty when storing a batch
+    
+    Main methods:
+    
+    __init__: Constructor for initializing from a training example or from keypoints. 
+    get_inputs(zscored=False, makecopy=True): Returns the inputs, optionally un-zscoring. 
+    get_split_inputs(zscored=False, makecopy=True): Returns the inputs split into different types of features.
+    get_inputs_type(type, zscored=False, makecopy=True): Returns inputs of a specific type.
+    get_train_inputs(input_labels=None, do_add_noise=False, labels=None): Returns the inputs for training, optionally adding noise.
+    
+    set_inputs(input, zscored=False, ts=None): Sets the inputs. 
+    set_inputs_from_keypoints(Xkp, fly, scale=None, ts=None): Sets the inputs from keypoints.
+    """
 
     def __init__(self, example_in=None, Xkp=None, fly=0, scale=None, dataset=None, dozscore=False, npad=None, **kwargs):
 
         # to do: deal with flattening
 
-        self.input = None
-        self.init = None
-        self.metadata = None
-        self.d_input = None
+        self._input = None
+        self._metadata = None
 
         self.set_params(kwargs)
         if dataset is not None:
@@ -39,8 +61,8 @@ class ObservationInputs:
         default_params = FlyExample.get_default_params()
         self.set_params(default_params, override=False)
 
-        self.sensory_feature_idx, self.sensory_feature_szs = \
-            get_sensory_feature_shapes(simplify=self.simplify_in)
+        self._sensory_feature_idx, self._sensory_feature_szs = \
+            get_sensory_feature_shapes(simplify=self._simplify_in)
         if example_in is not None:
             self.set_example(example_in, dozscore=dozscore)
         elif Xkp is not None:
@@ -48,24 +70,42 @@ class ObservationInputs:
             # particularly if there is no label sequence associated with this observation object
             self.set_inputs_from_keypoints(Xkp, fly, scale, npad=npad)
 
-        if self.flatten_obs_idx is not None:
-            self.flatten_max_dinput = np.max(list(self.flatten_obs_idx.values()))
+        if self._flatten_obs_idx is not None:
+            self._flatten_max_dinput = np.max(list(self._flatten_obs_idx.values()))
         else:
-            self.flatten_dinput_pertype = np.array(self.d_input)
-            self.flatten_max_dinput = self.d_input
+            self._flatten_dinput_pertype = np.array(self.d_input)
+            self._flatten_max_dinput = self.d_input
 
-        if self.flatten_obs:
-            flatten_dinput_pertype = np.array([v[1] - v[0]] for v in self.flatten_obs_idx.values())
-            self.flatten_input_type_to_range = np.zeros((self.flatten_dinput_pertype.size, 2), dtype=int)
+        if self._flatten_obs:
+            flatten_dinput_pertype = np.array([v[1] - v[0]] for v in self._flatten_obs_idx.values())
+            self._flatten_input_type_to_range = np.zeros((self._flatten_dinput_pertype.size, 2), dtype=int)
             cs = np.cumsum(flatten_dinput_pertype)
-            self.flatten_input_type_to_range[1:, 0] = cs[:-1]
-            self.flatten_input_type_to_range[:, 1] = cs
+            self._flatten_input_type_to_range[1:, 0] = cs[:-1]
+            self._flatten_input_type_to_range[:, 1] = cs
 
         return
 
-    def update_sizes(self):
-        self.d_input = self.input.shape[-1]
-        self.pre_sz = self.input.shape[:-2]
+    @property
+    def input(self):
+        return self._input
+    
+    @property
+    def metadata(self):
+        return self._metadata
+    
+    @property
+    def d_input(self):
+        if self._input is None:
+            return 0
+        else:
+            return self._input.shape[-1]
+    
+    @property
+    def pre_sz(self):
+        if self._input is None:
+            return ()
+        else:
+            return self._input.shape[:-2]
 
     @staticmethod
     def flyexample_to_observationinput_params(params):
@@ -82,14 +122,15 @@ class ObservationInputs:
 
     def get_params(self):
         params = {
-            'zscore_params': self.zscore_params,
-            'simplify_in': self.simplify_in,
-            'flatten_obs': self.flatten_obs,
+            'zscore_params': self._zscore_params,
+            'simplify_in': self._simplify_in,
+            'flatten_obs': self._flatten_obs,
         }
         return params
 
     def set_params(self, params, override=True):
         for k, v in params.items():
+            k = '_' + k
             if override or (not hasattr(self, k)) or (getattr(self, k) is None):
                 setattr(self, k, v)
 
@@ -101,60 +142,54 @@ class ObservationInputs:
       
     def get_compute_features_params(self):
         cfparams = {'outtype': np.float32}
-        if hasattr(self, 'simplify_in'):
-          cfparams['simplify_in'] = self.simplify_in
-        if hasattr(self, 'simplify_out'):
-          cfparams['simplify_out'] = self.simplify_out
-        if hasattr(self, 'dct_m'):
-          cfparams['dct_m'] = self.dct_m
-        if hasattr(self, 'tspred_global'):
-          cfparams['tspred_global'] = self.tspred_global
-        if hasattr(self, 'is_velocity'):
-          cfparams['compute_pose_vel'] = self.is_velocity
-        if hasattr(self, 'discreteidx'):
-          cfparams['discreteidx'] = self.discreteidx
+        if hasattr(self, '_simplify_in'):
+          cfparams['simplify_in'] = self._simplify_in
+        if hasattr(self, '_simplify_out'):
+          cfparams['simplify_out'] = self._simplify_out
+        if hasattr(self, '_dct_m'):
+          cfparams['dct_m'] = self._dct_m
+        if hasattr(self, '_tspred_global'):
+          cfparams['tspred_global'] = self._tspred_global
+        if hasattr(self, '_is_velocity'):
+          cfparams['compute_pose_vel'] = self._is_velocity
+        if hasattr(self, '_discreteidx'):
+          cfparams['discreteidx'] = self._discreteidx
         return cfparams
       
     def set_example(self, example_in, dozscore=False):
-        self.input = example_in['input']
-        if 'init_all' in example_in:
-            self.init = example_in['init_all']
-        else:
-            self.init = example_in['init']
+        self._input = example_in['input']
         if 'input_init' in example_in:
-            self.input = np.concatenate((example_in['input_init'], self.input), axis=-2)
-
-        self.update_sizes()
+            self._input = np.concatenate((example_in['input_init'], self._input), axis=-2)
 
         if dozscore:
-            self.input = zscore(self.input, self.zscore_params['mu_input'], self.zscore_params['sig_input'])
+            self._input = zscore(self._input, self._zscore_params['mu_input'], self._zscore_params['sig_input'])
 
         if 'metadata' in example_in:
-            self.metadata = example_in['metadata']
+            self._metadata = example_in['metadata']
         else:
-            self.metadata = None
+            self._metadata = None
             
     @property
     def ntimepoints(self):
-        if self.input is None:
+        if self._input is None:
             return 0
-        return self.input.shape[-2]
+        return self._input.shape[-2]
 
     def is_zscored(self):
-        return self.zscore_params is not None
+        return self._zscore_params is not None
 
     def get_raw_inputs(self, makecopy=True):
         if makecopy:
-            return self.input.copy()
+            return self._input.copy()
         else:
-            return self.input
+            return self._input
 
     def get_inputs(self, zscored=False, **kwargs):
         input = self.get_raw_inputs(**kwargs)
 
         # todo: deal with flattening
         if self.is_zscored() and zscored == False:
-            input = unzscore(input, self.zscore_params['mu_input'], self.zscore_params['sig_input'])
+            input = unzscore(input, self._zscore_params['mu_input'], self._zscore_params['sig_input'])
 
         return input
       
@@ -163,8 +198,8 @@ class ObservationInputs:
         ts = np.arange(self.ntimepoints)
       elif type(ts) is list:
         ts = np.array(ts)
-      if type(self.metadata) is dict and 't0' in self.metadata:
-        return ts + self.metadata['t0']
+      if type(self._metadata) is dict and 't0' in self._metadata:
+        return ts + self._metadata['t0']
       else:
         return ts
       
@@ -182,44 +217,29 @@ class ObservationInputs:
         return input[type]
 
     def set_zscore_params(self, zscore_params):
-        self.zscore_params = zscore_params
+        self._zscore_params = zscore_params
         return
 
     def add_pose_noise(self, train_inputs, eta_pose, zscored=False):
-        idx = self.sensory_feature_idx['pose']
+        idx = self._sensory_feature_idx['pose']
         if self.is_zscored() and (zscored == False):
-            eta_pose = zscore(eta_pose, self.zscore_params['mu_input'][..., idx[0]:idx[1]],
-                              self.zscore_params['sig_input'][..., idx[0]:idx[1]])
+            eta_pose = zscore(eta_pose, self._zscore_params['mu_input'][..., idx[0]:idx[1]],
+                              self._zscore_params['sig_input'][..., idx[0]:idx[1]])
         train_inputs[..., idx[0]:idx[1]] += eta_pose
-        return train_inputs
 
     def set_inputs(self, input, zscored=False, ts=None):
         if zscored == False and self.is_zscored():
-            input = zscore(input, self.zscore_params['mu_input'], self.zscore_params['sig_input'])
+            input = zscore(input, self._zscore_params['mu_input'], self._zscore_params['sig_input'])
         if ts is None:
-            self.input = input
+            self._input = input
         else:
-            self.input[..., ts, :] = input
-        return
-
-    def append_inputs(self, toappend, zscored=False):
-        if zscored == False and self.is_zscored():
-            toappend = zscore(input, self.zscore_params['mu_input'], self.zscore_params['sig_input'])
-        self.input = np.concatenate((self.input, toappend), axis=-2)
+            self._input[..., ts, :] = input
         return
 
     def set_inputs_from_keypoints(self, Xkp, fly, scale=None, ts=None, npad=None):
         example = compute_features(Xkp, flynum=fly, scale_perfly=scale, **self.get_compute_features_params(), npad=npad, compute_labels=False)
         input = example['input']
         self.set_inputs(input, zscored=False, ts=ts)
-        return
-
-    def append_keypoints(self, Xkp, fly, scale=None):
-        sensory = compute_sensory_wrapper(Xkp, fly)
-        labels = PoseLabels(Xkp=Xkp[..., fly], scale=scale, is_velocity=False)
-        pose_relative = labels.get_next_pose_relative()
-        input = combine_inputs(relpose=pose_relative, sensory=sensory, dim=-1)
-        self.append_inputs(input, zscored=False)
         return
 
     def add_noise(self, train_inputs, input_labels=None, labels=None):
@@ -244,7 +264,7 @@ class ObservationInputs:
         return train_inputs, input_labels, eta
 
     def get_sensory_feature_idx(self):
-        return get_sensory_feature_idx(self.simplify_in)
+        return get_sensory_feature_idx(self._simplify_in)
 
     def get_train_inputs(self, input_labels=None, do_add_noise=False, labels=None):
 
@@ -260,18 +280,18 @@ class ObservationInputs:
         train_inputs = torch.tensor(train_inputs)
         train_inputs_init = None
 
-        if not self.flatten_obs:
+        if not self._flatten_obs:
             if input_labels is not None:
-                train_inputs_init = train_inputs[..., :self.starttoff, :]
-                train_inputs = torch.cat((torch.tensor(input_labels[..., :self.ntimepoints-self.starttoff, :]),
-                                          train_inputs[..., self.starttoff:, :]), dim=-1)
+                train_inputs_init = train_inputs[..., :self._starttoff, :]
+                train_inputs = torch.cat((torch.tensor(input_labels[..., :self.ntimepoints-self._starttoff, :]),
+                                          train_inputs[..., self._starttoff:, :]), dim=-1)
         else:
-            ntypes = len(self.flatten_obs_idx)
-            flatinput = torch.zeros(self.pre_sz + (self.ntimepoints, ntypes, self.flatten_max_dinput),
+            ntypes = len(self._flatten_obs_idx)
+            flatinput = torch.zeros(self.pre_sz + (self.ntimepoints, ntypes, self._flatten_max_dinput),
                                     dtype=train_inputs.dtype)
-            for i, v in enumerate(self.flatten_obs_idx.values()):
+            for i, v in enumerate(self._flatten_obs_idx.values()):
                 flatinput[..., i,
-                self.flatten_input_type_to_range[i, 0]:self.flatten_input_type_to_range[i, 1]] = train_inputs[:,
+                self._flatten_input_type_to_range[i, 0]:self._flatten_input_type_to_range[i, 1]] = train_inputs[:,
                                                                                                  v[0]:v[1]]
 
             train_inputs = flatinput
