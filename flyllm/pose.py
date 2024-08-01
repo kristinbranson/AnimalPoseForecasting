@@ -192,20 +192,6 @@ class ObservationInputs:
             input = unzscore(input, self._zscore_params['mu_input'], self._zscore_params['sig_input'])
 
         return input
-      
-    def get_frames(self,ts=None):
-      if ts is None:
-        ts = np.arange(self.ntimepoints)
-      elif type(ts) is list:
-        ts = np.array(ts)
-      if type(self._metadata) is dict and 't0' in self._metadata:
-        return ts + self._metadata['t0']
-      else:
-        return ts
-      
-    def get_train_frames(self,ts=None):
-      ts = self.get_input_frames(ts)
-      return ts      
 
     def get_split_inputs(self, **kwargs):
         input = self.get_inputs(**kwargs)
@@ -1288,53 +1274,7 @@ class PoseLabels:
         labels_out['categories'] = self.get_categories(makecopy=makecopy)
 
         return labels_out
-      
-    def get_frames(self,ts=None):
-      """
-      Returns array of frames ts used to derive raw labels. For features that depend on more than 
-      one frame, this is the start frame -- all features at time t are derived from frames in 
-      t through t+npad-1. 
-      """
-      if ts is None:
-        ts = np.arange(self.ntimepoints)
-      elif type(ts) is list:
-        ts = np.array(ts)
-      if (type(self.metadata) is dict) and 't0' in self.metadata:
-        return ts + self.metadata['t0']
-      else:
-        return ts
-      
-    def get_train_frames(self,ts=None):
-      """
-      Returns array of frames ts used to derive train labels. For features that depend on more than
-      one frame, this is the start frame -- all features at time t are derived from frames in
-      t through t+npad-1.
-      """
-      frames = self.get_frames(ts)
-      return frames[self.starttoff:]
-    
-    def get_next_keypoints_frames(self,ts=None):
-      ts = self.get_frames(ts)
-      return np.r_[ts,ts[-1]+1]
-    
-    def get_init_frames(self):
-      """
-      Returns array of frames used to derive init. These are all single-frame features.
-      """
-      ninit = self.init_pose.shape[-1]
-      ts = np.arange(ninit)
-      if (type(self.metadata) is dict) and 't0' in self.metadata:
-        return ts + self.metadata['t0']
-      else:
-        return ts
-      
-    def get_train_init_frames(self):
-      """
-      Returns array of frames use to derive train init. These are all single-frame features.
-      """
-      ts = self.get_init_frames()
-      return ts[self.starttoff:]
-      
+
     def get_raw_labels_tensor_copy(self, **kwargs):
         raw_labels = self.get_raw_labels(makecopy=False, **kwargs)
         labels_out = {}
