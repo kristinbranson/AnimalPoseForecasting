@@ -12,7 +12,7 @@ from flyllm.config import (
     featglobal, kpvision_other, kptouch_other, featthetaglobal, kpeye, kptouch,
     SENSORY_PARAMS, PXPERMM
 )
-from apf.utils import modrange, rotate_2d_points, boxsum, angledist2xy, mod2pi, atleast_4d
+from apf.utils import modrange, rotate_2d_points, boxsum, angledist2xy, mod2pi, atleast_4d, compute_npad
 
 LOG = logging.getLogger(__name__)
 
@@ -1209,3 +1209,85 @@ def feat2kp(Xfeat, scale_perfly, flyid=None):
     Xkp = rotate_2d_points(Xkpn, -thorax_theta) + porigin[np.newaxis, ...]
 
     return Xkp
+
+def sanity_check_tspred(data, compute_feature_params, npad, scale_perfly, contextl=512, t0=510, flynum=0):
+    # sanity check on computing features when predicting many frames into the future
+    # compute inputs and outputs for frames t0:t0+contextl+npad+1 with tspred_global set by config
+    # and inputs ant outputs for frames t0:t0+contextl+1 with just next frame prediction.
+    # the inputs should match each other
+    # the outputs for each of the compute_feature_params['tspred_global'] should match the next frame
+    # predictions for the corresponding frame
+
+    epsilon = 1e-6
+    id = data['ids'][t0, flynum]
+
+    # compute inputs and outputs with tspred_global = compute_feature_params['tspred_global']
+    contextlpad = contextl + npad
+    t1 = t0 + contextlpad - 1
+    x = data['X'][..., t0:t1 + 1, :]
+    xcurr1, idxinfo1 = compute_features(x, id, flynum, scale_perfly, outtype=np.float32, returnidx=True, npad=npad,
+                                        **compute_feature_params)
+
+    # compute inputs and outputs with tspred_global = [1,]
+    contextlpad = contextl + 1
+    t1 = t0 + contextlpad - 1
+    x = data['X'][..., t0:t1 + 1, :]
+    xcurr0, idxinfo0 = compute_features(x, id, flynum, scale_perfly, outtype=np.float32, tspred_global=[1, ],
+                                        returnidx=True,
+                                        **{k: v for k, v in compute_feature_params.items() if k != 'tspred_global'})
+
+    assert np.all(np.abs(xcurr0['input'] - xcurr1['input']) < epsilon)
+    for f in featglobal:
+        # find row of np.array idxinfo1['labels']['global_feat_tau'] that equals (f,1)
+        i1 = np.nonzero(
+            (idxinfo1['labels']['global_feat_tau'][:, 0] == f) & (idxinfo1['labels']['global_feat_tau'][:, 1] == 1))[0][
+            0]
+        i0 = np.nonzero(
+            (idxinfo0['labels']['global_feat_tau'][:, 0] == f) & (idxinfo0['labels']['global_feat_tau'][:, 1] == 1))[0][
+            0]
+        assert np.all(np.abs(xcurr1['labels'][:, i1] - xcurr0['labels'][:, i0]) < epsilon)
+
+    return
+
+def compute_noise_params(data, scale_perfly, sig_tracking=.25 / PXPERMM,
+                         simplify_out=None, compute_pose_vel=True):
+    # contextlpad = 2
+
+    # # all frames for the main fly must have real data
+    # allisdata = interval_all(data['isdata'],contextlpad)
+    # isnotsplit = interval_all(data['isstart']==False,contextlpad-1)[1:,...]
+    # canstart = np.logical_and(allisdata,isnotsplit)
+
+    # X is nkeypts x 2 x T x nflies
+    maxnflies = data['X'].shape[3]
+
+    alld = 0.
+    n = 0
+    # loop through ids
+    LOG.info('Computing noise parameters...')
+    for flynum in tqdm.trange(maxnflies):
+        idx0 = data['isdata'][:, flynum] & (data['isstart'][:, flynum] == False)
+        # bout starts and ends
+        t0s = np.nonzero(np.r_[idx0[0], (idx0[:-1] == False) & (idx0[1:] == True)])[0]
+        t1s = np.nonzero(np.r_[(idx0[:-1] == True) & (idx0[1:] == False), idx0[-1]])[0]
+
+        for i in range(len(t0s)):
+            t0 = t0s[i]
+            t1 = t1s[i]
+            id = data['ids'][t0, flynum]
+            scale = scale_perfly[:, id]
+            xkp = data['X'][:, :, t0:t1 + 1, flynum]
+            relpose, globalpos = compute_pose_features(xkp, scale)
+            movement = compute_movement(relpose=relpose, globalpos=globalpos, simplify=simplify_out,
+                                        compute_pose_vel=compute_pose_vel)
+            nu = np.random.normal(scale=sig_tracking, size=xkp.shape)
+            relpose_pert, globalpos_pert = compute_pose_features(xkp + nu, scale)
+            movement_pert = compute_movement(relpose=relpose_pert, globalpos=globalpos_pert, simplify=simplify_out,
+                                             compute_pose_vel=compute_pose_vel)
+            alld += np.nansum((movement_pert - movement) ** 2., axis=1)
+            ncurr = np.sum((np.isnan(movement) == False), axis=1)
+            n += ncurr
+
+    epsilon = np.sqrt(alld / n)
+
+    return epsilon.flatten()

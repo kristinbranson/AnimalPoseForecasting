@@ -21,16 +21,15 @@
 
 import numpy as np
 import torch
-import matplotlib
 #matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import os
 import pickle
-from flyllm.io import read_config
-from flyllm.utils import get_dct_matrix, compute_npad
-from flyllm.config import featglobal, featrelative
-from flyllm.features import compute_features
-from flyllm.data import load_and_filter_data, chunk_data, debug_less_data
+from apf.io import read_config, load_and_filter_data
+from apf.utils import get_dct_matrix, compute_npad
+from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames
+from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx
+from apf.data import chunk_data, debug_less_data
 from flyllm.dataset import FlyMLMDataset
 from flyllm.pose import PoseLabels, FlyExample, ObservationInputs
 from flyllm.features import kp2feat
@@ -41,7 +40,11 @@ from flyllm.plotting import debug_plot_pose, debug_plot_sample, debug_plot_batch
 tmpsavefile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/tmp_small_usertrainval.pkl'
 configfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/config_fly_llm_debug_20240416.json'
 # configuration parameters for this model
-config = read_config(configfile)
+config = read_config(configfile,
+                     default_configfile=DEFAULTCONFIGFILE,
+                     get_sensory_feature_idx=get_sensory_feature_idx,
+                     featglobal=featglobal,
+                     posenames=posenames)
 
 # override parameters in config file for testing
 # debug velocity representation
