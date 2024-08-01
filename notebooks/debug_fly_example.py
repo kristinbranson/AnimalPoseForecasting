@@ -543,6 +543,16 @@ print('train_ex labels.shape: ' + str(train_ex['labels'].shape))
 assert np.allclose(label_pose,pose_debug[keyfeatidx,2:T0+1,0],atol=1e-2), f'Error in train example labels for feature {keyfeatidx}'
 
 # %%
+# check copy_subindex
+print('Checking copy_subindex')
+
+flyexample = train_dataset.data[0]
+ts = np.arange(20,flyexample.ntimepoints)
+flyexample_sub = flyexample.copy_subindex(ts=ts)
+Xkp0 = flyexample.labels.get_next_keypoints(use_todiscretize=True)
+Xkp_sub = flyexample_sub.labels.get_next_keypoints(use_todiscretize=True)
+
+# %%
 ## done
 print('Goodbye!')
 plt.show(block=True)

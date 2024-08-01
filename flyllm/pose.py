@@ -372,15 +372,16 @@ class FlyExample:
                   example['metadata'][k] = example['metadata'][k][idx_pre]
 
         if ts is not None:
+            if type(ts) is slice:
+                ts = range(*ts.indices(self.ntimepoints))
+            ts = np.atleast_1d(np.array(ts))
             ks = ['continuous', 'discrete', 'todiscretize', 'input']
-            if hasattr(ts, '__len__'):
-                assert np.all(np.diff(ts) == 1), 'ts must be consecutive'
-                toff = ts[0]
-            else:
-                toff = ts
+            toff = ts[0]
             if toff > 0:
                 if needinit:
-                    example['init'] = self.labels.get_next_pose(ts=[toff,],use_todiscretize=self.labels.is_todiscretize()).T # possibly inefficient, requires integrating
+                    next_pose = self.labels.get_next_pose(ts=np.arange(toff+1),use_todiscretize=self.labels.is_todiscretize())
+                    init_pose = next_pose[-2:]
+                    example['init'] = init_pose.T                    
                 else:
                     example['init'][:] = np.nan # set to nans so that we know this is bad data
                     
