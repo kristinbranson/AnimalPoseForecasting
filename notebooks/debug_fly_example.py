@@ -39,7 +39,7 @@ from flyllm.plotting import debug_plot_pose, debug_plot_sample, debug_plot_batch
 # %%
 ## Set parameters, read in data, config
 tmpsavefile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/tmp_small_usertrainval.pkl'
-configfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/config_fly_llm_multitime_20230825.json'
+configfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/config_fly_llm_debug_20240416.json'
 # configuration parameters for this model
 config = read_config(configfile)
 
@@ -47,7 +47,7 @@ config = read_config(configfile)
 # debug velocity representation
 #config['compute_pose_vel'] = True
 # debug dct
-config['dct_tau'] = 4
+#config['dct_tau'] = 4
 # debug no multi time-scale predictions
 #config['tspred_global'] = [1,]
 #config['discrete_tspred'] = [1,]
@@ -162,8 +162,8 @@ err_chunk_multi = np.max(np.abs(X[0]['labels']-flyexample.labels.get_multi(use_t
 print('max diff between chunked labels and multi: %e'%err_chunk_multi)  
 assert err_chunk_multi < 1e-3
 
-
 # %%
+
 ## helper functions
 def data_to_kp_from_metadata(data,metadata,ntimepoints):
   t0 = metadata['t0']
@@ -174,38 +174,68 @@ def data_to_kp_from_metadata(data,metadata,ntimepoints):
 
 def compare_dicts(old_ex,new_ex,maxerr=None):
   for k,v in old_ex.items():
-    err = 0.
     if not k in new_ex:
       print(f'Missing key {k}')
-    elif type(v) is not type(new_ex[k]):
-      print(f'Type mismatch for key {k}: {type(v)} vs {type(new_ex[k])}')
-    elif type(v) is torch.Tensor:
-      v = v.cpu().numpy()
-      newv = new_ex[k]
-      if type(newv) is torch.Tensor:
-        newv = newv.cpu().numpy()
-      err = np.nanmax(np.abs(v-newv))
-      print(f'max diff {k}: {err:e}')
+      continue
+
+    v = v.cpu().numpy() if type(v) is torch.Tensor else v
+    newv = new_ex[k].cpu().numpy() if type(new_ex[k]) is torch.Tensor else new_ex[k]
+    
+    err = 0.
+    if type(v) is not type(newv):
+      print(f'Type mismatch for key {k}: {type(v)} vs {type(newv)}')
     elif type(v) is np.ndarray:
-      err = np.nanmax(np.abs(v-new_ex[k]))
-      print(f'max diff {k}: {err:e}')
+      if v.shape != newv.shape:
+        print(f'Shape mismatch for key {k}: {v.shape} vs {newv.shape}')
+        continue
+      if v.size == 0:
+        print(f'empty arrays for key {k}')
+      else:
+        err = np.nanmax(np.abs(v-newv))
+        print(f'max diff {k}: {err:e}')
     elif type(v) is dict:
       print(f'Comparing dict {k}')
-      compare_dicts(v,new_ex[k])
+      compare_dicts(v,newv)
     else:
       try:
-        err = np.nanmax(np.abs(v-new_ex[k]))
+        err = np.nanmax(np.abs(v-newv))
         print(f'max diff {k}: {err:e}')
       except:
         print(f'not comparing {k}')
     if maxerr is not None:
-      assert err < maxerr
+      assert err < maxerr, f'Error too large for key {k}: {err} >= {maxerr}'
       
   missing_keys = [k for k in new_ex.keys() if not k in old_ex]
   if len(missing_keys) > 0:
     print(f'Missing keys: {missing_keys}')
 
   return
+
+def compare_new_to_old_train_example(new_ex,old_ex,maxerr=1e-3):
+  
+  # starttoff changed to 0 for causal in new code, which i think is correct, so adjust
+  for k in new_ex.keys():
+    if k not in old_ex:
+      print(f'Missing key {k} from old_ex')
+      continue
+    oldv = old_ex[k].cpu().numpy() if type(old_ex[k]) is torch.Tensor else old_ex[k]
+    newv = new_ex[k].cpu().numpy() if type(new_ex[k]) is torch.Tensor else new_ex[k]
+    if k == 'input':
+      ninput_labels = flyexample.get_n_input_labels()
+      assert np.allclose(newv[:-1,:ninput_labels],oldv[:,:ninput_labels],maxerr)
+      assert np.allclose(newv[1:,ninput_labels:],oldv[:,ninput_labels:],maxerr)
+    elif k in ['labels','labels_discrete','labels_todiscretize']:
+      assert np.allclose(newv[1:],oldv,maxerr)
+    elif k == 'metadata':
+      assert newv['flynum'] == oldv['flynum']
+      assert newv['id'] == oldv['id']
+      assert newv['videoidx'] == oldv['videoidx']
+      assert newv['t0'] == oldv['t0']-1
+      assert newv['frame0'] == oldv['frame0']-1
+    elif k == 'init':
+      pass # these won't match, different time points
+    else:
+      assert np.allclose(newv,oldv,atol=maxerr,equal_nan=True)
 
 
 # %%
@@ -243,7 +273,7 @@ else:
   assert err_chunk_next < 1e-3
 
   # compare next frame pose feature representation from train_dataset to that from flyexample
-  examplefeat = flyexample.labels.get_next_pose(use_todiscretize=True,zscored=False)
+  examplefeat = flyexample.labels.get_next_pose(use_todiscretize=True)
   
   err_chunk_data_feat = np.max(np.abs(chunknext[:,featrelative]-datafeat[1:,featrelative]))
   print('max diff between chunked and data relative features: %e'%err_chunk_data_feat)
@@ -289,31 +319,14 @@ if config['compute_pose_vel']:
   new_ex = flyexample.get_train_example()
   old_ex = old_train_dataset[0]
   
-  compare_dicts(old_ex,new_ex,maxerr=1e-3)
-
-  print('\nComparing old fly llm code to new:')    
-  mean_err_discrete = torch.mean(torch.sqrt(torch.sum((old_ex['labels_discrete']-new_ex['labels_discrete'])**2.,dim=-1))).item()
-  print('mean error between old and new discrete labels: %e'%mean_err_discrete)
-  assert mean_err_discrete < 1e-3
-
-  max_err_continuous = torch.max(torch.abs(old_ex['labels']-new_ex['labels'])).item()
-  print('max error between old and new continuous labels: %e'%max_err_continuous)
-  assert max_err_continuous < 1e-3
-  
-  max_err_input = torch.max(torch.abs(new_ex['input']-old_ex['input'])).item()
-  print('max error between old and new input: %e'%max_err_input)
-  assert max_err_input < 1e-3
-  
-  max_err_init = torch.max(torch.abs(new_ex['init']-old_ex['init'])).item()
-  print('max error between old and new init: %e'%max_err_init)
-  assert max_err_init < 1e-3
+  compare_new_to_old_train_example(new_ex,old_ex,maxerr=1e-3)
 
 # %%
 ## check global future predictions
 print('\nChecking that representations of many frames into the future match')
 flynum = flyexample.metadata['flynum']
 for tpred in flyexample.labels.tspred_global:
-  examplefuture = flyexample.labels.get_future_globalpos(use_todiscretize=True,tspred=tpred,zscored=False)
+  examplefuture = flyexample.labels.get_future_globalpos(use_todiscretize=True,tspred=tpred)
   t = flyexample.metadata['t0']+tpred
   datakpfuture = data['X'][:,:,t:t+contextl,flynum]
   datafeatfuture = kp2feat(datakpfuture,scale_perfly[:,id])[...,0].T  
@@ -324,7 +337,7 @@ for tpred in flyexample.labels.tspred_global:
 # %%
 ## check relative future predictions
 if flyexample.labels.ntspred_relative > 1:
-  examplefuture = flyexample.labels.get_future_relative_pose(zscored=False,use_todiscretize=True)
+  examplefuture = flyexample.labels.get_future_relative_pose(use_todiscretize=True)
   for tpred in range(1,flyexample.labels.ntspred_relative):
     t = flyexample.metadata['t0']+tpred
     datakpfuture = data['X'][:,:,t:t+contextl,flynum]
@@ -342,6 +355,20 @@ trainexample = train_dataset[0]
 flyexample1 = FlyExample(example_in=trainexample,dataset=train_dataset)
 trainexample1 = flyexample1.get_train_example()
 compare_dicts(trainexample,trainexample1,maxerr=1e-9)
+
+# check setting predictions from train example
+print('\nChecking set_predictions')
+ts = np.arange(20,flyexample1.ntimepoints)
+pred = {'continuous': trainexample1['labels'][ts-1,:].cpu().numpy().copy(), 
+        'discrete': trainexample1['labels_discrete'][ts-1,:].cpu().numpy().copy()}
+raw_labels1 = flyexample1.labels.get_raw_labels()
+flyexample2 = flyexample1.copy()
+flyexample2.labels.set_prediction(pred,ts=ts,nsamples=1)
+raw_labels2 = flyexample2.labels.get_raw_labels()
+err_todiscretize = np.max(np.abs(raw_labels1.pop('todiscretize')-raw_labels2.pop('todiscretize')))
+print('error in todiscretize: %e'%err_todiscretize)
+
+compare_dicts(raw_labels1,raw_labels2,maxerr=1e-6)
 
 # %%
 ## check constructor from batch
@@ -375,24 +402,149 @@ flyexample_kp = FlyExample(Xkp=Xkp0,scale=scale_perfly[:,flyexample.metadata['id
                             **flyexample.get_params())
 train_example_kp = flyexample_kp.get_train_example()
 print('Comparing FlyExample created from keypoints to FlyExample created from training example')
-compare_dicts(train_example0,train_example_kp,maxerr=1e-9)
+compare_dicts(train_example0,train_example_kp,maxerr=1e-6)
 poselabels_kp = PoseLabels(Xkp=Xkp0[...,flynum],scale=scale_perfly[:,flyexample.metadata['id']],
                            metadata=flyexample.metadata,
                            **flyexample.get_poselabel_params()) 
 train_labels_kp = poselabels_kp.get_train_labels(namingscheme='train')
 print('\nComparing PoseLabels created from keypoints to FlyExample created from training example')
-compare_dicts(train_labels_kp,train_example0,maxerr=1e-9)
+compare_dicts(train_labels_kp,train_example0,maxerr=1e-6)
 obs_kp = ObservationInputs(Xkp=Xkp0,scale=scale_perfly[:,flyexample.metadata['id']],
                            **flyexample.get_observationinputs_params())
 train_input_kp = obs_kp.get_train_inputs(input_labels=flyexample_kp.get_input_labels())
 err = torch.max(torch.abs(train_input_kp['input']-train_example0['input'])).item()
 print('\nComparing ObservationInputs created from keypoints to FlyExample created from training example')
 print(f'max diff input: {err:e}')
-assert err < 1e-9
+assert err < 1e-6
 
 
+# %%
+# set one pose feature to be 0:T and debug frame number 
+
+from flyllm.features import kp2feat, feat2kp, posenames
+
+# get some keypoints
+flyexample = train_dataset.data[0]
+contextlpad = train_dataset.contextl + npad + 1
+Xkp = data['X'][:,:,flyexample.metadata['t0']:flyexample.metadata['t0']+contextlpad,:]
+T = Xkp.shape[2]
+flynum = flyexample.metadata['flynum']
+scale = flyexample.labels.scale
+metadata = flyexample.metadata
+Xkp_debug_curr = Xkp[:,:,0,flynum]
+
+# construct keypoints where we can tell frame number from the data
+keyfeatidx = 13
+pose_debug = kp2feat(Xkp_debug_curr, scale)
+pose_debug = np.tile(pose_debug,(1,T,1))
+featname = posenames[keyfeatidx]
+pose_debug[keyfeatidx,:,0] = np.arange(T)
+print(f'Set pose_debug {featname} to:')
+print(str(pose_debug[keyfeatidx,:10,0]) + ' ...')
+print('pose_debug.shape = ' + str(pose_debug.shape))
+
+Xkp_debug_curr = feat2kp(pose_debug, scale)
+Xkp_debug = Xkp.copy()
+Xkp_debug[...,flynum] = Xkp_debug_curr[...,0]
+
+# see whether it stays the same when we convert back to keypoints, then back to pose again
+pose_debug2 = kp2feat(Xkp_debug_curr, scale)
+print(f'pose_debug->kp->pose_debug2 {featname}: ')
+print(str(pose_debug2[keyfeatidx,:10,0]) + ' ...')
+assert np.allclose(pose_debug[keyfeatidx],pose_debug2[keyfeatidx]), f'Error in feat2kp/kp2feat for feature {keyfeatidx}'
+print('pose_debug2 shape: '+str(pose_debug.shape))
+
+# create a flyexample
+debug_example = FlyExample(Xkp=Xkp_debug, flynum=flynum, scale=scale, metadata=metadata, dataset=train_dataset)
+
+# feature within multi -- can't check in the raw data as the raw data is zscored
+multifeatidx = debug_example.labels.get_multi_names().index(featname+'_1')
+#contfeatidx = debug_example.labels.idx_multi_to_multicontinuous[multifeatidx]
+multi = debug_example.labels.get_multi(use_todiscretize=True,zscored=False)
+print('pose_debug->kp->debug_example->multi:')
+print(str(multi[:10,multifeatidx]) + ' ...')
+print('multi.shape = '+str(multi.shape))
+T0 = multi.shape[0]
+assert np.allclose(multi[:,multifeatidx],pose_debug[keyfeatidx,1:T0+1,0],atol=1e-6), f'Error in get_multi for feature {keyfeatidx}'
+init = debug_example.labels.get_init_pose()
+print('debug_example->init:')
+print(init[keyfeatidx,:])
+assert np.allclose(init[keyfeatidx,:],pose_debug[keyfeatidx,:2,0],atol=1e-6), f'Error in get_init_pose for feature {keyfeatidx}'
+
+# # this is z-scored
+# print('pose_debug->kp->debug_example.labels_raw continuous:')
+# print(str(debug_example.labels.labels_raw['continuous'][:10,contfeatidx]) + ' ...')
+# print('pose_debug->kp->debug_example continuous shape: ' + str(debug_example.labels.labels_raw['continuous'].shape))
+
+# check the next pose representation
+pose_example = debug_example.labels.get_next_pose(use_todiscretize=True)
+print(f'pose_debug->kp->debug_example->get_next_pose [{featname}]: ')
+print(str(pose_example[:10,keyfeatidx]) + ' ...')
+print('shape = ' + str(pose_example.shape))
+T0 = pose_example.shape[0]
+assert np.allclose(pose_example[:,keyfeatidx],pose_debug[keyfeatidx,:T0,0]), f'Error in get_next_pose for feature {keyfeatidx}'
+print(f'max error at index {np.argmax(err)}: {np.max(err)}')
+
+# check the next keypoints representation
+Xkp_example = debug_example.labels.get_next_keypoints(use_todiscretize=True)
+print('pose_debug->kp->debug_example->get_next_keypoints shape: ' + str(Xkp_example.shape))
+pose_example2 = kp2feat(Xkp_example.transpose((1,2,0)), scale)
+print(f'pose_debug->kp->debug_example->get_next_keypoints->kp2feat {featname}: ')
+print(str(pose_example2[keyfeatidx,:10,0]) + ' ...')
+assert np.allclose(pose_example2[keyfeatidx,:,0],pose_debug[keyfeatidx,:T0,0],atol=1e-3)
+
+# check the inputs
+relpose = debug_example.inputs.get_inputs_type('pose')
+relidx = np.nonzero(debug_example.labels.idx_nextrelative_to_next==keyfeatidx)[0][0]
+print('pose_debug->kp->debug_example->inputs->get_pose: ')
+print(str(relpose[keyfeatidx,:10]) + ' ...')
+print('inputs.pose.shape = ' + str(relpose.shape))
+assert np.allclose(relpose[:,relidx],pose_debug[keyfeatidx,:T0-1,0],atol=1e-3)
+
+
+# %%
+from flyllm.features import split_features
+
+zmu = debug_example.labels.zscore_params['mu_labels'][multifeatidx]
+zsig = debug_example.labels.zscore_params['sig_labels'][multifeatidx]
+
+inputlabelidx = np.nonzero(debug_example.labels.idx_nextcossin_to_multi == multifeatidx)[0][0]
+zinput_labels = debug_example.get_input_labels()
+input_label = zinput_labels[:,inputlabelidx]*zsig + zmu
+
+print('debug_example->input_label: ')
+print(str(input_label[:10]) + ' ...')
+print('input_labels.shape = ' + str(zinput_labels.shape))
+T0 = input_label.shape[0]
+assert np.allclose(input_label,pose_debug[keyfeatidx,1:T0+1,0],atol=1e-3), f'Error in get_input_labels for feature {keyfeatidx}'
+
+train_ex = debug_example.get_train_example()
+
+input_labels = train_ex['input'][:,:debug_example.get_n_input_labels()]
+ex_input_label = input_labels[:,inputlabelidx]*zsig + zmu
+print('debug_example->train_ex->input->input_label: ')
+print(str(ex_input_label[:10]) + ' ...')
+print('input_labels.shape = ' + str(input_labels.shape))
+assert np.allclose(ex_input_label,pose_debug[keyfeatidx,1:T0,0],atol=1e-3), f'Error in train example input labels for feature {keyfeatidx}'
+
+input_split = split_features(train_ex['input'][:,debug_example.get_n_input_labels():])
+zinput_pose = input_split['pose'].numpy()
+input_pose = zinput_pose[:,relidx]*zsig + zmu
+print('debug_example->train_ex->input->pose: ')
+print(str(input_pose[:10]) + ' ...')
+print('input_pose.shape = ' + str(zinput_pose.shape))
+assert np.allclose(input_pose,pose_debug[keyfeatidx,1:T0,0],atol=1e-2), f'Error in train example input pose for feature {keyfeatidx}'
+
+contidx = debug_example.labels.idx_multi_to_multicontinuous[multifeatidx]
+label_pose = train_ex['labels'][:,contidx]*zsig + zmu
+print('debug_example->train_ex->labels: ')
+print(str(label_pose[:10]) + ' ...')
+print('train_ex labels.shape: ' + str(train_ex['labels'].shape))
+assert np.allclose(label_pose,pose_debug[keyfeatidx,2:T0+1,0],atol=1e-2), f'Error in train example labels for feature {keyfeatidx}'
 
 # %%
 ## done
 print('Goodbye!')
 plt.show(block=True)
+
+

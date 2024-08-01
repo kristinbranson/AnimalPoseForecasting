@@ -23,7 +23,6 @@
 import numpy as np
 import torch
 import matplotlib
-matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import tqdm
 import datetime
@@ -57,9 +56,7 @@ from flyllm.models import (
     stack_batch_list,
 )
 from flyllm.simulation import animate_predict_open_loop
-
-# %%
-torch.cuda.is_available()
+print('CUDA available: ' + str(torch.cuda.is_available()))
 
 # %% [markdown]
 # ## Load data
@@ -75,6 +72,7 @@ quickdebugdatafile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe20
 config = read_config(configfile)
 
 print(f"batch size = {config['batch_size']}")
+print(f"train data file: {config['intrainfile']}")
 
 # seed the random number generators
 np.random.seed(config['numpy_seed'])
@@ -82,13 +80,8 @@ torch.manual_seed(config['torch_seed'])
 
 # set device (cuda/cpu)
 device = torch.device(config['device'])
-
-# %%
 # Skip augmentation for debugging purposes
 config['augment_flip'] = False 
-
-# %%
-config['intrainfile']
 
 # %%
 # load raw data
@@ -100,8 +93,6 @@ if quickdebugdatafile is None:
     max_frames = config['contextl'] * 100
     for data in [data, valdata]:
         debug_less_data(data)
-
-# %%
 else:
     with open(quickdebugdatafile,'rb') as f:
         tmp = pickle.load(f)
@@ -109,7 +100,6 @@ else:
         scale_perfly = tmp['scale_perfly']
         valdata = tmp['valdata']
         val_scale_perfly = tmp['val_scale_perfly']
-
 
 # %%
 print(config['contextl'])
@@ -123,16 +113,16 @@ print(data['ids'].max())  # 907: why is this so high? Is it because it adds a + 
 print(scale_perfly.shape)  # len(scalenames) x max_n_flies
 
 scalenames
-# # compute_scale_perfly??
-# # compute_npad??
-# # get_dct_matrix??
-# # chunk_data??
+# compute_scale_perfly??
+# compute_npad??
+# get_dct_matrix??
+# chunk_data??
 
 # %% [markdown]
 # ## Compute features
 
 # %%
-# # compute_features??
+# compute_features??
 
 # %%
 # if using discrete cosine transform, create dct matrix
@@ -185,7 +175,7 @@ valX = chunk_data(valdata, config['contextl'], val_reparamfun, **chunk_data_para
 print('Done.')
 
 # %%
-print(len(X))  # batches
+print(len(X))  # examples
 print(X[0].keys())
 print(X[0]['input'].shape)  # contextl x n_features ?
 print(X[0]['labels'].shape)  # contextl x n_pred_features ?
@@ -312,7 +302,7 @@ hloss = initialize_loss_plots(loss_epoch)
 
 # %%
 print(type(model))  # torch.nn.Module
-# criterion??
+criterion??
 
 # lossfcn_discrete = torch.nn.CrossEntropyLoss()
 # lossfcn_continuous = torch.nn.L1Loss()
@@ -345,7 +335,6 @@ if ('model_nickname' in config) and (config['model_nickname'] is not None):
 m = train_src_mask.cpu()
 plt.figure()
 plt.imshow(m)
-plt.show()
 # -Inf at future timesteps, otherwise 0
 
 # %% [markdown]
@@ -464,15 +453,12 @@ all_pred, all_labels = predict_all(
     val_dataloader, val_dataset, model, config, train_src_mask
 )
 
-# %%
 # # plot comparison between predictions and labels on validation data
 # predv = stack_batch_list(all_pred)
 # labelsv = stack_batch_list(all_labels)
 # maskv = stack_batch_list(all_mask)
 # pred_discretev = stack_batch_list(all_pred_discrete)
 # labels_discretev = stack_batch_list(all_labels_discrete)
-
-# %%
 fig, ax = debug_plot_global_histograms(all_pred, all_labels, train_dataset, nbins=25, subsample=1, compare='pred')
 
 if train_dataset.dct_m is not None:
@@ -507,9 +493,10 @@ if train_dataset.ntspred_global > 1:
 # # Simulate
 
 # %%
+from IPython.display import HTML
+
 # generate an animation of open loop prediction
-tpred = np.minimum(2000 + config['contextl'], valdata['isdata'].shape[0] // 2)
-print(tpred)
+tpred = np.minimum(200 + config['contextl'], valdata['isdata'].shape[0] // 2)
 
 # all frames must have real data
 
@@ -536,20 +523,45 @@ nsamplesfuture = 32
 np.random.set_state(randstate_np)
 # reseed torch random number generator with randstate_torch
 torch.random.set_rng_state(randstate_torch)
-ani = animate_predict_open_loop(
-    model, 
+
+isreal = np.any(np.isnan(valdata['X'][...,t0:t0+tpred,:]),axis=(0,1,2)) == False
+Xkp_init = valdata['X'][...,t0:t0+tpred+val_dataset.ntspred_max,isreal]
+scales_pred = []
+for flypred in fliespred:
+  id = valdata['ids'][t0, flypred]
+  scales_pred.append(val_scale_perfly[:,id])
+metadata = {'t0': t0, 'ids': valdata['ids'][t0,isreal], 'videoidx': valdata['videoidx'][t0], 'frame0': valdata['frames'][t0]}
+
+if False: 
+    # set one feature to frame number so that we can debug which frame we are accessing
+    
+    from flyllm.features import kp2feat, feat2kp, posenames
+
+    keyfeatidx = 13
+    featname = posenames[keyfeatidx]
+    scale = scales_pred[0]
+    Xkp_debug_curr = Xkp_init[:,:,:,fliespred[0]]
+    pose_debug = kp2feat(Xkp_debug_curr, scale)
+    pose_debug[keyfeatidx,:,0] = np.arange(pose_debug.shape[1])
+    Xkp_debug_curr = feat2kp(pose_debug, scale)
+    Xkp_init[:,:,:,fliespred[0]] = Xkp_debug_curr[...,0]
+
+ani = animate_predict_open_loop(model, 
     val_dataset, 
-    valdata, 
-    val_scale_perfly, 
-    config, 
+    Xkp_init, 
     fliespred, 
-    t0, 
-    tpred,
+    scales_pred, 
+    tpred, 
     debug=False,
     plotattnweights=False, 
     plotfuture=train_dataset.ntspred_global > 1,
-    nsamplesfuture=nsamplesfuture
+    nsamplesfuture=nsamplesfuture,
+    metadata=metadata,
 )
+HTML(ani.to_jshtml())
+
+# %%
+ani
 
 # %%
 vidtime = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
@@ -561,3 +573,6 @@ ani.save(savevidfile, writer=writer)
 print('Finished writing.')
 
 # %%
+
+
+
