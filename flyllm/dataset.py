@@ -506,40 +506,40 @@ class FlyMLMDataset(torch.utils.data.Dataset):
 
     def ismasked(self):
         """Whether this object is a dataset for a masked language model, ow a causal model.
-    v = self.ismasked()
+        v = self.ismasked()
 
-    Returns:
-        bool: Whether data are masked.
-    """
+        Returns:
+            bool: Whether data are masked.
+        """
         return self.masktype is not None
 
     def zscore(self, data, mu_input=None, sig_input=None, mu_labels=None, sig_labels=None):
         """
-    self.zscore(mu_input=None,sig_input=None,mu_labels=None,sig_labels=None)
-    zscore the data. input and labels are z-scored for each example in data
-    and converted to float32. They are stored in place in the dict for each example
-    in the dataset. If mean and standard deviation statistics are input, then
-    these statistics are used for z-scoring. Otherwise, means and standard deviations
-    are computed from this data.
+        self.zscore(mu_input=None,sig_input=None,mu_labels=None,sig_labels=None)
+        zscore the data. input and labels are z-scored for each example in data
+        and converted to float32. They are stored in place in the dict for each example
+        in the dataset. If mean and standard deviation statistics are input, then
+        these statistics are used for z-scoring. Otherwise, means and standard deviations
+        are computed from this data.
 
-    Args:
-        mu_input (ndarray, dfeat, optional): Pre-computed mean for z-scoring input.
-        If None, mu_input is computed as the mean of all the inputs in data.
-        Defaults to None.
-        sig_input (ndarray, dfeat, optional): Pre-computed standard deviation for
-        z-scoring input. If mu_input is None, sig_input is computed as the std of all
-        the inputs in data. Defaults to None. Do not set this to None if mu_input
-        is not None.
-        mu_labels (ndarray, d_output_continuous, optional): Pre-computed mean for z-scoring labels.
-        If None, mu_labels is computed as the mean of all the labels in data.
-        Defaults to None.
-        sig_labels (ndarray, dfeat, optional): Pre-computed standard deviation for
-        z-scoring labels. If mu_labels is None, sig_labels is computed as the standard
-        deviation of all the labels in data. Defaults to None. Do not set this
-        to None if mu_labels is not None.
+        Args:
+            mu_input (ndarray, dfeat, optional): Pre-computed mean for z-scoring input.
+            If None, mu_input is computed as the mean of all the inputs in data.
+            Defaults to None.
+            sig_input (ndarray, dfeat, optional): Pre-computed standard deviation for
+            z-scoring input. If mu_input is None, sig_input is computed as the std of all
+            the inputs in data. Defaults to None. Do not set this to None if mu_input
+            is not None.
+            mu_labels (ndarray, d_output_continuous, optional): Pre-computed mean for z-scoring labels.
+            If None, mu_labels is computed as the mean of all the labels in data.
+            Defaults to None.
+            sig_labels (ndarray, dfeat, optional): Pre-computed standard deviation for
+            z-scoring labels. If mu_labels is None, sig_labels is computed as the standard
+            deviation of all the labels in data. Defaults to None. Do not set this
+            to None if mu_labels is not None.
 
-    No value returned.
-    """
+        No value returned.
+        """
 
         # must happen before discretizing
         assert self.discretize == False, 'z-scoring should happen before discretizing'
@@ -742,57 +742,57 @@ class FlyMLMDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx: int):
         """
-    example = self.getitem(idx)
-    Returns dataset example idx. It performs the following processing:
-    - Converts the data to tensors.
-    - Concatenates labels and feature input into input, and shifts labels in inputs
-    depending on whether this is a dataset for a masked LM or a causal LM (see below).
-    - For masked LMs, draw and applies a random mask of type self.masktype.
+        example = self.getitem(idx)
+        Returns dataset example idx. It performs the following processing:
+        - Converts the data to tensors.
+        - Concatenates labels and feature input into input, and shifts labels in inputs
+        depending on whether this is a dataset for a masked LM or a causal LM (see below).
+        - For masked LMs, draw and applies a random mask of type self.masktype.
 
-    Args:
-        idx (int): Index of the example to return.
+        Args:
+            idx (int): Index of the example to return.
 
-    Returns:
-        example (dict) with the following fields:
+        Returns:
+            example (dict) with the following fields:
 
-        For masked LMs:
-        example['input'] is a tensor of shape contextl x (d_input_labels + dfeat + 1)
-        where example['input'][t,:d_input_labels] is the motion from frame t to t+1 and
-        example['input'][t,d_input_labels:-1] are the input features for frame t.
-        example['input'][t,-1] indicates whether the frame is masked or not. If this
-        frame is masked, then example['input'][t,:d_input_labels] will be set to 0.
-        example['labels'] is a tensor of shape contextl x d_output_continuous
-        where example['labels'][t,:] is the continuous motion from frame t to t+1 and/or
-        the pose at frame t+1
-        example['labels_discrete'] is a tensor of shape contextl x d_output_discrete x
-        discretize_nbins, where example['labels_discrete'][t,i,:] is one-hot encoding of
-        discrete motion feature i from frame t to t+1 and/or pose at frame t+1.
-        example['init'] is a tensor of shape dglobal, corresponding to the global
-        position in frame 0.
-        example['mask'] is a tensor of shape contextl indicating which frames are masked.
+            For masked LMs:
+            example['input'] is a tensor of shape contextl x (d_input_labels + dfeat + 1)
+            where example['input'][t,:d_input_labels] is the motion from frame t to t+1 and
+            example['input'][t,d_input_labels:-1] are the input features for frame t.
+            example['input'][t,-1] indicates whether the frame is masked or not. If this
+            frame is masked, then example['input'][t,:d_input_labels] will be set to 0.
+            example['labels'] is a tensor of shape contextl x d_output_continuous
+            where example['labels'][t,:] is the continuous motion from frame t to t+1 and/or
+            the pose at frame t+1
+            example['labels_discrete'] is a tensor of shape contextl x d_output_discrete x
+            discretize_nbins, where example['labels_discrete'][t,i,:] is one-hot encoding of
+            discrete motion feature i from frame t to t+1 and/or pose at frame t+1.
+            example['init'] is a tensor of shape dglobal, corresponding to the global
+            position in frame 0.
+            example['mask'] is a tensor of shape contextl indicating which frames are masked.
 
-        For causal LMs:
-        example['input'] is a tensor of shape (contextl-1) x (d_input_labels + dfeat).
-        if input_labels == True, example['input'][t,:d_input_labels] is the motion from
-        frame t to t+1 and/or the pose at frame t+1,
-        example['input'][t,d_input_labels:] are the input features for
-        frame t+1.
-        example['labels'] is a tensor of shape contextl x d_output
-        where example['labels'][t,:] is the motion from frame t+1 to t+2 and/or the pose at
-        frame t+2.
-        example['init'] is a tensor of shape dglobal, corresponding to the global
-        position in frame 1.
-        example['labels_discrete'] is a tensor of shape contextl x d_output_discrete x
-        discretize_nbins, where example['labels_discrete'][t,i,:] is one-hot encoding of
-        discrete motion feature i from frame t+1 to t+2 and/or pose at frame t+2.
+            For causal LMs:
+            example['input'] is a tensor of shape (contextl-1) x (d_input_labels + dfeat).
+            if input_labels == True, example['input'][t,:d_input_labels] is the motion from
+            frame t to t+1 and/or the pose at frame t+1,
+            example['input'][t,d_input_labels:] are the input features for
+            frame t+1.
+            example['labels'] is a tensor of shape contextl x d_output
+            where example['labels'][t,:] is the motion from frame t+1 to t+2 and/or the pose at
+            frame t+2.
+            example['init'] is a tensor of shape dglobal, corresponding to the global
+            position in frame 1.
+            example['labels_discrete'] is a tensor of shape contextl x d_output_discrete x
+            discretize_nbins, where example['labels_discrete'][t,i,:] is one-hot encoding of
+            discrete motion feature i from frame t+1 to t+2 and/or pose at frame t+2.
 
-        For all:
-        example['scale'] are the scale features for this fly, used for converting from
-        relative pose features to keypoints.
-        example['categories'] are the currently unused categories for this sequence.
-        example['metadata'] is a dict of metadata about this sequence.
+            For all:
+            example['scale'] are the scale features for this fly, used for converting from
+            relative pose features to keypoints.
+            example['categories'] are the currently unused categories for this sequence.
+            example['metadata'] is a dict of metadata about this sequence.
 
-    """
+        """
 
         res = self.data[idx].get_train_example()
         res['input'], mask, dropout_mask = self.mask_input(res['input'])
@@ -1042,18 +1042,18 @@ class FlyMLMDataset(torch.utils.data.Dataset):
 
     def get_next_movements(self, movements=None, example=None, iszscored=False, use_dct=False, **kwargs):
         """
-    get_next_movements(movements=None,example=None,iszscored=False,use_dct=False,**kwargs)
-    extracts the next frame movements/pose from the input, ignoring predictions for frames further
-    into the future.
-    Inputs:
-      movements: ... x d_output ndarray of movements. Required if example is None. Default: None.
-      example: dict holding training/test example. Required if movements is None. Default: None.
-      iszscored: whether movements are z-scored. Default: False.
-      use_dct: whether to use DCT to extract relative pose features. Default: False.
-      Extra args are fed into get_full_labels if movements is None
-    Outputs:
-      movements_next: ... x d_output ndarray of movements/pose for the next frame.
-    """
+        get_next_movements(movements=None,example=None,iszscored=False,use_dct=False,**kwargs)
+        extracts the next frame movements/pose from the input, ignoring predictions for frames further
+        into the future.
+        Inputs:
+        movements: ... x d_output ndarray of movements. Required if example is None. Default: None.
+        example: dict holding training/test example. Required if movements is None. Default: None.
+        iszscored: whether movements are z-scored. Default: False.
+        use_dct: whether to use DCT to extract relative pose features. Default: False.
+        Extra args are fed into get_full_labels if movements is None
+        Outputs:
+        movements_next: ... x d_output ndarray of movements/pose for the next frame.
+        """
         if movements is None:
             movements = self.get_full_labels(example=example, **kwargs)
             iszscored = True
@@ -1103,25 +1103,25 @@ class FlyMLMDataset(torch.utils.data.Dataset):
 
     def get_Xfeat(self, input0=None, global0=None, movements=None, example=None, use_dct=False, **kwargs):
         """
-    Xfeat = self.get_Xfeat(input0,global0,movements)
-    Xfeat = self.get_Xfeat(example=example)
+        Xfeat = self.get_Xfeat(input0,global0,movements)
+        Xfeat = self.get_Xfeat(example=example)
 
-    Unnormalizes initial input input0 and extracts relative pose features. Combines
-    these with global0 to get the full set of pose features for initial frame 0.
-    Converts egocentric movements (forward, sideway) to global, and computes the
-    full pose features for each frame based on the input movements.
+        Unnormalizes initial input input0 and extracts relative pose features. Combines
+        these with global0 to get the full set of pose features for initial frame 0.
+        Converts egocentric movements (forward, sideway) to global, and computes the
+        full pose features for each frame based on the input movements.
 
-    Either input0, global0, and movements must be input OR
-    example must be input, and input0, global0, and movements are derived from there.
+        Either input0, global0, and movements must be input OR
+        example must be input, and input0, global0, and movements are derived from there.
 
-    Args:
-        input0 (ndarray, d_input_labels+dfeat+hasmaskflag): network input for time point 0
-        global0 (ndarray, 3): global position at time point 0
-        movements (ndarray, T x d_output ): movements[t,:] is the movement from t to t+1
+        Args:
+            input0 (ndarray, d_input_labels+dfeat+hasmaskflag): network input for time point 0
+            global0 (ndarray, 3): global position at time point 0
+            movements (ndarray, T x d_output ): movements[t,:] is the movement from t to t+1
 
-    Returns:
-        Xfeat: (ndarray, T+1 x nfeatures): All pose features for frames 0 through T
-    """
+        Returns:
+            Xfeat: (ndarray, T+1 x nfeatures): All pose features for frames 0 through T
+        """
 
         if example is not None:
             if input0 is None:
@@ -1178,22 +1178,22 @@ class FlyMLMDataset(torch.utils.data.Dataset):
 
     def get_Xkp(self, example, pred=None, **kwargs):
         """
-    Xkp = self.get_Xkp(example,pred=None)
+        Xkp = self.get_Xkp(example,pred=None)
 
-    Call get_Xfeat to get the full pose features based on the initial input and global
-    position example['input'] and example['init'] and the per-frame motion in
-    pred (if not None) or example['labels'], example['labels_discrete']. Converts
-    the full pose features to keypoint coordinates.
+        Call get_Xfeat to get the full pose features based on the initial input and global
+        position example['input'] and example['init'] and the per-frame motion in
+        pred (if not None) or example['labels'], example['labels_discrete']. Converts
+        the full pose features to keypoint coordinates.
 
-    Args:
-        scale (ndarray, dscale): scale parameters for this fly
-        example (dict), output of __getitem__: example with fields input, init, labels, and
-        scale.
-        pred (ndarray, T x d_output ): movements[t,:] is the movement from t to t+1
+        Args:
+            scale (ndarray, dscale): scale parameters for this fly
+            example (dict), output of __getitem__: example with fields input, init, labels, and
+            scale.
+            pred (ndarray, T x d_output ): movements[t,:] is the movement from t to t+1
 
-    Returns:
-        Xkp: (ndarray, nkeypoints x 2 x T+1 x 1): Keypoint locations for frames 0 through T
-    """
+        Returns:
+            Xkp: (ndarray, nkeypoints x 2 x T+1 x 1): Keypoint locations for frames 0 through T
+        """
 
         scale = example['scale']
         if torch.is_tensor(scale):
@@ -1209,26 +1209,26 @@ class FlyMLMDataset(torch.utils.data.Dataset):
 
     def get_Xkp0(self, input0=None, global0=None, movements=None, scale=None, example=None):
         """
-    Xkp = self.get_Xkp(input0,global0,movements)
+        Xkp = self.get_Xkp(input0,global0,movements)
 
-    Call get_Xfeat to get the full pose features based on the initial input and global
-    position input0 and global0 and the per-frame motion in movements. Converts
-    the full pose features to keypoint coordinates.
+        Call get_Xfeat to get the full pose features based on the initial input and global
+        position input0 and global0 and the per-frame motion in movements. Converts
+        the full pose features to keypoint coordinates.
 
-    Either input0, global0, movements, and scale must be input OR
-    example must be input, and input0, global0, movements, and scale are derived from there
+        Either input0, global0, movements, and scale must be input OR
+        example must be input, and input0, global0, movements, and scale are derived from there
 
-    Args:
-        input0 (ndarray, d_input_labels+dfeat+hasmaskflag): network input for time point 0
-        global0 (ndarray, 3): global position at time point 0
-        movements (ndarray, T x d_output ): movements[t,:] is the movement from t to t+1
-        scale (ndarray, dscale): scale parameters for this fly
-        example (dict), output of __getitem__: example with fields input, init, labels, and
-        scale.
+        Args:
+            input0 (ndarray, d_input_labels+dfeat+hasmaskflag): network input for time point 0
+            global0 (ndarray, 3): global position at time point 0
+            movements (ndarray, T x d_output ): movements[t,:] is the movement from t to t+1
+            scale (ndarray, dscale): scale parameters for this fly
+            example (dict), output of __getitem__: example with fields input, init, labels, and
+            scale.
 
-    Returns:
-        Xkp: (ndarray, nkeypoints x 2 x T+1 x 1): Keypoint locations for frames 0 through T
-    """
+        Returns:
+            Xkp: (ndarray, nkeypoints x 2 x T+1 x 1): Keypoint locations for frames 0 through T
+        """
 
         if example is not None and scale is None:
             scale = example['scale']
@@ -1241,15 +1241,15 @@ class FlyMLMDataset(torch.utils.data.Dataset):
 
     def feat2kp(self, Xfeat, scale):
         """
-    Xkp = self.feat2kp(Xfeat)
+        Xkp = self.feat2kp(Xfeat)
 
-    Args:
-        Xfeat (ndarray, T x nfeatures): full pose features for each frame
-        scale (ndarray, dscale): scale features
+        Args:
+            Xfeat (ndarray, T x nfeatures): full pose features for each frame
+            scale (ndarray, dscale): scale features
 
-    Returns:
-        Xkp (ndarray, nkeypoints x 2 x T+1 x 1): keypoints for each frame
-    """
+        Returns:
+            Xkp (ndarray, nkeypoints x 2 x T+1 x 1): keypoints for each frame
+        """
         Xkp = feat2kp(Xfeat.T[..., None], scale[..., None])
         return Xkp
 
@@ -1321,23 +1321,23 @@ class FlyMLMDataset(torch.utils.data.Dataset):
     def predict_open_loop(self, examples_pred, fliespred, scales, Xkp_fill, burnin, model, maxcontextl=np.inf, debug=False,
                           need_weights=False, nsamples=0, labels_true=None):
         """
-      predict_open_loop(self,Xkp,fliespred,scales,burnin,model,sensory_params,maxcontextl=np.inf,debug=False)
+        predict_open_loop(self,Xkp,fliespred,scales,burnin,model,sensory_params,maxcontextl=np.inf,debug=False)
 
-      Args:
-        examples_pred: list of FlyExample objects to be predicted in open loop. labels can be nan 
-        for frames/flies to be predicted. Will be overwritten
-        #Xkp (ndarray, nkpts x 2 x tpred x nflies): keypoints for all flies for all frames.
-        #Can be nan for frames/flies to be predicted. Will be overwritten.
-        #fliespred (ndarray, nfliespred): indices of flies to predict
-        #scales (ndarray, nscale x nfliespred): scale parameters for the flies to be predicted
-        burnin (int): number of frames to use for initialization
-        maxcontextl (int, optional): maximum number of frames to use for context. Default np.inf
-        debug (bool, optional): whether to fill in from movement computed from Xkp_all
+        Args:
+            examples_pred: list of FlyExample objects to be predicted in open loop. labels can be nan 
+            for frames/flies to be predicted. Will be overwritten
+            #Xkp (ndarray, nkpts x 2 x tpred x nflies): keypoints for all flies for all frames.
+            #Can be nan for frames/flies to be predicted. Will be overwritten.
+            #fliespred (ndarray, nfliespred): indices of flies to predict
+            #scales (ndarray, nscale x nfliespred): scale parameters for the flies to be predicted
+            burnin (int): number of frames to use for initialization
+            maxcontextl (int, optional): maximum number of frames to use for context. Default np.inf
+            debug (bool, optional): whether to fill in from movement computed from Xkp_all
 
-      Example call:
-      dataset.predict_open_loop(examples_pred,burnin,model,maxcontextl=config['contextl'],
-                                debug=debug,need_weights=plotattnweights,nsamples=nsamplesfuture)
-      """
+        Example call:
+        dataset.predict_open_loop(examples_pred,burnin,model,maxcontextl=config['contextl'],
+                                    debug=debug,need_weights=plotattnweights,nsamples=nsamplesfuture)
+        """
         model.eval()
 
         with torch.no_grad():
@@ -1377,8 +1377,9 @@ class FlyMLMDataset(torch.utils.data.Dataset):
 
             for i,fly in enumerate(fliespred):
                 # copy frames up to t
+                # don't use the init_pose
                 # get_next_pose[:,-1] will be nan
-                example_pred = examples_pred[i].copy_subindex(ts=np.arange(t0, t+1))
+                example_pred = examples_pred[i].copy_subindex(ts=np.arange(t0, t+1),needinit=False)
                 # inputs will go from t0 through t
                 # labels (unused) will go from t0+example_pred.starttoff through t+example_pred.starttoff
                 test_example = example_pred.get_train_example()
@@ -1504,11 +1505,11 @@ class FlyMLMDataset(torch.utils.data.Dataset):
 
     def get_outnames(self):
         """
-    outnames = self.get_outnames()
+        outnames = self.get_outnames()
 
-    Returns:
-        outnames (list of strings): names of each output motion
-    """
+        Returns:
+            outnames (list of strings): names of each output motion
+        """
         return self.data[0].labels.get_multi_names()
 
     # TODO REMOVE THIS

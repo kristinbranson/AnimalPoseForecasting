@@ -358,7 +358,7 @@ class FlyExample:
 
     def copy(self):
         return self.copy_subindex()
-
+    
     def copy_subindex(self, idx_pre=None, ts=None, needinit=True):
 
         example = self.get_raw_example(makecopy=True)
@@ -380,7 +380,7 @@ class FlyExample:
                 toff = ts
             if toff > 0:
                 if needinit:
-                    example['init'] = self.labels.get_next_pose(ts=[toff,]).T # possibly inefficient, requires integrating
+                    example['init'] = self.labels.get_next_pose(ts=[toff,],use_todiscretize=self.labels.is_todiscretize()).T # possibly inefficient, requires integrating
                 else:
                     example['init'][:] = np.nan # set to nans so that we know this is bad data
                     
@@ -1238,6 +1238,9 @@ class PoseLabels:
 
     def is_continuous(self):
         return 'continuous' in self.labels_raw
+
+    def is_todiscretize(self):
+        return self.is_discretized() and ('todiscretize' in self.labels_raw)
 
     def is_masked(self):
         return 'mask' in self.labels_raw

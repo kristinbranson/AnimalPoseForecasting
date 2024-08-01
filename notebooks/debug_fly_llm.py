@@ -590,9 +590,6 @@ ani = animate_predict_open_loop(model,
 HTML(ani.to_jshtml())
 
 # %%
-ani
-
-# %%
 vidtime = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
 # savevidfile = os.path.join(config['savedir'], f"samplevideo_{modeltype_str}_{savetime}_{vidtime}.gif")
 savevidfile = os.path.join("/groups/branson/home/eyjolfsdottire/data", f"samplevideo_{modeltype_str}_{savetime}_{vidtime}.gif")
@@ -600,5 +597,3 @@ print('Saving animation to file %s...'%savevidfile)
 writer = animation.PillowWriter(fps=30)
 ani.save(savevidfile, writer=writer)
 print('Finished writing.')
-
-# %%
