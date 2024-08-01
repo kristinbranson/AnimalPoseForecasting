@@ -3,28 +3,11 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib import animation
 
+from apf.data import get_real_agents
 from flyllm.features import compute_pose_features, split_features
 from flyllm.config import ARENA_RADIUS_MM
 from flyllm.plotting import plot_flies, plot_arena
 from flyllm.pose import PoseLabels, FlyExample
-
-
-def get_real_flies(x, tgtdim=-1):
-    """
-    isreal = get_real_flies(x)
-    Returns which flies in the input ndarray x correspond to real data (are not nan).
-    Input:
-    x: ndarray of arbitrary dimensions, as long as the tgtdim-dimension corresponds to targets.
-    tgtdim: dimension corresponding to targets. default: -1 (last)
-    """
-    # x is ... x ntgts
-    dims = list(range(x.ndim))
-    if tgtdim < 0:
-        tgtdim = x.ndim + tgtdim
-    dims.remove(tgtdim)
-
-    isreal = np.all(np.isnan(x), axis=tuple(dims)) == False
-    return isreal
 
 
 def get_pose_future(data, scales, tspred_global, ts=None, fliespred=None):
@@ -139,13 +122,13 @@ def animate_pose(Xkps, focusflies=[], ax=None, fig=None, t0=0,
     # get rid of blank flies
     Xkp = list(Xkps.values())[0]
     T = Xkp.shape[-2]
-    isreal = get_real_flies(Xkp)
+    isreal = get_real_agents(Xkp)
     nflies = Xkp.shape[-1]
     isfocusfly = np.zeros(nflies, dtype=bool)
     isfocusfly[focusflies] = True
     for Xkp in Xkps.values():
         assert (nflies == Xkp.shape[-1])
-        isreal = isreal | get_real_flies(Xkp)
+        isreal = isreal | get_real_agents(Xkp)
 
     for k, v in Xkps.items():
         Xkps[k] = v[..., isreal]
@@ -377,7 +360,7 @@ def animate_predict_open_loop(model, dataset, Xkp_init, fliespred, scales, tpred
     # overwrite data we will predict with nans to make sure we aren't cheating
     Xkp[...,burnin+1:,:][...,fliespred] = np.nan
 
-    # fliespred = np.nonzero(mabe.get_real_flies(Xkp))[0]
+    # fliespred = np.nonzero(mabe.get_real_agents(Xkp))[0]
     labels_true = []
     examples_pred = []
     for i, flynum in enumerate(fliespred):

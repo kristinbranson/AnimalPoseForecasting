@@ -13,9 +13,9 @@ from flyllm.features import (
     zscore, unzscore,
     get_sensory_feature_shapes,
 )
-from flyllm.data import fit_discretize_labels, discretize_labels, weighted_sample, labels_discrete_to_continuous
-from flyllm.utils import rotate_2d_points, compute_npad
-from flyllm.models import (  # TODO: dataset should not depend on models
+from apf.data import fit_discretize_labels, discretize_labels, weighted_sample, labels_discrete_to_continuous
+from apf.utils import rotate_2d_points, compute_npad
+from apf.models import (  # TODO: dataset should not depend on models
     generate_square_full_mask,
     apply_mask,
     unpack_input,

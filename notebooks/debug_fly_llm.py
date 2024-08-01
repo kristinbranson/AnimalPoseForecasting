@@ -1,28 +1,25 @@
 # ---
 # jupyter:
 #   jupytext:
-#     custom_cell_magics: kql
 #     text_representation:
 #       extension: .py
-#       format_name: percent
-#       format_version: '1.3'
-#       jupytext_version: 1.11.2
+#       format_name: light
+#       format_version: '1.5'
+#       jupytext_version: 1.16.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-# %% [markdown]
 # ## Imports
 
-# %%
+# +
 # %load_ext autoreload
 # %autoreload 2
 
 import numpy as np
 import torch
-import matplotlib
 import matplotlib.pyplot as plt
 import tqdm
 import datetime
@@ -30,11 +27,18 @@ import os
 from matplotlib import animation
 import pickle
 
-from flyllm.io import read_config, get_modeltype_str
-from flyllm.utils import get_dct_matrix, compute_npad
-from flyllm.config import scalenames, nfeatures, featglobal
-from flyllm.features import compute_features, compute_scale_perfly
-from flyllm.data import load_and_filter_data, sanity_check_tspred, chunk_data, interval_all, debug_less_data
+from apf.utils import get_dct_matrix, compute_npad
+from apf.data import chunk_data, interval_all, debug_less_data
+from apf.models import (
+    initialize_model,
+    initialize_loss,
+    generate_square_full_mask,
+    sanity_check_temporal_dep,
+    criterion_wrapper,
+)
+from apf.io import read_config, get_modeltype_str, load_and_filter_data
+from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames
+from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx
 from flyllm.dataset import FlyMLMDataset
 from flyllm.plotting import (
     initialize_debug_plots, 
@@ -56,12 +60,16 @@ from flyllm.models import (
     stack_batch_list,
 )
 from flyllm.simulation import animate_predict_open_loop
+from flyllm.prediction import predict_all
+from IPython.display import HTML
+
+# -
 print('CUDA available: ' + str(torch.cuda.is_available()))
 
-# %% [markdown]
+
 # ## Load data
 
-# %%
+# +
 # configuration parameters for this model
 loadmodelfile = None
 restartmodelfile = None
@@ -83,7 +91,7 @@ device = torch.device(config['device'])
 # Skip augmentation for debugging purposes
 config['augment_flip'] = False 
 
-# %%
+# -
 # load raw data
 if quickdebugdatafile is None:
     data, scale_perfly = load_and_filter_data(config['intrainfile'], config)
@@ -101,7 +109,7 @@ else:
         valdata = tmp['valdata']
         val_scale_perfly = tmp['val_scale_perfly']
 
-# %%
+# +
 print(config['contextl'])
 print(config['tspred_global'])  # times to look ahead
 
@@ -117,14 +125,14 @@ scalenames
 # # compute_npad??
 # # get_dct_matrix??
 # # chunk_data??
+# -
 
-# %% [markdown]
 # ## Compute features
 
-# %%
+# +
 # # compute_features??
 
-# %%
+# +
 # if using discrete cosine transform, create dct matrix
 # this didn't seem to work well, so probably won't use in the future
 if config['dct_tau'] is not None and config['dct_tau'] > 0:
@@ -173,6 +181,7 @@ X = chunk_data(data, config['contextl'], reparamfun, **chunk_data_params)
 print('Chunking val data...')
 valX = chunk_data(valdata, config['contextl'], val_reparamfun, **chunk_data_params)
 print('Done.')
+# -
 
 # %%
 print(len(X))  # examples
@@ -182,10 +191,9 @@ print(X[0]['labels'].shape)  # contextl x n_pred_features ?
 print(X[0]['scale'].shape)  # len(scalenames)
 X[0]['metadata']
 
-# %% [markdown]
 # ## Create dataloader
 
-# %%
+# +
 dataset_params = {
     'max_mask_length': config['max_mask_length'],
     'pmask': config['pmask'],
@@ -247,7 +255,7 @@ example = next(iter(train_dataloader))
 sz = example['input'].shape
 print(f'batch input shape = {sz}')
 
-# %%
+# +
 # X has dim 211, but train data has dim 241, where does the extra 30 come from?
 print(len(train_dataset))  # same as x
 print(ntrain)
@@ -259,11 +267,9 @@ print(d_input, d_output)
 
 print(train_dataset.dfeat)
 print(train_dataset.nextframeidx)
+# -
 
-# %% [markdown]
 # set up debug plots
-
-# %%
 plt.ion()
 debug_params = {}
 # if contextl is long, still just look at samples from the first 64 frames
@@ -274,15 +280,13 @@ hdebug = {}
 hdebug['train'] = initialize_debug_plots(train_dataset, train_dataloader, data,name='Train', **debug_params)
 hdebug['val'] = initialize_debug_plots(val_dataset, val_dataloader, valdata, name='Val', **debug_params)
 
-# %% [markdown]
 # ## Set up model and training
 
-# %%
 # Smaller model for debuggin purposes
 config['nlayers'] = 2
 config['niterplot'] = 2
 
-# %%
+# +
 # create the model
 model, criterion = initialize_model(config, train_dataset, device)
 
@@ -300,18 +304,18 @@ last_val_loss = None
 
 hloss = initialize_loss_plots(loss_epoch)
 
-# %%
+# +
 print(type(model))  # torch.nn.Module
 # criterion??
 
 # lossfcn_discrete = torch.nn.CrossEntropyLoss()
 # lossfcn_continuous = torch.nn.L1Loss()
+# -
 
-# %% [markdown]
 # ## Create attention mask 
 # (e.g. mask out t+1, .. t+n)
 
-# %%
+# +
 # create attention mask
 contextl = example['input'].shape[1]
 if config['modeltype'] == 'mlm':
@@ -330,17 +334,16 @@ sanity_check_temporal_dep(train_dataloader, device, train_src_mask, is_causal, m
 modeltype_str = get_modeltype_str(config, train_dataset)
 if ('model_nickname' in config) and (config['model_nickname'] is not None):
     modeltype_str = config['model_nickname']
+# -
 
-# %%
 m = train_src_mask.cpu()
 plt.figure()
 plt.imshow(m)
 # -Inf at future timesteps, otherwise 0
 
-# %% [markdown]
 # # Train the model
 
-# %%
+# +
 # train
 epoch = 0
 progress_bar = tqdm.tqdm(range(num_training_steps))
@@ -434,18 +437,13 @@ for epoch in range(epoch, config['num_train_epochs']):
       
         train_dataset = FlyMLMDataset(X,**train_dataset_params,**dataset_params)
         print('New training data set created')
-    
-    if (epoch+1)%config['save_epoch'] == 0:
-        savefile = os.path.join(config['savedir'],f"fly{modeltype_str}_epoch{epoch+1}_{savetime}.pth")
-        print(f'Saving to file {savefile}')
-        save_model(savefile,model,lr_optimizer=optimizer,scheduler=lr_scheduler,loss=loss_epoch,config=config)
 
 print('Done training')
+# -
 
-# %% [markdown]
 # # Evaluate
 
-# %%
+# +
 model.eval()
 
 # compute predictions and labels for all validation data using default masking
@@ -453,12 +451,15 @@ all_pred, all_labels = predict_all(
     val_dataloader, val_dataset, model, config, train_src_mask
 )
 
+# +
 # # plot comparison between predictions and labels on validation data
 # predv = stack_batch_list(all_pred)
 # labelsv = stack_batch_list(all_labels)
 # maskv = stack_batch_list(all_mask)
 # pred_discretev = stack_batch_list(all_pred_discrete)
 # labels_discretev = stack_batch_list(all_labels_discrete)
+
+# +
 fig, ax = debug_plot_global_histograms(all_pred, all_labels, train_dataset, nbins=25, subsample=1, compare='pred')
 
 if train_dataset.dct_m is not None:
@@ -468,8 +469,8 @@ if train_dataset.ntspred_global > 1:
 
 # crop to nplot for plotting
 nplot = min(len(all_labels),8000//config['batch_size']//config['contextl']+1)
+# -
 
-# %%
 ntspred_plot = np.minimum(4, train_dataset.ntspred_global)
 featidxplot, ftplot = all_labels[0].select_featidx_plot(ntspred_plot)
 naxc = np.maximum(1, int(np.round(len(featidxplot) / nfeatures)))
@@ -489,41 +490,9 @@ if train_dataset.ntspred_global > 1:
         all_pred[:nplot], all_labels[:nplot], naxc=naxc, featidxplot=featidxplot
     )
 
-# %% [markdown]
 # # Simulate
 
-# %%
-# %load_ext autoreload
-# %autoreload 2
-
-from flyllm.io import read_config, get_modeltype_str
-from flyllm.utils import get_dct_matrix, compute_npad
-from flyllm.config import scalenames, nfeatures, featglobal
-from flyllm.features import compute_features, compute_scale_perfly
-from flyllm.data import load_and_filter_data, sanity_check_tspred, chunk_data, interval_all, debug_less_data
-from flyllm.dataset import FlyMLMDataset
-from flyllm.plotting import (
-    initialize_debug_plots, 
-    initialize_loss_plots, 
-    update_debug_plots,
-    debug_plot_global_histograms, 
-    debug_plot_dct_relative_error,  
-    debug_plot_global_error, 
-    debug_plot_predictions_vs_labels,
-    select_featidx_plot,
-)
-from flyllm.models import (
-    initialize_model, 
-    initialize_loss, 
-    generate_square_full_mask, 
-    sanity_check_temporal_dep,
-    predict_all,
-    criterion_wrapper,
-    stack_batch_list,
-)
-from flyllm.simulation import animate_predict_open_loop
-from IPython.display import HTML
-
+# +
 # generate an animation of open loop prediction
 tpred = np.minimum(200 + config['contextl'], valdata['isdata'].shape[0] // 2)
 
@@ -589,7 +558,8 @@ ani = animate_predict_open_loop(model,
 )
 HTML(ani.to_jshtml())
 
-# %%
+# -
+
 vidtime = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
 # savevidfile = os.path.join(config['savedir'], f"samplevideo_{modeltype_str}_{savetime}_{vidtime}.gif")
 savevidfile = os.path.join("/groups/branson/home/eyjolfsdottire/data", f"samplevideo_{modeltype_str}_{savetime}_{vidtime}.gif")

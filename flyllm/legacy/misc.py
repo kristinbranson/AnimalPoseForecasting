@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import gzip
 import pickle
 
-from flyllm.plotting import debug_plot_batch_pose
+from flyllm.plotting import debug_plot_pose
 from flyllm.features import compute_features
 
 
@@ -181,7 +181,7 @@ def debug_add_noise(train_dataset, data, idxsample=0, tsplot=None):
             raise ValueError('huh')
     if tsplot is None:
         tsplot = np.round(np.linspace(0, 64, 4)).astype(int)
-    hpose, ax, fig = debug_plot_batch_pose(exboth, train_dataset, data=data, tsplot=tsplot)
+    hpose, ax, fig = debug_plot_pose(exboth, train_dataset, data=data, tsplot=tsplot)
     Xfeat_true = train_dataset.get_Xfeat(example=extrue, use_todiscretize=True)
     Xfeat_noise = train_dataset.get_Xfeat(example=exnoise, use_todiscretize=True)
 

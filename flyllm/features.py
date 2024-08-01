@@ -2,15 +2,19 @@ import numpy as np
 import warnings
 import collections
 import torch
+import tqdm
+import logging
 
 from flyllm.config import (
     posenames, keypointnames, scalenames,
     nglobal, nrelative, nfeatures, nkptouch, nkptouch_other,
     featangle, featrelative,
     featglobal, kpvision_other, kptouch_other, featthetaglobal, kpeye, kptouch,
-    SENSORY_PARAMS
+    SENSORY_PARAMS, PXPERMM
 )
-from flyllm.utils import modrange, rotate_2d_points, boxsum, angledist2xy, mod2pi, atleast_4d, compute_npad
+from apf.utils import modrange, rotate_2d_points, boxsum, angledist2xy, mod2pi, atleast_4d
+
+LOG = logging.getLogger(__name__)
 
 
 """ Pose features
@@ -588,16 +592,16 @@ def compute_movement(
         xoriginvel = rotate_2d_points(xoriginvelrel.reshape((2, -1)).T, -xtheta[:-1].flatten()).T.reshape(
             xoriginvelrel.shape)
         xorigin = np.cumsum(np.concatenate((xorigin0[:, None], xoriginvel), axis=1), axis=1)
-        print('xtheta0 = %s' % str(xtheta0[0]))
-        print('xorigin0 = %s' % str(xorigin0[:, 0]))
-        print('xtheta[:5] = %s' % str(xtheta[:5, 0]))
-        print('original Xtheta[:5] = %s' % str(Xtheta[:5, 0]))
-        print('xoriginvelrel[:5] = \n%s' % str(xoriginvelrel[:, :5, 0]))
-        print('xoriginvel[:5] = \n%s' % str(xoriginvel[:, :5, 0]))
-        print('xorigin[:5] = \n%s' % str(xorigin[:, :5, 0]))
-        print('original Xorigin[:5] = \n%s' % str(Xorigin[:, :5, 0]))
-        print('max error origin: %e' % np.max(np.abs(xorigin[:, :-1] - Xorigin)))
-        print('max error theta: %e' % np.max(np.abs(modrange(xtheta[:-1] - Xtheta, -np.pi, np.pi))))
+        LOG.debug('xtheta0 = %s' % str(xtheta0[0]))
+        LOG.debug('xorigin0 = %s' % str(xorigin0[:, 0]))
+        LOG.debug('xtheta[:5] = %s' % str(xtheta[:5, 0]))
+        LOG.debug('original Xtheta[:5] = %s' % str(Xtheta[:5, 0]))
+        LOG.debug('xoriginvelrel[:5] = \n%s' % str(xoriginvelrel[:, :5, 0]))
+        LOG.debug('xoriginvel[:5] = \n%s' % str(xoriginvel[:, :5, 0]))
+        LOG.debug('xorigin[:5] = \n%s' % str(xorigin[:, :5, 0]))
+        LOG.debug('original Xorigin[:5] = \n%s' % str(Xorigin[:, :5, 0]))
+        LOG.debug('max error origin: %e' % np.max(np.abs(xorigin[:, :-1] - Xorigin)))
+        LOG.debug('max error theta: %e' % np.max(np.abs(modrange(xtheta[:-1] - Xtheta, -np.pi, np.pi))))
 
     # only full data up to frame lastT
     # dXoriginrel is (ntspred_global,2,lastT,nflies)
@@ -620,10 +624,10 @@ def compute_movement(
         relpose_rep_idct = idct_m @ relpose_rep_dct
         relpose_rep_idct = relpose_rep_idct.reshape((ntspred_dct,) + relpose_rep.shape[1:])
         err_dct_0 = np.max(np.abs(relpose_rep_idct[0] - relpose_rep[0]))
-        print('max error dct_0: %e' % err_dct_0)
+        LOG.debug('max error dct_0: %e' % err_dct_0)
         err_dct_tau = np.max(
             np.abs(relpose_rep[0, :, ntspred_dct - 1:, :] - relpose_rep_idct[-1, :, :-ntspred_dct + 1, :]))
-        print('max error dct_tau: %e' % err_dct_tau)
+        LOG.debug('max error dct_tau: %e' % err_dct_tau)
 
     # concatenate the global (dforward, dsideways, dorientation)
     movement_global = np.concatenate((dXoriginrel[:, [1, 0]], dtheta[:, None, :, :]), axis=1)
@@ -835,6 +839,12 @@ def compute_otherflies_touch_mult(data, prct=99):
 
     otherflies_touch_mult = 1. / ((maxd) ** SENSORY_PARAMS['otherflies_touch_exp'])
     return otherflies_touch_mult
+
+
+def ensure_otherflies_touch_mult(data):
+    if np.isnan(SENSORY_PARAMS['otherflies_touch_mult']):
+        LOG.info('computing touch parameters...')
+        SENSORY_PARAMS['otherflies_touch_mult'] = compute_otherflies_touch_mult(data)
 
 
 def compute_sensory_wrapper(Xkp, flynum, theta_main=None, returnall=False, returnidx=False):

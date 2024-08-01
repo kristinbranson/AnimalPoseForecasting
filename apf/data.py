@@ -4,16 +4,11 @@ import re
 import torch
 import logging
 
-from flyllm.config import SENSORY_PARAMS, PXPERMM, keypointnames, featglobal
-from flyllm.features import (
-    compute_features,
-    compute_scale_perfly,
-    compute_pose_features,
-    compute_movement,
-    compute_otherflies_touch_mult
-)
-# TODO: would be nice if data did not depend on features
-from flyllm.utils import get_interval_ends
+from apf.utils import get_interval_ends
+
+LOG = logging.getLogger(__name__)
+
+#TODO: Change flynum to agent_num safely
 
 
 def interval_all(x, l):
@@ -33,15 +28,15 @@ def interval_all(x, l):
 def chunk_data(data, contextl, reparamfun, npad=1):
     contextlpad = contextl + npad
 
-    # all frames for the main fly must have real data
+    # all frames for the main agent must have real data
     allisdata = interval_all(data['isdata'], contextlpad)
     isnotsplit = interval_all(data['isstart'] == False, contextlpad - 1)[1:, ...]
     canstart = np.logical_and(allisdata, isnotsplit)
 
-    # X is nkeypts x 2 x T x nflies
+    # X is nkeypts x 2 x T x n_agents
     nkeypoints = data['X'].shape[0]
     T = data['X'].shape[2]
-    maxnflies = data['X'].shape[3]
+    max_n_agents = data['X'].shape[3]
     assert T > 2 * contextlpad, 'Assumption that data has more frames than 2*(contextl+1) is incorrect, code will fail'
 
     # last possible start frame = T - contextl
@@ -50,10 +45,10 @@ def chunk_data(data, contextl, reparamfun, npad=1):
     X = []
     # loop through ids
     nframestotal = 0
-    for flynum in tqdm.trange(maxnflies, desc='Fly'):
+    for agent_num in tqdm.trange(max_n_agents, desc='Agent'):
         # choose a first frame near the beginning, but offset a bit
         # first possible start
-        canstartidx = np.nonzero(canstart[:, flynum])[0]
+        canstartidx = np.nonzero(canstart[:, agent_num])[0]
         if canstartidx.size == 0:
             continue
 
@@ -61,38 +56,38 @@ def chunk_data(data, contextl, reparamfun, npad=1):
         # offset a bit
         t0 = mint0curr + np.random.randint(0, contextl, None)
         # find the next allowed frame
-        if canstart[t0, flynum] == False:
-            if not np.any(canstart[t0:, flynum]):
+        if canstart[t0, agent_num] == False:
+            if not np.any(canstart[t0:, agent_num]):
                 continue
-            t0 = np.nonzero(canstart[t0:, flynum])[0][0] + t0
+            t0 = np.nonzero(canstart[t0:, agent_num])[0][0] + t0
 
         maxt0curr = canstartidx[-1]
         # maxt1curr = maxt0curr+contextlpad-1
-        ndata = np.count_nonzero(data['isdata'][:, flynum])
+        ndata = np.count_nonzero(data['isdata'][:, agent_num])
         maxintervals = ndata // contextl + 1
         for i in tqdm.trange(maxintervals, desc='Interval'):
             if t0 > maxt0:
                 break
             # this is guaranteed to be < T
             t1 = t0 + contextlpad - 1
-            id = data['ids'][t0, flynum]
-            xcurr = reparamfun(data['X'][..., t0:t1 + 1, :], id, flynum, npad=npad)
-            xcurr['metadata'] = {'flynum': flynum, 'id': id, 't0': t0, 'videoidx': data['videoidx'][t0, 0],
+            id = data['ids'][t0, agent_num]
+            xcurr = reparamfun(data['X'][..., t0:t1 + 1, :], id, agent_num, npad=npad)
+            xcurr['metadata'] = {'flynum': agent_num, 'id': id, 't0': t0, 'videoidx': data['videoidx'][t0, 0],
                                  'frame0': data['frames'][t0, 0]}
-            xcurr['categories'] = data['y'][:, t0:t1 + 1, flynum].astype(np.float32)
+            xcurr['categories'] = data['y'][:, t0:t1 + 1, agent_num].astype(np.float32)
             X.append(xcurr)
             if t0 + contextl >= maxt0curr:
                 break
-            elif canstart[t0 + contextl, flynum]:
+            elif canstart[t0 + contextl, agent_num]:
                 t0 = t0 + contextl
             else:
-                t0 = np.nonzero(canstart[t1 + 1:, flynum])[0]
+                t0 = np.nonzero(canstart[t1 + 1:, agent_num])[0]
                 if t0 is None or t0.size == 0:
                     break
                 t0 = t0[0] + t1 + 1
             nframestotal += contextl
 
-    logging.info(f'In total {nframestotal} frames of data after chunking')
+    LOG.info(f'In total {nframestotal} frames of data after chunking')
 
     return X
 
@@ -102,7 +97,7 @@ def select_bin_edges(movement, nbins, bin_epsilon, outlierprct=0, feati=None):
     lims = np.percentile(movement, [outlierprct, 100 - outlierprct])
     max_bin_epsilon = (lims[1] - lims[0]) / (nbins + 1)
     if bin_epsilon >= max_bin_epsilon:
-        logging.info(
+        LOG.info(
             f'{feati}: bin_epsilon {bin_epsilon} bigger than max bin epsilon {max_bin_epsilon}, '
             f'setting all bins to be the same size'
         )
@@ -272,7 +267,7 @@ def get_batch_idx(example, idx):
     return example1
 
 
-def get_flip_idx():
+def get_flip_idx(keypointnames):
     isright = np.array([re.search('right', kpn) is not None for kpn in keypointnames])
     flipidx = np.arange(len(keypointnames), dtype=int)
     idxright = np.nonzero(isright)[0]
@@ -286,9 +281,9 @@ def get_flip_idx():
     return flipidx
 
 
-def flip_flies(X, arena_center=[0, 0], flipdim=0):
+def flip_agents(X, keypointnames, arena_center=[0, 0], flipdim=0):
     flipX = X.copy()
-    flipidx = get_flip_idx()
+    flipidx = get_flip_idx(keypointnames)
     for i in range(len(flipidx)):
         flipX[i, flipdim, ...] = arena_center[flipdim] - X[flipidx[i], flipdim, ...]
         flipX[i, 1 - flipdim, ...] = X[flipidx[i], 1 - flipdim, ...]
@@ -298,18 +293,18 @@ def flip_flies(X, arena_center=[0, 0], flipdim=0):
 
 def split_data_by_id(data):
     splitdata = []
-    nflies = data['X'].shape[-1]
-    for flynum in range(nflies):
-        isdata = data['isdata'][:, flynum] & (data['isstart'][:, flynum] == False)
+    n_agents = data['X'].shape[-1]
+    for agent_num in range(n_agents):
+        isdata = data['isdata'][:, agent_num] & (data['isstart'][:, agent_num] == False)
         idxstart, idxend = get_interval_ends(isdata)
         for i in range(len(idxstart)):
             i0 = idxstart[i]
             i1 = idxend[i]
-            id = data['ids'][i0, flynum]
-            if data['isdata'][i0 - 1, flynum] and data['ids'][i0 - 1, flynum] == id:
+            id = data['ids'][i0, agent_num]
+            if data['isdata'][i0 - 1, agent_num] and data['ids'][i0 - 1, agent_num] == id:
                 i0 -= 1
             splitdata.append({
-                'flynum': flynum,
+                'flynum': agent_num,
                 'id': id,
                 'i0': i0,
                 'i1': i1,
@@ -317,70 +312,30 @@ def split_data_by_id(data):
     return splitdata
 
 
-def sanity_check_tspred(data, compute_feature_params, npad, scale_perfly, contextl=512, t0=510, flynum=0):
-    # sanity check on computing features when predicting many frames into the future
-    # compute inputs and outputs for frames t0:t0+contextl+npad+1 with tspred_global set by config
-    # and inputs ant outputs for frames t0:t0+contextl+1 with just next frame prediction.
-    # the inputs should match each other
-    # the outputs for each of the compute_feature_params['tspred_global'] should match the next frame
-    # predictions for the corresponding frame
-
-    epsilon = 1e-6
-    id = data['ids'][t0, flynum]
-
-    # compute inputs and outputs with tspred_global = compute_feature_params['tspred_global']
-    contextlpad = contextl + npad
-    t1 = t0 + contextlpad - 1
-    x = data['X'][..., t0:t1 + 1, :]
-    xcurr1, idxinfo1 = compute_features(x, id, flynum, scale_perfly, outtype=np.float32, returnidx=True, npad=npad,
-                                        **compute_feature_params)
-
-    # compute inputs and outputs with tspred_global = [1,]
-    contextlpad = contextl + 1
-    t1 = t0 + contextlpad - 1
-    x = data['X'][..., t0:t1 + 1, :]
-    xcurr0, idxinfo0 = compute_features(x, id, flynum, scale_perfly, outtype=np.float32, tspred_global=[1, ],
-                                        returnidx=True,
-                                        **{k: v for k, v in compute_feature_params.items() if k != 'tspred_global'})
-
-    assert np.all(np.abs(xcurr0['input'] - xcurr1['input']) < epsilon)
-    for f in featglobal:
-        # find row of np.array idxinfo1['labels']['global_feat_tau'] that equals (f,1)
-        i1 = np.nonzero(
-            (idxinfo1['labels']['global_feat_tau'][:, 0] == f) & (idxinfo1['labels']['global_feat_tau'][:, 1] == 1))[0][
-            0]
-        i0 = np.nonzero(
-            (idxinfo0['labels']['global_feat_tau'][:, 0] == f) & (idxinfo0['labels']['global_feat_tau'][:, 1] == 1))[0][
-            0]
-        assert np.all(np.abs(xcurr1['labels'][:, i1] - xcurr0['labels'][:, i0]) < epsilon)
-
-    return
-
-
 def compare_dicts(old_ex, new_ex, maxerr=None):
     for k, v in old_ex.items():
         err = 0.
         if not k in new_ex:
-            logging.info(f'Missing key {k}')
+            LOG.info(f'Missing key {k}')
         elif type(v) is torch.Tensor:
             v = v.cpu().numpy()
             newv = new_ex[k]
             if type(newv) is torch.Tensor:
                 newv = newv.cpu().numpy()
             err = np.nanmax(np.abs(v - newv))
-            logging.info(f'max diff {k}: {err:e}')
+            LOG.info(f'max diff {k}: {err:e}')
         elif type(v) is np.ndarray:
             err = np.nanmax(np.abs(v - new_ex[k]))
-            logging.info(f'max diff {k}: {err:e}')
+            LOG.info(f'max diff {k}: {err:e}')
         elif type(v) is dict:
-            logging.info(f'Comparing dict {k}')
+            LOG.info(f'Comparing dict {k}')
             compare_dicts(v, new_ex[k])
         else:
             try:
                 err = np.nanmax(np.abs(v - new_ex[k]))
-                logging.info(f'max diff {k}: {err:e}')
+                LOG.info(f'max diff {k}: {err:e}')
             except:
-                logging.info(f'not comparing {k}')
+                LOG.info(f'not comparing {k}')
         if maxerr is not None:
             assert err < maxerr
 
@@ -389,86 +344,24 @@ def compare_dicts(old_ex, new_ex, maxerr=None):
 
 def data_to_kp_from_metadata(data, metadata, ntimepoints):
     t0 = metadata['t0']
-    flynum = metadata['flynum']
+    agent_num = metadata['flynum']
     id = metadata['id']
-    datakp = data['X'][:, :, t0:t0 + ntimepoints + 1, flynum].transpose(2, 0, 1)
+    datakp = data['X'][:, :, t0:t0 + ntimepoints + 1, agent_num].transpose(2, 0, 1)
     return datakp, id
 
 
-def debug_less_data(data, T=10000):
-    data['videoidx'] = data['videoidx'][:T, :]
-    data['ids'] = data['ids'][:T, :]
-    data['frames'] = data['frames'][:T, :]
-    data['X'] = data['X'][:, :, :T, :]
-    data['y'] = data['y'][:, :T, :]
-    data['isdata'] = data['isdata'][:T, :]
-    data['isstart'] = data['isstart'][:T, :]
+def debug_less_data(data, n_frames_per_video=10000, max_n_videos=1):
+    frame_ids = [np.where(data['videoidx'] == idx)[0][:n_frames_per_video] for idx in np.unique(data['videoidx'])]
+    frame_ids = np.concatenate(frame_ids[:max_n_videos])
+
+    data['videoidx'] = data['videoidx'][frame_ids, :]
+    data['ids'] = data['ids'][frame_ids, :]
+    data['frames'] = data['frames'][frame_ids, :]
+    data['X'] = data['X'][:, :, frame_ids, :]
+    data['y'] = data['y'][:, frame_ids, :]
+    data['isdata'] = data['isdata'][frame_ids, :]
+    data['isstart'] = data['isstart'][frame_ids, :]
     return
-
-
-def compute_scale_allflies(data):
-    maxid = np.max(data['ids'])
-    maxnflies = data['X'].shape[3]
-    scale_perfly = None
-
-    for flynum in range(maxnflies):
-
-        idscurr = np.unique(data['ids'][data['ids'][:, flynum] >= 0, flynum])
-        for id in idscurr:
-            idx = data['ids'][:, flynum] == id
-            s = compute_scale_perfly(data['X'][..., idx, flynum])
-            if scale_perfly is None:
-                scale_perfly = np.zeros((s.size, maxid + 1))
-                scale_perfly[:] = np.nan
-            else:
-                assert (np.all(np.isnan(scale_perfly[:, id])))
-            scale_perfly[:, id] = s.flatten()
-
-    return scale_perfly
-
-
-def compute_noise_params(data, scale_perfly, sig_tracking=.25 / PXPERMM,
-                         simplify_out=None, compute_pose_vel=True):
-    # contextlpad = 2
-
-    # # all frames for the main fly must have real data
-    # allisdata = interval_all(data['isdata'],contextlpad)
-    # isnotsplit = interval_all(data['isstart']==False,contextlpad-1)[1:,...]
-    # canstart = np.logical_and(allisdata,isnotsplit)
-
-    # X is nkeypts x 2 x T x nflies
-    maxnflies = data['X'].shape[3]
-
-    alld = 0.
-    n = 0
-    # loop through ids
-    logging.info('Computing noise parameters...')
-    for flynum in tqdm.trange(maxnflies):
-        idx0 = data['isdata'][:, flynum] & (data['isstart'][:, flynum] == False)
-        # bout starts and ends
-        t0s = np.nonzero(np.r_[idx0[0], (idx0[:-1] == False) & (idx0[1:] == True)])[0]
-        t1s = np.nonzero(np.r_[(idx0[:-1] == True) & (idx0[1:] == False), idx0[-1]])[0]
-
-        for i in range(len(t0s)):
-            t0 = t0s[i]
-            t1 = t1s[i]
-            id = data['ids'][t0, flynum]
-            scale = scale_perfly[:, id]
-            xkp = data['X'][:, :, t0:t1 + 1, flynum]
-            relpose, globalpos = compute_pose_features(xkp, scale)
-            movement = compute_movement(relpose=relpose, globalpos=globalpos, simplify=simplify_out,
-                                        compute_pose_vel=compute_pose_vel)
-            nu = np.random.normal(scale=sig_tracking, size=xkp.shape)
-            relpose_pert, globalpos_pert = compute_pose_features(xkp + nu, scale)
-            movement_pert = compute_movement(relpose=relpose_pert, globalpos=globalpos_pert, simplify=simplify_out,
-                                             compute_pose_vel=compute_pose_vel)
-            alld += np.nansum((movement_pert - movement) ** 2., axis=1)
-            ncurr = np.sum((np.isnan(movement) == False), axis=1)
-            n += ncurr
-
-    epsilon = np.sqrt(alld / n)
-
-    return epsilon.flatten()
 
 
 """ Load and filter data
@@ -476,41 +369,43 @@ def compute_noise_params(data, scale_perfly, sig_tracking=.25 / PXPERMM,
 
 
 def load_raw_npz_data(infile: str) -> dict:
-    """ Loads fly data that has been pre-curated via ____.
+    """ Loads tracking data.
     Args
         infile: Datafile with .npz extension. Data is expected to have the following fields:
-            'X': nkpts x 2 x T x maxnflies array of floats containing pose data for all flies and frames
+            'X': nkpts x 2 x T x max_n_agents array of floats containing pose data for all agents and frames
             'videoidx': T x 1 array of ints containing index of video pose is computed from
-            'ids': T x maxnflies array of ints containing fly id
+            'ids': T x max_n_agents array of ints containing agent id
             'frames': T x 1 array of ints containing video frame number
-            'y': ncategories x T x maxnflies binary matrix indicating supervised behavior categories
+            'y': ncategories x T x max_n_agents binary matrix indicating supervised behavior categories
             'categories': ncategories list of category names
             'kpnames': nkpts list of keypoint names
 
     Returns
         A dictionary with the fields contained in the infile with these additional fields:
-            'isdata': T x maxnflies indicating whether data is valid
-            'isstart': T x maxnflies indicating whether frame is a start frame
+            'isdata': T x max_n_agents indicating whether data is valid
+            'isstart': T x max_n_agents indicating whether frame is a start frame
     """
     data = {}
     with np.load(infile) as data1:
         for key in data1:
-            logging.info(f'loading {key}')
+            LOG.info(f'loading {key}')
             data[key] = data1[key]
-    logging.info('data loaded')
+    LOG.info('data loaded')
 
-    maxnflies = data['ids'].shape[1]
-    # ids start at 1, make them start at 0
-    data['ids'][data['ids'] >= 0] -= 1
+    # if ids start at 1, make them start at 0
+    min_valid_id = data['ids'][data['ids'] > -1].min()
+    if min_valid_id > 0:
+        data['ids'][data['ids'] >= 0] -= 1
+
     # starts of sequences, either because video changes or identity tracking issues
     # or because of filtering of training data
+    max_n_agents = data['ids'].shape[1]
     isstart = (data['ids'][1:, :] != data['ids'][:-1, :]) | \
               (data['frames'][1:, :] != (data['frames'][:-1, :] + 1))
-    isstart = np.concatenate((np.ones((1, maxnflies), dtype=bool), isstart), axis=0)
-
-    data['isdata'] = data['ids'] >= 0
+    isstart = np.concatenate((np.ones((1, max_n_agents), dtype=bool), isstart), axis=0)
     data['isstart'] = isstart
 
+    data['isdata'] = data['ids'] >= 0
     data['categories'] = list(data['categories'])
 
     return data
@@ -529,55 +424,16 @@ def filter_data_by_categories(data, categories):
     data['isdata'] = data['isdata'] & iscategory
 
 
-def load_and_filter_data(infile, config):
-    # load data
-    logging.info(f"loading raw data from {infile}...")
-    data = load_raw_npz_data(infile)
+def get_real_agents(x, tgtdim=-1):
+    """
+        isreal = get_real_flies(x)
 
-    # compute noise parameters
-    if (len(config['discreteidx']) > 0) and config['discretize_epsilon'] is None:
-        if (config['all_discretize_epsilon'] is None):
-            scale_perfly = compute_scale_allflies(data)
-            config['all_discretize_epsilon'] = compute_noise_params(data, scale_perfly,
-                                                                    simplify_out=config['simplify_out'])
-        config['discretize_epsilon'] = config['all_discretize_epsilon'][config['discreteidx']]
+        Input:
+        x: ndarray of arbitrary dimensions, as long as the tgtdim-dimension corresponds to targets.
+        tgtdim: dimension corresponding to targets. default: -1 (last)
 
-    # filter out data
-    logging.info('filtering data...')
-    if config['categories'] is not None and len(config['categories']) > 0:
-        filter_data_by_categories(data, config['categories'])
-
-    # augment by flipping
-    if 'augment_flip' in config and config['augment_flip']:
-        flipvideoidx = np.max(data['videoidx']) + 1 + data['videoidx']
-        data['videoidx'] = np.concatenate((data['videoidx'], flipvideoidx), axis=0)
-        firstid = np.max(data['ids']) + 1
-        flipids = data['ids'].copy()
-        flipids[flipids >= 0] += firstid
-        data['ids'] = np.concatenate((data['ids'], flipids), axis=0)
-        data['frames'] = np.tile(data['frames'], (2, 1))
-        flipX = flip_flies(data['X'])
-        data['X'] = np.concatenate((data['X'], flipX), axis=2)
-        data['y'] = np.tile(data['y'], (1, 2, 1))
-        data['isdata'] = np.tile(data['isdata'], (2, 1))
-        data['isstart'] = np.tile(data['isstart'], (2, 1))
-
-    # compute scale parameters
-    logging.info('computing scale parameters...')
-    scale_perfly = compute_scale_allflies(data)
-
-    if np.isnan(SENSORY_PARAMS['otherflies_touch_mult']):
-        logging.info('computing touch parameters...')
-        SENSORY_PARAMS['otherflies_touch_mult'] = compute_otherflies_touch_mult(data)
-
-    # throw out data that is missing scale information - not so many frames
-    idsremove = np.nonzero(np.any(np.isnan(scale_perfly), axis=0))[0]
-    data['isdata'][np.isin(data['ids'], idsremove)] = False
-
-    return data, scale_perfly
-
-
-def get_real_flies(x, tgtdim=-1):
+        Returns which flies in the input ndarray x correspond to real data (are not nan).
+    """
     # x is ... x ntgts
     dims = list(range(x.ndim))
     if tgtdim < 0:
