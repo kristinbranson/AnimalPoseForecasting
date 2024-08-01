@@ -525,6 +525,7 @@ def compute_movement(
     Returns:
         movement (ndarray, d_output x T-1 x nflies): Per-frame movement. movement[:,t,i] is the movement from frame
         t for fly i.
+        init (ndarray, npose x ninit=2 x nflies): Initial pose for each fly
     """
 
     if relpose is None or globalpos is None:
@@ -561,14 +562,21 @@ def compute_movement(
     # dXoriginrel[tau,:,t,fly] is the global position for fly fly at time t+tau in the coordinate system of the fly at time t
     dXoriginrel, dtheta = compute_global_velocity(Xorigin, Xtheta, tspred_global)
 
+    ninit = 2
     # relpose_rep is (nrelrep,T,ntspred_dct+1,nflies)
     if simplify == 'global':
         relpose_rep = np.zeros((0, T, ntspred_global + 1, nflies), dtype=relpose.dtype)
+        relpose_init = np.zeros(0, ninit, nflies, dtype=relpose.dtype)
     elif compute_pose_vel:
         relpose_rep = compute_relpose_velocity(relpose, tspred_dct)
+        relpose_init = relpose[:,:ninit]
     else:
         relpose_rep = compute_relpose_tspred(relpose, tspred_dct, discreteidx=discreteidx)
+        relpose_init = relpose[:,:ninit]
+
     nrelrep = relpose_rep.shape[0]
+
+    init = np.r_[globalpos[:, :ninit],relpose_init]
 
     if debug:
         # try to reconstruct xorigin, xtheta from dxoriginrel and dtheta
@@ -627,6 +635,7 @@ def compute_movement(
     if nd == 2:  # no flies dimension
         movement_global = movement_global[..., 0]
         relpose_rep = relpose_rep[..., 0]
+        init = init[..., 0]
 
     # concatenate everything together
     movement = np.concatenate((movement_global, relpose_rep), axis=0)
@@ -638,9 +647,9 @@ def compute_movement(
                                                          dct_m=dct_m, tspred_global=tspred_global,
                                                          nrelrep=nrelrep)
         idxinfo['relative'] = [ntspred_global * nglobal, ntspred_global * nglobal + nrelrep * (ntspred_dct + 1)]
-        return movement, idxinfo
+        return movement, init, idxinfo
 
-    return movement
+    return movement, init
 
 
 """Compute sensory features
@@ -1003,10 +1012,10 @@ def compute_features(X, id=None, flynum=0, scale_perfly=None, smush=True, outtyp
         out = compute_movement(relpose=relpose, globalpos=globalpos, simplify=simplify_out, dct_m=dct_m,
                               tspred_global=tspred_global, compute_pose_vel=compute_pose_vel,
                               discreteidx=discreteidx, returnidx=returnidx)
+        movement = out[0]
+        init = out[1]
         if returnidx:
-            movement, idxinfo['labels'] = out
-        else:
-            movement = out
+            idxinfo['labels'] = out[2]
 
         if simplify_out is not None:
             if simplify_out == 'global':
@@ -1015,7 +1024,9 @@ def compute_features(X, id=None, flynum=0, scale_perfly=None, smush=True, outtyp
                 raise
 
         res['labels'] = movement.T
-        res['init'] = globalpos[:, :2]
+        res['init'] = init
+        #res['init'] = np.r_[globalpos[:, :2],relpose[:,:2]]
+
 
         if not smush:
             res['global'] = globalpos[:, :-1]
@@ -1037,6 +1048,8 @@ def compute_features(X, id=None, flynum=0, scale_perfly=None, smush=True, outtyp
 def split_features(X, simplify=None, axis=-1):
     res = {}
     idx = get_sensory_feature_idx(simplify)
+    sz = list(idx.values())[-1][-1]
+    assert X.shape[-1] == sz, f'X.shape[-1] = {X.shape[-1]}, should be {sz}'
     for k, v in idx.items():
         if torch.is_tensor(X):
             res[k] = torch.index_select(X, axis, torch.tensor(range(v[0], v[1])))

@@ -288,7 +288,7 @@ class FlyMLMDataset(torch.utils.data.Dataset):
 
     @property
     def ntspred_max(self):
-        return np.maximum(self.ntspred_relative, self.ntspred_global)
+        return np.maximum(self.ntspred_relative, np.max(self.tspred_global))
 
     @property
     def is_zscored(self):
@@ -1319,7 +1319,7 @@ class FlyMLMDataset(torch.utils.data.Dataset):
         return net_mask, is_causal
 
     def predict_open_loop(self, examples_pred, fliespred, scales, Xkp_fill, burnin, model, maxcontextl=np.inf, debug=False,
-                          need_weights=False, nsamples=0, movement_true=None):
+                          need_weights=False, nsamples=0, labels_true=None):
         """
       predict_open_loop(self,Xkp,fliespred,scales,burnin,model,sensory_params,maxcontextl=np.inf,debug=False)
 
@@ -1350,16 +1350,10 @@ class FlyMLMDataset(torch.utils.data.Dataset):
         else:
             nsamples1 = nsamples
 
-        # propagate forward with the 0th sample
-        selectsample = 0
-
         tpred = examples_pred[0].ntimepoints
         nfliespred = len(examples_pred)
         if need_weights:
             attn_weights = [None, ] * tpred
-
-        if debug:
-            examples_true = copy.deepcopy(examples_pred)
 
         if self.ismasked():
             # to do: figure this out for flattened models
@@ -1373,16 +1367,17 @@ class FlyMLMDataset(torch.utils.data.Dataset):
         masksizeprev = None
         
         # global position of each fly in the previous frame, so that we don't have to integrate to compute position
-        globalpos_prev = []
+        pose_prev = []
         for i in range(nfliespred):
-            globalpos_curr = examples_pred[i].labels.get_next_pose_global(ts=np.arange(burnin),use_todiscretize=True)[-1]
-            globalpos_prev.append(globalpos_curr)
+            pose_curr = examples_pred[i].labels.get_next_pose(ts=np.arange(burnin),use_todiscretize=True)[-1]
+            pose_prev.append(pose_curr)
         
-        for t in tqdm.trange(burnin, tpred):
+        for t in tqdm.trange(burnin, tpred): 
             t0 = int(np.maximum(t - maxcontextl, 0))
 
             for i,fly in enumerate(fliespred):
                 # copy frames up to t
+                # get_next_pose[:,-1] will be nan
                 example_pred = examples_pred[i].copy_subindex(ts=np.arange(t0, t+1))
                 # inputs will go from t0 through t
                 # labels (unused) will go from t0+example_pred.starttoff through t+example_pred.starttoff
@@ -1392,7 +1387,9 @@ class FlyMLMDataset(torch.utils.data.Dataset):
                 xcurr, _, _ = self.mask_input(xcurr, masktype)
 
                 if debug:
-                    raise NotImplementedError("Debug not yet implemented")
+                    label_pred = labels_true[i].copy_subindex(ts=np.arange(t0, t+1))
+                    pred = label_pred.get_train_labels()
+                    pred = {k: v.reshape((1,) + v.shape) if type(v) is torch.Tensor else v for k, v in pred.items()}
                     #zmovementout = np.tile(self.zscore_labels(movement_true[t - 1, :, i]).astype(dtype)[None],
                     #                       (nsamples1, 1))
                 else:
@@ -1468,25 +1465,31 @@ class FlyMLMDataset(torch.utils.data.Dataset):
                         if model.model_type == 'TransformerBestState' or model.model_type == 'TransformerState':
                             pred = model.randpred(pred)
                         # z-scored movement from t to t+1
-                        pred = pred_apply_fun(pred, lambda x: x[0, -1, ...].cpu().numpy())
-                        
-                        # set the label for frame t, but not the inputs yet
-                        examples_pred[i].labels.set_prediction(pred,ts=t)
-                        
-                        # store keypoints predicted for this frame
-                        Xkpcurr = examples_pred[i].labels.get_next_keypoints(ts=[t,],globalpos0=globalpos_prev[i])
-                        Xkp_fill[:,:,t,fly] = Xkpcurr[-1]
-                        globapos_curr = examples_pred[i].labels.get_next_pose_global(ts=[t,],globalpos0=globalpos_prev[i])
-                        globalpos_prev[i] = globapos_curr
-                        
+
                     # end else flatten
                 # end else debug
+                        
+                pred = pred_apply_fun(pred, lambda x: x[0, -1, ...].cpu().numpy() if type(x) is torch.Tensor else x)
+                # set the label for frame t, but not the inputs yet
+                examples_pred[i].labels.set_prediction(pred,ts=t)                
+                
+                # store keypoints predicted for this frame
+                Xkpcurr = examples_pred[i].labels.get_next_keypoints(ts=[t,],init_pose=pose_prev[i])
+                Xkp_fill[:,:,t+1,fly] = Xkpcurr[-1]
+
+
+                #globapos_curr = examples_pred[i].labels.get_next_pose_global(ts=[t,],globalpos0=globalpos_prev[i])
+                pose_curr = examples_pred[i].labels.get_next_pose(ts=[t,],init_pose=pose_prev[i])
+                pose_prev[i] = pose_curr[-1]
+                #globalpos_prev[i] = globapos_curr
+                  
             # end loop over flies
             
-            # update observations for this frame
-            for i,fly in enumerate(fliespred):
-                # this is just one frame of inputs, so don't crop the end
-                examples_pred[i].inputs.set_inputs_from_keypoints(Xkp_fill[:,:,[t,],:],fly,scale=scales[:,i],ts=[t,],npad=0)
+            if t < tpred-1:
+                # update observations for the next frame
+                for i,fly in enumerate(fliespred):
+                    # this is just one frame of inputs, so don't crop the end
+                    examples_pred[i].inputs.set_inputs_from_keypoints(Xkp_fill[:,:,[t+1,],:],fly,scale=scales[i],ts=[t+1,],npad=0)
 
         if need_weights:
             return examples_pred, attn_weights

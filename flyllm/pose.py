@@ -131,6 +131,8 @@ class ObservationInputs:
 
         if 'metadata' in example_in:
             self.metadata = example_in['metadata']
+        else:
+            self.metadata = None
             
     @property
     def ntimepoints(self):
@@ -155,22 +157,20 @@ class ObservationInputs:
             input = unzscore(input, self.zscore_params['mu_input'], self.zscore_params['sig_input'])
 
         return input
-
-    def get_init_next(self, **kwargs):
-
-        if self.init is None:
-            return None
-
-        tau = self.init.shape[-1]
-        szrest = self.init.shape[:-2]
-        relative0 = self.get_inputs_type('pose', zscored=False, **kwargs)[..., :tau, :]
-        global0 = self.init
-
-        next0 = np.zeros(szrest + (nfeatures, tau), dtype=relative0.dtype)
-        next0[..., featglobal, :] = global0
-        next0[..., featrelative, :] = np.moveaxis(relative0, -1, -2)
-
-        return next0
+      
+    def get_frames(self,ts=None):
+      if ts is None:
+        ts = np.arange(self.ntimepoints)
+      elif type(ts) is list:
+        ts = np.array(ts)
+      if type(self.metadata) is dict and 't0' in self.metadata:
+        return ts + self.metadata['t0']
+      else:
+        return ts
+      
+    def get_train_frames(self,ts=None):
+      ts = self.get_input_frames(ts)
+      return ts      
 
     def get_split_inputs(self, **kwargs):
         input = self.get_inputs(**kwargs)
@@ -263,7 +263,7 @@ class ObservationInputs:
         if not self.flatten_obs:
             if input_labels is not None:
                 train_inputs_init = train_inputs[..., :self.starttoff, :]
-                train_inputs = torch.cat((torch.tensor(input_labels[..., :-self.starttoff, :]),
+                train_inputs = torch.cat((torch.tensor(input_labels[..., :self.ntimepoints-self.starttoff, :]),
                                           train_inputs[..., self.starttoff:, :]), dim=-1)
         else:
             ntypes = len(self.flatten_obs_idx)
@@ -316,7 +316,9 @@ class FlyExample:
         if is_train_example:
             example_in = dict_convert_torch_to_numpy(example_in)
             # if we offset the example, adjust back
-            if 't0' in example_in['metadata']:
+            if ('metadata' in example_in) and \
+                (example_in['metadata'] is not None) and \
+                ('frame0' in example_in['metadata']):
                 if 'labels_init' in example_in:
                     starttoff = example_in['labels_init'].shape[-2]
                 elif 'continuous_init' in example_in:
@@ -332,9 +334,6 @@ class FlyExample:
             self.remove_labels_from_input(example_in)
 
         self.inputs = ObservationInputs(example_in, dozscore=dozscore, **self.get_observationinputs_params())
-        init_pose = self.inputs.get_init_next()
-
-        self.labels.set_init_pose(init_pose)
 
         self.set_zscore_params(self.zscore_params)
 
@@ -360,7 +359,7 @@ class FlyExample:
     def copy(self):
         return self.copy_subindex()
 
-    def copy_subindex(self, idx_pre=None, ts=None):
+    def copy_subindex(self, idx_pre=None, ts=None, needinit=True):
 
         example = self.get_raw_example(makecopy=True)
 
@@ -368,17 +367,23 @@ class FlyExample:
             ks = ['continuous', 'discrete', 'todiscretize', 'input', 'init', 'scale', 'categories']
             for k in ks:
                 example[k] = example[k][idx_pre]
-            for k in example['metadata'].keys():
-                example['metadata'][k] = example['metadata'][k][idx_pre]
+            if example['metadata'] is not None:
+              for k in example['metadata'].keys():
+                  example['metadata'][k] = example['metadata'][k][idx_pre]
 
         if ts is not None:
-            # hasn't been tested yet...
             ks = ['continuous', 'discrete', 'todiscretize', 'input']
             if hasattr(ts, '__len__'):
                 assert np.all(np.diff(ts) == 1), 'ts must be consecutive'
                 toff = ts[0]
             else:
                 toff = ts
+            if toff > 0:
+                if needinit:
+                    example['init'] = self.labels.get_next_pose(ts=[toff,]).T # possibly inefficient, requires integrating
+                else:
+                    example['init'][:] = np.nan # set to nans so that we know this is bad data
+                    
             if example['categories'] is not None:
                 cattextra = example['categories'].shape[-1] - example['continuous'].shape[-2]
                 if hasattr(ts, '__len__'):
@@ -390,7 +395,8 @@ class FlyExample:
                     example[k] = example[k][..., ts, :, :]
                 else:
                     example[k] = example[k][..., ts, :]
-            example['metadata']['t0'] += toff
+            if (example['metadata'] is not None) and ('t0' in example['metadata']):
+                example['metadata']['t0'] += toff
 
         new = FlyExample(example_in=example, **self.get_params())
         return new
@@ -504,6 +510,9 @@ class FlyExample:
         else:
             return self.labels.get_input_labels()
 
+    def get_n_input_labels(self):
+        return len(self.labels.idx_nextcossin_to_multi)
+
     def get_train_example(self, do_add_noise=False):
 
         # to do: add noise
@@ -534,7 +543,10 @@ class FlyExample:
 
     def get_train_metadata(self):
         starttoff = self.starttoff
-        metadata = copy.deepcopy(self.get_metadata())
+        metadata = self.get_metadata()
+        if metadata is None:
+            return None
+        metadata = copy.deepcopy(metadata)
         metadata['t0'] += starttoff
         metadata['frame0'] += starttoff
         return metadata
@@ -552,13 +564,11 @@ class FlyExample:
     def set_zscore_params(self, zscore_params):
         zscore_params_input, zscore_params_labels = FlyExample.split_zscore_params(zscore_params)
         self.inputs.set_zscore_params(zscore_params_input)
-        init_pose = self.inputs.get_init_next()
         self.labels.set_zscore_params(zscore_params_labels)
-        self.labels.set_init_pose(init_pose)
 
 
 class PoseLabels:
-    def __init__(self, example_in=None, init_next=None,
+    def __init__(self, example_in=None,
                  Xkp=None, scale=None, metadata=None,
                  dozscore=False, dodiscretize=False,
                  dataset=None, **kwargs):
@@ -590,6 +600,7 @@ class PoseLabels:
         self.pre_sz = None
         self.metadata = metadata
         self.categories = None
+        self.init_pose = None
 
         if (self.discretize_params is not None) and ('bin_edges' in self.discretize_params) \
                 and (self.discretize_params['bin_edges'] is not None):
@@ -598,8 +609,6 @@ class PoseLabels:
             self.discretize_nbins = 0
 
         # to do: include flattening
-
-        self.init_pose = init_next
 
         if example_in is not None:
             self.set_raw_example(example_in, dozscore=dozscore, dodiscretize=dodiscretize)
@@ -627,33 +636,42 @@ class PoseLabels:
             s += f'  nbins: {self.labels_raw["discrete"].shape[-1]}\n'
         return s
 
-    def set_prediction(self, pred,ts=None):
-        if ts is None:
-            ts = slice(self.starttoff,None)
-        if self.is_continuous():
-            if 'continuous' in pred:
-                self.labels_raw['continuous'][..., ts, :] = pred['continuous']
-            elif 'labels' in pred:
-                self.labels_raw['continuous'][..., ts, :] = pred['labels']
-            else:
-                raise ValueError('pred must contain continuous or labels')
-        if self.is_discretized():
-            if 'discrete' in pred:
-                self.labels_raw['discrete'][..., ts, :, :] = pred['discrete']
-            elif 'labels_discrete' in pred:
-                self.labels_raw['discrete'][..., ts, :, :] = pred['labels_discrete']
-            else:
-                raise ValueError('pred must contain discrete or labels_discrete')
-            
-        if 'todiscretize' in self.labels_raw:
-            if 'labels_todiscretize' in pred:
-                self.labels_raw['todiscretize'][...,ts,:] = pred['labels_todiscretize']
-            elif 'todiscretize' in pred:
-                self.labels_raw['todiscretize'][...,ts,:] = pred['todiscretize']
-            else:
-                self.labels_raw['todiscretize'][...,ts,:] = np.nan
+    def set_prediction(self, pred, ts=None, zscored=True, use_todiscretize=False, nsamples=1):
 
+        # if discretized, this will sample from discrete
+        multi = self.raw_labels_to_multi(pred, use_todiscretize=use_todiscretize, nsamples=nsamples, zscored=zscored, collapse_samples=True, ts=ts)
+        
+        # if discretized, send through the discretized values, otherwise sample will be discretized
+        # since binning is soft, this will be slightly different than the original discrete
+        if self.is_discretized():
+            multi_discrete = pred['discrete']
+        else:
+            multi_discrete = None
+        self.set_multi(multi,multi_discrete=multi_discrete,zscored=zscored,ts=ts)
+        
+        # if self.is_continuous():
+        #     if 'continuous' in pred:
+        #         self.labels_raw['continuous'][..., ts, :] = pred['continuous']
+        #     elif 'labels' in pred:
+        #         self.labels_raw['continuous'][..., ts, :] = pred['labels']
+        #     else:
+        #         raise ValueError('pred must contain continuous or labels')
+        # if self.is_discretized():
+        #     if 'discrete' in pred:
+        #         self.labels_raw['discrete'][..., ts, :, :] = pred['discrete']
+        #     elif 'labels_discrete' in pred:
+        #         self.labels_raw['discrete'][..., ts, :, :] = pred['labels_discrete']
+        #     else:
+        #         raise ValueError('pred must contain discrete or labels_discrete')
             
+        # if 'todiscretize' in self.labels_raw:
+        #     if 'labels_todiscretize' in pred:
+        #         self.labels_raw['todiscretize'][...,ts,:] = pred['labels_todiscretize']
+        #     elif 'todiscretize' in pred:
+        #         self.labels_raw['todiscretize'][...,ts,:] = pred['todiscretize']
+        #     else:
+        #         self.labels_raw['todiscretize'][...,ts,:] = np.nan
+
         return
 
     def set_raw_example(self, example_in, dozscore=False, dodiscretize=False):
@@ -737,6 +755,8 @@ class PoseLabels:
         self.scale = example_in['scale']
         if 'metadata' in example_in:
             self.metadata = example_in['metadata']
+        else:
+            self.metadata = None
 
         if 'categories' in example_in:
             self.categories = example_in['categories']
@@ -745,6 +765,12 @@ class PoseLabels:
             self.labels_raw['continuous'] = self.zscore_multi(self.labels_raw['continuous'])
         if dodiscretize and self.is_discretized():
             self.discretize_multi(self.labels_raw)
+        
+        if 'init_all' in example_in:
+          # output of get_train_example/get_train_labels, need to use init_all
+          self.init_pose = example_in['init_all']
+        elif 'init' in example_in:
+            self.init_pose = example_in['init']
 
     def append_raw(self, pred):
         if 'labels' in pred:
@@ -791,19 +817,20 @@ class PoseLabels:
             for k in ks:
                 if k in labels:
                     labels[k] = labels[k][idx_pre]
-            for k in labels['metadata'].keys():
-                labels['metadata'][k] = labels['metadata'][k][idx_pre]
+            if labels['metadata'] is not None:
+                for k in labels['metadata'].keys():
+                    labels['metadata'][k] = labels['metadata'][k][idx_pre]
             init_next = init_next[idx_pre]
 
         if ts is not None:
             # hasn't been tested yet...
             ks = ['continuous', 'discrete', 'todiscretize', 'mask']
-            if 'categories' in labels:
+            if 'categories' in labels and labels['categories'] is not None:
                 cattextra = labels['categories'].shape[-1] - labels['continuous'].shape[-2]
             if hasattr(ts, '__len__'):
                 assert np.all(np.diff(ts) == 1), 'ts must be consecutive'
                 toff = ts[0]
-                if 'categories' in labels:
+                if 'categories' in labels and labels['categories'] is not None:
                     labels['categories'] = labels['categories'][..., ts[0]:ts[-1] + cattextra, :]
             else:
                 toff = ts
@@ -816,7 +843,8 @@ class PoseLabels:
                     labels[k] = labels[k][..., ts, :, :]
                 else:
                     labels[k] = labels[k][..., ts, :]
-            labels['metadata']['t0'] += toff
+            if (labels['metadata'] is not None) and ('t0' in labels['metadata']):
+                labels['metadata']['t0'] += toff
 
         new = PoseLabels(example_in=labels, init_next=init_next, **self.get_params())
         return new
@@ -917,11 +945,14 @@ class PoseLabels:
     def set_init_pose(self, init_pose):
         self.init_pose = init_pose
 
-    def get_init_pose(self, starttoff=None):
+    def get_init_pose(self, starttoff=None, makecopy=False):
         if starttoff is None:
-            return self.init_pose
+            init_pose = self.init_pose
         else:
-            return self.init_pose[:, starttoff]
+            init_pose = self.init_pose[:, starttoff]
+        if makecopy:
+            init_pose = init_pose.copy()
+        return init_pose
 
     def get_init_global(self, starttoff=None, makecopy=True):
         init_global0 = self.init_pose[..., self.idx_nextglobal_to_next, :]
@@ -1222,12 +1253,58 @@ class PoseLabels:
                 else:
                     labels_out[kout] = labels_out[kout][..., ts, :]
 
-        labels_out['init'] = self.get_init_global(makecopy=makecopy)
+        labels_out['init'] = self.get_init_pose(makecopy=makecopy)
         labels_out['scale'] = self.get_scale(makecopy=makecopy)
         labels_out['categories'] = self.get_categories(makecopy=makecopy)
 
         return labels_out
-
+      
+    def get_frames(self,ts=None):
+      """
+      Returns array of frames ts used to derive raw labels. For features that depend on more than 
+      one frame, this is the start frame -- all features at time t are derived from frames in 
+      t through t+npad-1. 
+      """
+      if ts is None:
+        ts = np.arange(self.ntimepoints)
+      elif type(ts) is list:
+        ts = np.array(ts)
+      if (type(self.metadata) is dict) and 't0' in self.metadata:
+        return ts + self.metadata['t0']
+      else:
+        return ts
+      
+    def get_train_frames(self,ts=None):
+      """
+      Returns array of frames ts used to derive train labels. For features that depend on more than
+      one frame, this is the start frame -- all features at time t are derived from frames in
+      t through t+npad-1.
+      """
+      frames = self.get_frames(ts)
+      return frames[self.starttoff:]
+    
+    def get_next_keypoints_frames(self,ts=None):
+      ts = self.get_frames(ts)
+      return np.r_[ts,ts[-1]+1]
+    
+    def get_init_frames(self):
+      """
+      Returns array of frames used to derive init. These are all single-frame features.
+      """
+      ninit = self.init_pose.shape[-1]
+      ts = np.arange(ninit)
+      if (type(self.metadata) is dict) and 't0' in self.metadata:
+        return ts + self.metadata['t0']
+      else:
+        return ts
+      
+    def get_train_init_frames(self):
+      """
+      Returns array of frames use to derive train init. These are all single-frame features.
+      """
+      ts = self.get_init_frames()
+      return ts[self.starttoff:]
+      
     def get_raw_labels_tensor_copy(self, **kwargs):
         raw_labels = self.get_raw_labels(makecopy=False, **kwargs)
         labels_out = {}
@@ -1375,17 +1452,17 @@ class PoseLabels:
 
         return continuous
 
-    def get_multi(self, use_todiscretize=False, nsamples=0, zscored=False, collapse_samples=False, ts=None):
-
-        labels_raw = self.get_raw_labels(format='standard', ts=ts, makecopy=False)
-
+    def raw_labels_to_multi(self, labels_raw, use_todiscretize=False, nsamples=0, zscored=False, collapse_samples=False, ts=None):
+        
         # to do: add flattening support here
-
+        
         # allocate multi
         if ts is None:
             T = self.ntimepoints
-        else:
+        elif hasattr(ts, '__len__'):
             T = len(ts)
+        else:
+            T = 1
         multisz = self.pre_sz + (T, self.d_multi)
         if (nsamples > 1) or (nsamples == 1 and not collapse_samples):
             multisz = (nsamples,) + multisz
@@ -1417,6 +1494,14 @@ class PoseLabels:
 
         return multi
 
+    def get_multi(self, use_todiscretize=False, nsamples=0, zscored=False, collapse_samples=False, ts=None):
+
+        labels_raw = self.get_raw_labels(format='standard', ts=ts, makecopy=False)
+        multi = self.raw_labels_to_multi(labels_raw, use_todiscretize=use_todiscretize, nsamples=nsamples, 
+                                         zscored=zscored, collapse_samples=collapse_samples, ts=ts)
+
+        return multi
+
     def get_multi_discrete(self, makecopy=True, ts=None):
         if not self.is_discretized():
             nts = len_wrapper(ts, self.ntimepoints)
@@ -1424,7 +1509,7 @@ class PoseLabels:
         labels_raw = self.get_raw_labels(format='standard', ts=ts, makecopy=makecopy)
         return labels_raw['discrete']
 
-    def set_multi(self, multi, zscored=False, ts=None):
+    def set_multi(self, multi, multi_discrete=None, zscored=False, ts=None):
 
         multi = np.atleast_2d(multi)
 
@@ -1436,16 +1521,21 @@ class PoseLabels:
 
         if ts is None:
             ts = slice(None)
+        elif not hasattr(ts, '__len__'):
+            ts = [ts,]
 
         # set continuous
-        labels_raw['continuous'] = multi[..., ts, self.idx_multicontinuous_to_multi]
+        labels_raw['continuous'][...,ts,:] = multi[...,self.idx_multicontinuous_to_multi]
 
         # set discrete
         if self.is_discretized():
-            labels_raw['todiscretize'] = multi[..., ts, self.idx_multidiscrete_to_multi]
-            labels_raw['discrete'] = discretize_labels(labels_raw['todiscretize'][..., ts, :],
-                                                       self.discretize_params['bin_edges'],
-                                                       soften_to_ends=True)
+            labels_raw['todiscretize'][...,ts,:] = multi[..., self.idx_multidiscrete_to_multi]
+            if multi_discrete is None:
+                labels_raw['discrete'][...,ts,:,:] = discretize_labels(labels_raw['todiscretize'][..., ts, :],
+                                                                    self.discretize_params['bin_edges'],
+                                                                    soften_to_ends=True)
+            else:
+                labels_raw['discrete'][...,ts,:,:] = multi_discrete
 
         return
 
@@ -1682,13 +1772,15 @@ class PoseLabels:
         ts = idx_multi_to_multifeattpred[idx_multi_anyt, 1]
         return idx_multi_anyt, ts
 
-    def globalvel_to_globalpos(self, globalvel, starttoff=0, globalpos0=None):
+    def globalvel_to_globalpos(self, globalvel, starttoff=0, init_pose=None):
 
         n = globalvel.shape[0]
         T = globalvel.shape[1]
 
-        if globalpos0 is None:
-            globalpos0 = self.init_pose[..., self.idx_nextglobal_to_next, starttoff]
+        if init_pose is None:
+            init_pose = self.init_pose[...,starttoff]
+            
+        globalpos0 = init_pose[..., self.idx_nextglobal_to_next]
         xorigin0 = globalpos0[..., :2]
         xtheta0 = globalpos0[..., 2]
 
@@ -1703,12 +1795,14 @@ class PoseLabels:
         globalpos = np.concatenate((xorigin, xtheta[..., None]), axis=-1)
         return globalpos
 
-    def relrep_to_relpose(self, relrep, starttoff=0):
+    def relrep_to_relpose(self, relrep, init_pose=None, starttoff=0):
 
         n = relrep.shape[0]
         T = relrep.shape[1]
 
-        relpose0 = self.init_pose[..., self.idx_nextrelative_to_next, starttoff]
+        if init_pose is None:
+            init_pose = self.init_pose[..., starttoff]
+        relpose0 = init_pose[..., self.idx_nextrelative_to_next]
 
         if self.is_velocity:
             relpose = np.cumsum(np.concatenate((relpose0.reshape((n, 1, -1)), relrep), axis=-2), axis=-2)
@@ -1717,7 +1811,7 @@ class PoseLabels:
 
         return relpose
 
-    def next_to_nextpose(self, next, globalpos0=None):
+    def next_to_nextpose(self, next, init_pose=None):
 
         szrest = next.shape[:-2]
         n = int(np.prod(szrest))
@@ -1725,10 +1819,10 @@ class PoseLabels:
         T = next.shape[-2]
         next = next.reshape((n, T, self.d_next))
         globalvel = next[..., self.idx_nextglobal_to_next]
-        globalpos = self.globalvel_to_globalpos(globalvel, starttoff=starttoff, globalpos0=globalpos0)
+        globalpos = self.globalvel_to_globalpos(globalvel, starttoff=starttoff, init_pose=init_pose)
 
         relrep = next[..., self.idx_nextrelative_to_next]
-        relpose = self.relrep_to_relpose(relrep, starttoff=starttoff)
+        relpose = self.relrep_to_relpose(relrep, init_pose=init_pose, starttoff=starttoff)
 
         pose = np.concatenate((globalpos, relpose), axis=-1)
         pose[..., self.is_angle_next] = modrange(pose[..., self.is_angle_next], -np.pi, np.pi)
@@ -1775,11 +1869,16 @@ class PoseLabels:
 
         return vel
 
-    def get_next_pose(self, globalpos0=None, **kwargs):
+    def get_next_pose(self, init_pose=None, zscored=False, ts=None, **kwargs):
+        
+        assert zscored == False, 'zscored must be False'
+        if (ts is not None) and np.array(ts)[0] > 0:
+            assert init_pose is not None, 'init_pose must be provided if ts[0] > 0'
 
-        next = self.get_next(**kwargs)
+        # only deal with un-zscored data, as we will be concatenating with init, which is not zscored
+        next = self.get_next(zscored=False,ts=ts,**kwargs)
         # global will always be velocity, still need to do an integration
-        next_pose = self.next_to_nextpose(next, globalpos0=globalpos0)
+        next_pose = self.next_to_nextpose(next, init_pose=init_pose)
         return next_pose
 
     def next_to_nextrelative(self, next):
@@ -1839,7 +1938,7 @@ class PoseLabels:
 
     def get_next_keypoints(self, **kwargs):
 
-        next_pose = self.get_next_pose(zscored=False, **kwargs)
+        next_pose = self.get_next_pose(**kwargs)
         next_keypoints = self.nextpose_to_nextkeypoints(next_pose)
         return next_keypoints
 
