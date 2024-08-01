@@ -636,9 +636,15 @@ class PoseLabels:
             s += f'  nbins: {self.labels_raw["discrete"].shape[-1]}\n'
         return s
 
-    def set_prediction(self, pred, ts=None, zscored=True, use_todiscretize=False, nsamples=1):
+    def set_prediction(self, predin, ts=None, zscored=True, use_todiscretize=False, nsamples=1):
 
-        # if discretized, this will sample from discrete
+        # convert to ndarray if torch tensors
+        pred = {k: v.numpy() if type(v) is torch.Tensor else v for k, v in predin.items()}
+        
+        if ts is None:
+            ts = slice(self.starttoff,None)
+        
+        # if discretized, this will sample from discrete        
         multi = self.raw_labels_to_multi(pred, use_todiscretize=use_todiscretize, nsamples=nsamples, zscored=zscored, collapse_samples=True, ts=ts)
         
         # if discretized, send through the discretized values, otherwise sample will be discretized
@@ -1457,12 +1463,7 @@ class PoseLabels:
         # to do: add flattening support here
         
         # allocate multi
-        if ts is None:
-            T = self.ntimepoints
-        elif hasattr(ts, '__len__'):
-            T = len(ts)
-        else:
-            T = 1
+        T = len_wrapper(ts, self.ntimepoints)
         multisz = self.pre_sz + (T, self.d_multi)
         if (nsamples > 1) or (nsamples == 1 and not collapse_samples):
             multisz = (nsamples,) + multisz
@@ -1521,7 +1522,7 @@ class PoseLabels:
 
         if ts is None:
             ts = slice(None)
-        elif not hasattr(ts, '__len__'):
+        elif np.isscalar(ts):
             ts = [ts,]
 
         # set continuous

@@ -113,16 +113,16 @@ print(data['ids'].max())  # 907: why is this so high? Is it because it adds a + 
 print(scale_perfly.shape)  # len(scalenames) x max_n_flies
 
 scalenames
-# compute_scale_perfly??
-# compute_npad??
-# get_dct_matrix??
-# chunk_data??
+# # compute_scale_perfly??
+# # compute_npad??
+# # get_dct_matrix??
+# # chunk_data??
 
 # %% [markdown]
 # ## Compute features
 
 # %%
-# compute_features??
+# # compute_features??
 
 # %%
 # if using discrete cosine transform, create dct matrix
@@ -302,7 +302,7 @@ hloss = initialize_loss_plots(loss_epoch)
 
 # %%
 print(type(model))  # torch.nn.Module
-criterion??
+# criterion??
 
 # lossfcn_discrete = torch.nn.CrossEntropyLoss()
 # lossfcn_continuous = torch.nn.L1Loss()
@@ -493,6 +493,35 @@ if train_dataset.ntspred_global > 1:
 # # Simulate
 
 # %%
+# %load_ext autoreload
+# %autoreload 2
+
+from flyllm.io import read_config, get_modeltype_str
+from flyllm.utils import get_dct_matrix, compute_npad
+from flyllm.config import scalenames, nfeatures, featglobal
+from flyllm.features import compute_features, compute_scale_perfly
+from flyllm.data import load_and_filter_data, sanity_check_tspred, chunk_data, interval_all, debug_less_data
+from flyllm.dataset import FlyMLMDataset
+from flyllm.plotting import (
+    initialize_debug_plots, 
+    initialize_loss_plots, 
+    update_debug_plots,
+    debug_plot_global_histograms, 
+    debug_plot_dct_relative_error,  
+    debug_plot_global_error, 
+    debug_plot_predictions_vs_labels,
+    select_featidx_plot,
+)
+from flyllm.models import (
+    initialize_model, 
+    initialize_loss, 
+    generate_square_full_mask, 
+    sanity_check_temporal_dep,
+    predict_all,
+    criterion_wrapper,
+    stack_batch_list,
+)
+from flyllm.simulation import animate_predict_open_loop
 from IPython.display import HTML
 
 # generate an animation of open loop prediction
@@ -573,6 +602,3 @@ ani.save(savevidfile, writer=writer)
 print('Finished writing.')
 
 # %%
-
-
-
