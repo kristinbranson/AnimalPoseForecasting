@@ -27,7 +27,7 @@ import os
 import pickle
 from apf.io import read_config, load_and_filter_data
 from apf.utils import get_dct_matrix, compute_npad
-from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames
+from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames, featrelative
 from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx
 from apf.data import chunk_data, debug_less_data
 from flyllm.dataset import FlyMLMDataset
@@ -166,7 +166,6 @@ print('max diff between chunked labels and multi: %e'%err_chunk_multi)
 assert err_chunk_multi < 1e-3
 
 # %%
-
 ## helper functions
 def data_to_kp_from_metadata(data,metadata,ntimepoints):
   t0 = metadata['t0']
