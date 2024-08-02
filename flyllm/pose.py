@@ -49,27 +49,79 @@ class ObservationInputs:
     """
 
     def __init__(self, example_in=None, Xkp=None, fly=0, scale=None, dataset=None, dozscore=False, npad=None, **kwargs):
+        """
+        Constructor for initializing from an example or from keypoints.
+
+        To initialize from an example computed with features.compute_features or a training example, pass in example_in:
+        example_in: dictionary with the example. This can be the output of compute_features or FlyExample.get_train_example(). 
+            Required fields:
+            'input': ndarray of size (pre_sz x ) ntimepoints x d_input with the observations of the fly at each time point
+            Optional fields:
+            'input_init': ndarray of size (pre_sz x ) 1 x d_input with the observations of the fly on the 
+            first frame of the sequence. This should be part of a training example in which the first frame
+            has been cropped from input for a causal network. 
+            'metadata': dictionary with metadata about which fly and video frames the observations were derived from
+
+        To initialize from keypoints, pass in the following:
+        Xkp: ndarray of size (pre_sz x ) ntimepoints x nfeatures x 2 with the keypoints for all flies. 
+        fly: index of the main fly.
+        scale: scale parameters for converting from keypoints to features.
+        
+        Optional parameters:
+        dataset: FlyMLMDataset object. Used to get parameters for computing features, etc.
+        dozscore: Whether to z-score the inputs. Only used if example_in is input. Set this to true if the example input
+        should be z-scored, i.e. it is not already z-scored. Default is False. 
+        npad: Number of frames to crop from the end of the sequence when computing features. Only used if Xkp is input. 
+        This is used to manually set the number of frames to crop from the end of the sequence. This parameter may be
+        obsolete. 
+        
+        Optional parameters defined by the dataset configuration, input to set_params():
+            zscore_params
+            do_input_labels
+            starttoff
+            flatten_labels
+            flatten_obs
+            discreteidx
+            tspred_global
+            discrete_tspred
+            ntspred_relative
+            discretize_params
+            is_velocity
+            simplify_out
+            simplify_in
+            flatten_obs_idx
+            dct_m
+            idct_m        
+        To-do: put these all in a dict. 
+        """
 
         # to do: deal with flattening
 
+        # initialize the inputs and metadata
         self._input = None
         self._metadata = None
 
+        # set parameters 
         self.set_params(kwargs)
         if dataset is not None:
             self.set_params(self.get_params_from_dataset(dataset), override=False)
         default_params = FlyExample.get_default_params()
         self.set_params(default_params, override=False)
 
+        # indices for splitting observation features by type
         self._sensory_feature_idx, self._sensory_feature_szs = \
             get_sensory_feature_shapes(simplify=self._simplify_in)
+
         if example_in is not None:
+            # if example_in is provided, set the inputs from the example
             self.set_example(example_in, dozscore=dozscore)
         elif Xkp is not None:
+            # if Xkp is provided, set the inputs from the keypoints
             # use npad to set number of frames to crop from the end manually, 
             # particularly if there is no label sequence associated with this observation object
             self.set_inputs_from_keypoints(Xkp, fly, scale, npad=npad)
 
+        # flattened network stuff -- currently not implemented
         if self._flatten_obs_idx is not None:
             self._flatten_max_dinput = np.max(list(self._flatten_obs_idx.values()))
         else:
@@ -87,14 +139,26 @@ class ObservationInputs:
 
     @property
     def input(self):
+        """
+        input
+        ndarray of size (pre_sz x ) ntimepoints x d_input with the observations of the fly at each time point.
+        """
         return self._input
     
     @property
     def metadata(self):
+        """
+        metadata
+        Dictionary with metadata about which fly and video frames the observations were derived from.
+        """
         return self._metadata
     
     @property
     def d_input(self):
+        """
+        d_input
+        Number of observation features
+        """
         if self._input is None:
             return 0
         else:
@@ -102,6 +166,10 @@ class ObservationInputs:
     
     @property
     def pre_sz(self):
+        """
+        pre_sz
+        Size of the input, not empty when storing a batch
+        """
         if self._input is None:
             return ()
         else:
@@ -109,6 +177,10 @@ class ObservationInputs:
 
     @staticmethod
     def flyexample_to_observationinput_params(params):
+        """
+        flyexample_to_observationinput_params(params) (static)
+        Converts parameters from FlyExample to ObservationInputs format.
+        """
         kwinputs = copy.deepcopy(params)
         zscore_params_input, _ = FlyExample.split_zscore_params(params['zscore_params'])
         kwinputs['zscore_params'] = zscore_params_input
@@ -116,11 +188,20 @@ class ObservationInputs:
 
     @staticmethod
     def get_default_params():
+        """
+        get_default_params() (static)
+        Returns the default parameters for ObservationInputs. 
+        These are set from FlyExample.get_default_params().
+        """
         params = FlyExample.get_default_params()
         params = ObservationInputs.flyexample_to_observationinput_params(params)
         return params
 
     def get_params(self):
+        """
+        get_params()
+        Returns a dict of the dataset-related parameters. 
+        """
         params = {
             'zscore_params': self._zscore_params,
             'simplify_in': self._simplify_in,
@@ -129,6 +210,11 @@ class ObservationInputs:
         return params
 
     def set_params(self, params, override=True):
+        """
+        set_params(params, override=True)
+        Sets the parameters for the ObservationInputs object.
+        For each key-value pair in params, sets the attribute with the key to the value.
+        """
         for k, v in params.items():
             k = '_' + k
             if override or (not hasattr(self, k)) or (getattr(self, k) is None):
@@ -136,11 +222,19 @@ class ObservationInputs:
 
     @staticmethod
     def get_params_from_dataset(dataset):
+        """
+        get_params_from_dataset(dataset) (static)
+        Returns the dataset-related parameters for ObservationInputs computed from input dataset.
+        """
         params = FlyExample.get_params_from_dataset(dataset)
         params = ObservationInputs.flyexample_to_observationinput_params(params)
         return params
       
     def get_compute_features_params(self):
+        """
+        get_compute_features_params()
+        Returns the parameters for compute_features, used to compute inputs from keypoints.
+        """
         cfparams = {'outtype': np.float32}
         if hasattr(self, '_simplify_in'):
           cfparams['simplify_in'] = self._simplify_in
@@ -157,11 +251,30 @@ class ObservationInputs:
         return cfparams
       
     def set_example(self, example_in, dozscore=False):
+        """
+        set_example(example_in, dozscore=False)
+        Sets the inputs from an example.
+        Parameters:
+        example_in: a dict output from compute_features or a training example
+            Required fields:
+                'input': ndarray of size (pre_sz x ) ntimepoints x d_input with the observations of the fly at each time point
+            Optional fields:
+                'input_init': ndarray of size (pre_sz x ) 1 x d_input with the observations of the fly on the 
+                first frame of the sequence. This should be part of a training example in which the first frame
+                has been cropped from input for a causal network. 
+                'metadata': dictionary with metadata about which fly and video frames the observations were derived from
+        Optional:
+        dozscore: Whether to z-score the inputs. Only used if example_in is input. Set this to true if the example input
+        should be z-scored, i.e. it is not already z-scored. Default is False. 
+        """
         self._input = example_in['input']
         if 'input_init' in example_in:
+            # if this is a training example, then the first frame may have been cropped off for temporal alignment 
+            # (i.e. starttoff = 1). input_init is this cropped input. Concatenate. 
             self._input = np.concatenate((example_in['input_init'], self._input), axis=-2)
 
-        if dozscore:
+        if dozscore and self.is_zscored():
+            # zscore the input
             self._input = zscore(self._input, self._zscore_params['mu_input'], self._zscore_params['sig_input'])
 
         if 'metadata' in example_in:
@@ -171,20 +284,40 @@ class ObservationInputs:
             
     @property
     def ntimepoints(self):
+        """
+        ntimepoints
+        Number of time points
+        """
         if self._input is None:
             return 0
         return self._input.shape[-2]
 
     def is_zscored(self):
+        """
+        is_zscored()
+        Returns True if the inputs are z-scored, False otherwise.
+        """
         return self._zscore_params is not None
 
     def get_raw_inputs(self, makecopy=True):
+        """
+        get_raw_inputs(makecopy=True)
+        Returns the raw inputs, optionally making a copy.
+        Could probably be removed, doesn't do much... 
+        """
         if makecopy:
             return self._input.copy()
         else:
             return self._input
 
     def get_inputs(self, zscored=False, **kwargs):
+        """
+        get_inputs(zscored=False, makecopy=True)
+        Returns the inputs, an ndarray of size (pre_sz x ) ntimepoints x d_input.
+        Optional arguments:
+        zscored: Whether the inputs should be z-scored. Default is False, i.e. the non-zscored inputs are returned. 
+        makecopy: Whether to make a copy of the inputs. Default is True.
+        """
         input = self.get_raw_inputs(**kwargs)
 
         # todo: deal with flattening
@@ -194,19 +327,54 @@ class ObservationInputs:
         return input
 
     def get_split_inputs(self, **kwargs):
+        """
+        get_split_inputs(zscored=False, makecopy=True)
+        Returns a dict with the inputs split into different types of features.
+        Optional arguments:
+        zscored: Whether the inputs should be z-scored. Default is False, i.e. the non-zscored inputs are returned.
+        makecopy: Whether to make a copy of the inputs. Default is True.
+        Splitting is done by the split_features function from features.py. Currently returns:
+            'pose': (pre_sz x ) ntimepoints x nfeatures_relative
+            'wall_touch': (pre_sz x ) ntimepoints x len(config.SENSORYPARAMS['touch_kpnames']) 
+            'otherflies_vision': (pre_sz x ) ntimepoints x config.SENSORYPARAMS['n_oma']
+            'otherflies_touch': (pre_sz x ) ntimepoints x (len(config.SENSORYPARAMS['touch_kpnames']) * len(config.SENSORYPARAMS['touch_other_kpnames']) )
+        """
         input = self.get_inputs(**kwargs)
         input = split_features(input)
         return input
 
     def get_inputs_type(self, type, **kwargs):
+        """
+        get_inputs_type(type, zscored=False, makecopy=True)
+        Returns the inputs of a specific type, ndarray of size (pre_sz x ) ntimepoints x d_input_type(type)
+        Inputs:
+        type: string, type of feature to return. Options are 'pose', 'wall_touch', 'otherflies_vision', 'otherflies_touch'
+        Optional arguments:
+        zscored: Whether the inputs should be z-scored. Default is False, i.e. the non-zscored inputs are returned.
+        makecopy: Whether to make a copy of the inputs. Default is True.
+        Sizes of outputs, given type:
+            'pose': (pre_sz x ) ntimepoints x nfeatures_relative
+            'wall_touch': (pre_sz x ) ntimepoints x len(config.SENSORYPARAMS['touch_kpnames']) 
+            'otherflies_vision': (pre_sz x ) ntimepoints x config.SENSORYPARAMS['n_oma']
+            'otherflies_touch': (pre_sz x ) ntimepoints x (len(config.SENSORYPARAMS['touch_kpnames']) * len(config.SENSORYPARAMS['touch_other_kpnames']) )
+        """
         input = self.get_split_inputs(**kwargs)
         return input[type]
 
     def set_zscore_params(self, zscore_params):
+        """
+        set_zscore_params(zscore_params)
+        Sets the z-score parameters for the inputs. Should only be called by FlyExample.set_zscore_params.
+        """
         self._zscore_params = zscore_params
         return
 
     def add_pose_noise(self, train_inputs, eta_pose, zscored=False):
+        """
+        add_pose_noise(train_inputs, eta_pose, zscored=False)
+        Add noise to the pose features of the inputs. 
+        This is copied over from original fly_llm.py code and hasn't been tested.
+        """
         idx = self._sensory_feature_idx['pose']
         if self.is_zscored() and (zscored == False):
             eta_pose = zscore(eta_pose, self._zscore_params['mu_input'][..., idx[0]:idx[1]],
@@ -214,21 +382,48 @@ class ObservationInputs:
         train_inputs[..., idx[0]:idx[1]] += eta_pose
 
     def set_inputs(self, input, zscored=False, ts=None):
+        """
+        set_inputs(input, zscored=False, ts=None)
+        Sets the inputs. 
+        Parameters:
+        inputs: ndarray of size (pre_sz x ) ntimepoints x d_input with the observations of the fly at each time point
+        Optional parameters:
+        zscored: Whether the inputs are z-scored. Default is False, i.e. the inputs are not z-scored. If self.is_zscored(), 
+        the stored inputs will be z-scored if z_scored is False.
+        ts: Time points to set the inputs. If None, the inputs are set for all time points. 
+        """
         if zscored == False and self.is_zscored():
             input = zscore(input, self._zscore_params['mu_input'], self._zscore_params['sig_input'])
         if ts is None:
             self._input = input
         else:
+            assert self._input is not None, 'input has not been initialized'
             self._input[..., ts, :] = input
         return
 
-    def set_inputs_from_keypoints(self, Xkp, fly, scale=None, ts=None, npad=None):
+    def set_inputs_from_keypoints(self, Xkp, fly, scale, ts=None, npad=None):
+        """
+        set_inputs_from_keypoints(Xkp, fly, scale=None, ts=None, npad=None)
+        Sets the inputs from keypoints. This calls compute_features on the keypoints to compute the sensory features, then
+        stores these with self.set_inputs(zscored=False,ts=ts). 
+        Inputs:
+        Xkp: ndarray of keypoints for all flies and time points, size (pre_sz x ) nkeypoints x 2 x ntimepoints x nflies
+        fly: index of the main fly
+        scale: scale parameters for converting from keypoints to features
+        Optional:
+        ts: Time points to set the inputs. If None, the inputs are set for all time points.
+        npad: Number of frames to crop from the end of the sequence when computing features.        
+        """
         example = compute_features(Xkp, flynum=fly, scale_perfly=scale, **self.get_compute_features_params(), npad=npad, compute_labels=False)
         input = example['input']
         self.set_inputs(input, zscored=False, ts=ts)
         return
 
     def add_noise(self, train_inputs, input_labels=None, labels=None):
+        """
+        add_noise(train_inputs, input_labels=None, labels=None)
+        Add noise to the pose of train_inputs. Currently not debugged
+        """
         assert (np.prod(self.pre_sz) == 1)
         T = self.ntimepoints
         if input_labels is not None:
@@ -250,9 +445,34 @@ class ObservationInputs:
         return train_inputs, input_labels, eta
 
     def get_sensory_feature_idx(self):
+        """
+        get_sensory_feature_idx()
+        Returns the indices of the different types of sensory features in the input as a dict
+        with keys feature types and values the start and end indices. 
+        """
         return get_sensory_feature_idx(self._simplify_in)
 
     def get_train_inputs(self, input_labels=None, do_add_noise=False, labels=None):
+        """
+        get_train_inputs(input_labels=None, do_add_noise=False, labels=None)
+        Returns the inputs for training. If input_labels is not None, it will concatenate
+        the input_labels and the inputs. For causal networks, it will offset these by 
+        1 so that input_labels correspond to the previous frame, so 
+        train_inputs[...,t,:] is the concatenation of input_labels[...,t,:]  and 
+        inputs[...,t+starttoff,:].
+        Optional arguments:
+        input_labels: ndarray of size (pre_sz x ) ntimepoints x d_input_labels with the input labels. 
+        If this is None, then input_labels are not concatenated. Default: None
+        do_add_noise: Whether to add noise to the inputs. Default: False. Hasn't been debugged. 
+        labels: PoseLabels object. Used to add noise to the pose features. Required if do_add_noise is True.
+        Returns:
+        res: dictionary with the following keys:
+            'input': ndarray of size (pre_sz x ) (ntimepoints-starttoff) x (d_input_labels + d_input) with 
+            the inputs for training/evaluating the network. 
+            'input_init': ndarray of size (pre_sz x ) starttoff x d_input with the sensory features
+            that were cropped off when aligning with the previous frame input labels. 
+            'eta': added noise if do_add_noise is True, None otherwise.
+        """
 
         train_inputs = self.get_raw_inputs()
 
@@ -267,11 +487,14 @@ class ObservationInputs:
         train_inputs_init = None
 
         if not self._flatten_obs:
+            # offset input_labels from inputs so that input_labels correspond to the previous frame
+            # then concatenate
             if input_labels is not None:
                 train_inputs_init = train_inputs[..., :self._starttoff, :]
                 train_inputs = torch.cat((torch.tensor(input_labels[..., :self.ntimepoints-self._starttoff, :]),
                                           train_inputs[..., self._starttoff:, :]), dim=-1)
         else:
+            # haven't debugged flattened stuff
             ntypes = len(self._flatten_obs_idx)
             flatinput = torch.zeros(self.pre_sz + (self.ntimepoints, ntypes, self._flatten_max_dinput),
                                     dtype=train_inputs.dtype)
