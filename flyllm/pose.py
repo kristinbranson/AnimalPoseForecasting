@@ -92,7 +92,7 @@ class ObservationInputs:
             flatten_obs_idx
             dct_m
             idct_m        
-        To-do: put these all in a dict. 
+        TODO- put these all in a dict. 
         """
 
         # to do: deal with flattening
@@ -507,31 +507,121 @@ class ObservationInputs:
 
         return {'input': train_inputs, 'eta': eta, 'input_init': train_inputs_init}
 
-
-# The above code is attempting to define a Python class named `FlyExample`, but it contains a syntax
-# error. In Python, the class definition should include a colon `:` after the class name. The correct
-# syntax should be:
 class FlyExample:
+    """
+    
+    FlyExample
+    Class for handling input observations/inputs and pose/label outputs for a fly for multiple time points. 
+    Can be used with batches. 
+        
+    Main properties:
+    labels: PoseLabels object with the pose labels
+    inputs: ObservationInputs object with the input observations 
+    
+    Main methods:
+    __init__: Constructor for initializing from a training example or from keypoints.
+    get_train_example(do_add_noise=False): Returns the training example consisting of inputs and labels. 
+    copy_subindex(idx_pre=None, ts=None, needinit=True): Returns a copy of the FlyExample with a subset 
+    of the examples (if batched) and/or a subset of the time points.
+    
+    TODO- add methods for setting from example, keypoints, currently can only be done from constructor.
+    TODO- separate out fly specific stuff, rename to AgentExample
+    
+    """
     def __init__(self, example_in=None, dataset=None, Xkp=None, flynum=None, scale=None, metadata=None,
                  dozscore=False, dodiscretize=False, **kwargs):
+        """
+        __init__(example_in=None, dataset=None, Xkp=None, flynum=None, scale=None, metadata=None,
+                 dozscore=False, dodiscretize=False, **kwargs)
+        Constructor for initializing from a training example or from keypoints.
+        
+        To initialize from an example computed with features.compute_features or a training example, pass in example_in:
+        example_in: dictionary with the example. This can be the output of compute_features or FlyExample.get_train_example(). 
+            Required fields:
+            'input': ndarray of size (pre_sz x ) ntimepoints x d_input with the observations of the fly at each time point
+            'labels' or 'continuous': ndarray of size (pre_sz x ) ntimepoints x d_continuous. Continuous pose labels for the fly
+            at each time point. TODO- check that this will work without continuous inputs.
+            'labels_discrete' or 'discrete': ndarray of size (pre_sz x ) ntimepoints x d_discrete x nbins. Binned pose labels 
+            for the fly. TODO- check that this will work without discretized inputs. 
+            
+            Optional fields:
+            'labels_init' or 'continuous_init': ndarray of size (pre_sz x ) tinit x d_continuous with the initial continuous pose
+            labels for the fly. Used if the first frame of the sequence has been cropped as a training example for a causal network.
+            'labels_discrete_init' or 'discrete_init': ndarray of size (pre_sz x ) tinit x d_discrete x nbins with the initial
+            discretized pose. Used if the first frame of the sequence has been cropped as a training example for a causal network.
+            'labels_todiscretize' or 'todiscretize': ndarray of size (pre_sz x ) ntimepoints x d_discrete with the continuous
+            versions of the discrete labels. As discrete is non-invertible, this can be used when getting keypoints or other 
+            continuous representations of the data. 
+            'metadata': dictionary with metadata about which fly and video frames the observations were derived from.
+            'categories': dictionary with the categories from the MABe dataset. Currently not used for anything, may be buggy. 
+            'mask': ndarray of size (pre_sz x ) ntimepoints with a mask for the labels.
+            'init_all' or 'init': ndarray of size (pre_sz x ) ntimepoints x d_next with the initial pose of the fly      
+            
+            Optional fields:
+            'input_init': ndarray of size (pre_sz x ) 1 x d_input with the observations of the fly on the 
+            first frame of the sequence. This should be part of a training example in which the first frame
+            has been cropped from input for a causal network. 
+            'metadata': dictionary with metadata about which fly and video frames the observations were derived from
 
+        To initialize from keypoints, pass in the following:
+        Xkp: ndarray of size (pre_sz x ) ntimepoints x nfeatures x 2 with the keypoints for all flies. 
+        fly: index of the main fly.
+        scale: scale parameters for converting from keypoints to features.
+        
+        Optional parameters:
+        dataset: FlyMLMDataset object. Used to get parameters for computing features, etc.
+        dozscore: Whether to z-score the inputs. Only used if example_in is input. Set this to true if the example input
+        should be z-scored, i.e. it is not already z-scored. Default is False. 
+        npad: Number of frames to crop from the end of the sequence when computing features. Only used if Xkp is input. 
+        This is used to manually set the number of frames to crop from the end of the sequence. This parameter may be
+        obsolete. 
+        
+        Optional parameters defined by the dataset configuration, input to set_params():
+            zscore_params
+            do_input_labels
+            starttoff
+            flatten_labels
+            flatten_obs
+            discreteidx
+            tspred_global
+            discrete_tspred
+            ntspred_relative
+            discretize_params
+            is_velocity
+            simplify_out
+            simplify_in
+            flatten_obs_idx
+            dct_m
+            idct_m        
+        To-do: put these all in a dict. 
+        
+        
+        """
+
+        # set parameters from extra arguments or dataset
         self.set_params(kwargs)
         if dataset is not None:
             self.set_params(self.get_params_from_dataset(dataset), override=False)
         default_params = FlyExample.get_default_params()
         self.set_params(default_params, override=False)
-        if self.dct_m is not None and self.idct_m is None:
-            self.idct_m = np.linalg.inv(self.dct_m)
+        if self._dct_m is not None and self._idct_m is None:
+            self._idct_m = np.linalg.inv(self._dct_m)
 
         if example_in is not None:
+            
+            # copy the example
+
             # copy the dict, not the arrays
             example_in = {k: v for k, v in example_in.items()}
             # copy the metadata, deep copy
             if (example_in is not None) and ('metadata' in example_in):
                 example_in['metadata'] = copy.deepcopy(example_in['metadata'])
         elif Xkp is not None:
+            
+            # create example from keypoints
+            
             # compute pose and observation representations from keypoints
-            example_in = self.compute_features(Xkp, flynum, scale, metadata)
+            example_in = self.compute_features(Xkp, flynum, scale)
             # copy the metadata, deep copy
             example_in['metadata'] = copy.deepcopy(metadata)
             # if params set that zscoring and discretizing are to be done, then set 
@@ -539,12 +629,15 @@ class FlyExample:
             dozscore = True
             dodiscretize = True
 
+        # whether the input is an example from compute_features or a training example from
+        # get_train_example
         is_train_example = (example_in is not None) and ('input' in example_in) \
                            and (type(example_in['input']) is torch.Tensor)
 
         if is_train_example:
+            # concatenate inits if train example
             example_in = dict_convert_torch_to_numpy(example_in)
-            # if we offset the example, adjust back
+            # if we offset the example, adjust back metadata
             if ('metadata' in example_in) and \
                 (example_in['metadata'] is not None) and \
                 ('frame0' in example_in['metadata']):
@@ -556,55 +649,129 @@ class FlyExample:
                     starttoff = 0
                 example_in['metadata']['frame0'] -= starttoff
 
-        self.labels = PoseLabels(example_in, dozscore=dozscore, dodiscretize=dodiscretize,
+        # create PoseLabels object from the example
+        self._labels = PoseLabels(example_in, dozscore=dozscore, dodiscretize=dodiscretize,
                                  **self.get_poselabel_params())
 
-        if is_train_example and self.do_input_labels:
-            self.remove_labels_from_input(example_in)
+        
+        if is_train_example and self._do_input_labels:
+            self._remove_labels_from_input(example_in)
 
-        self.inputs = ObservationInputs(example_in, dozscore=dozscore, **self.get_observationinputs_params())
+        self._inputs = ObservationInputs(example_in, dozscore=dozscore, **self.get_observationinputs_params())
 
-        self.set_zscore_params(self.zscore_params)
-
-        self.pre_sz = self.labels.pre_sz
+        self.set_zscore_params(self._zscore_params)
 
         if (example_in is not None) and ('metadata' in example_in):
-            self.metadata = example_in['metadata']
+            self._metadata = example_in['metadata']
 
         return
-      
-    def compute_features(self, Xkp, flynum=0, scale=None, metadata=None):
+    
+    @property
+    def labels(self):
+        """
+        labels
+        PoseLabels object with the pose labels
+        """
+        return self._labels
+    
+    @property
+    def inputs(self):
+        """
+        inputs
+        ObservationInputs object with the input observations
+        """
+        return self._inputs
+    
+    @property
+    def pre_sz(self):
+        """
+        pre_sz
+        Size of the input, not empty when storing a batch
+        """
+        return self._labels.pre_sz
+    
+    @property
+    def metadata(self):
+        """
+        metadata
+        Dictionary with metadata about which fly and video frames the observations were derived from.
+        """
+        return self._metadata
+    
+    def compute_features(self, Xkp, flynum, scale):
+        """
+        compute_features(Xkp, flynum, scale)
+        Compute sensory and pose label features from keypoints by calling features.compute_features with the 
+        correct parameters. 
+        Parameters:
+        Xkp: ndarray of keypoints for all flies and time points, size (pre_sz x ) nkeypoints x 2 x ntimepoints x nflies
+        flynum: index of the main fly
+        scale: scale parameters for converting from keypoints to features.
+        Output:
+        example: dictionary with the computed features:
+            'input': ndarray of size (pre_sz x ) ntimepoints x d_input with the observations of the fly at each time point
+            'labels': ndarray of size (pre_sz x ) ntimepoints x d_multi with the pose representation for the fly at each
+            time point.
+            'init': ndarray of size (pre_sz x ) ntimepoints x d_next with the initial pose of the fly. 
+            'scale': scale parameters for converting from keypoints to features and vice-versa. 
+        """
 
         example = compute_features(Xkp, flynum=flynum, scale_perfly=scale, outtype=np.float32,
-                                   simplify_in=self.simplify_in,
-                                   simplify_out=self.simplify_out,
-                                   dct_m=self.dct_m,
-                                   tspred_global=self.tspred_global,
-                                   compute_pose_vel=self.is_velocity,
-                                   discreteidx=self.discreteidx)
+                                   simplify_in=self._simplify_in,
+                                   simplify_out=self._simplify_out,
+                                   dct_m=self._dct_m,
+                                   tspred_global=self._tspred_global,
+                                   compute_pose_vel=self._is_velocity,
+                                   discreteidx=self._discreteidx)
 
         return example
 
     def copy(self):
+        """
+        copy()
+        Returns a copy of the FlyExample object. 
+        """
         return self.copy_subindex()
     
     def copy_subindex(self, idx_pre=None, ts=None, needinit=True):
+        """
+        copy_subindex(idx_pre=None, ts=None, needinit=True)
+        Returns a copy of the FlyExample object with a subset of the examples (if batched) and/or a subset of the time points.
+        Optional parameters:
+        idx_pre: indices of the examples to copy. If None, all examples are copied. Only relevant if the example
+        is batched. Default is None.
+        ts: indices of the time points to copy. Time points must be contiguous, limited checking done. ts should work if it is
+        an ndarray, a list, a scalar, a slice, or a range. If None, all time points are copied. Default is None.
+        needinit: Whether we need the initial pose. If ts[0] is not 0, then we would have to integrate across all
+        timepoints up through ts[0] to get the initial pose. If the initial pose will never be used, set needinit to 
+        False to avoid this computation. init_pose will then be nan, and things like labels.get_next_keypoints() will return
+        nans. Default is True.
+        Return value:
+        new: a copy of the FlyExample object with the specified indices and time points
+        """
 
+        # get a copy of the raw data
         example = self.get_raw_example(makecopy=True)
 
+        # if idx_pre is specified, subselect these indices 
         if idx_pre is not None:
             ks = ['continuous', 'discrete', 'todiscretize', 'input', 'init', 'scale', 'categories']
             for k in ks:
-                example[k] = example[k][idx_pre]
+                if k in example:
+                    example[k] = example[k][idx_pre]
             if example['metadata'] is not None:
               for k in example['metadata'].keys():
                   example['metadata'][k] = example['metadata'][k][idx_pre]
 
+        # if ts is specified, subselect these time points
         if ts is not None:
+
+            # convert ts to ndarray
             if type(ts) is slice:
                 ts = range(*ts.indices(self.ntimepoints))
             ts = np.atleast_1d(np.array(ts))
-            ks = ['continuous', 'discrete', 'todiscretize', 'input']
+            
+            # if ts[0] > 0 and needinit, compute the initial pose by integrating
             toff = ts[0]
             if toff > 0:
                 if needinit:
@@ -613,41 +780,70 @@ class FlyExample:
                     example['init'] = init_pose.T                    
                 else:
                     example['init'][:] = np.nan # set to nans so that we know this is bad data
-                    
+
+            # subselect from categories, padding is weird here. 
+            # might need debugging, we don't use categories yet
             if example['categories'] is not None:
                 cattextra = example['categories'].shape[-1] - example['continuous'].shape[-2]
                 if hasattr(ts, '__len__'):
                     example['categories'] = example['categories'][..., ts[0]:ts[-1] + cattextra, :]
                 else:
                     example['categories'] = example['categories'][..., ts:ts + cattextra, :]
+            
+            # subselect main fields
+            ks = ['continuous', 'discrete', 'todiscretize', 'input']
             for k in ks:
+                if not k in example:
+                    continue
                 if k == 'discrete':
                     example[k] = example[k][..., ts, :, :]
                 else:
                     example[k] = example[k][..., ts, :]
-            if (example['metadata'] is not None) and ('t0' in example['metadata']):
-                example['metadata']['t0'] += toff
+            if (example['metadata'] is not None):
+                if 't0' in example['metadata']:
+                    example['metadata']['t0'] += toff
+                if 'frame0' in example['metadata']:
+                    example['metadata']['frame0'] += toff
 
+        # create the new FlyExample from the example dict
         new = FlyExample(example_in=example, **self.get_params())
         return new
 
-    def remove_labels_from_input(self, example_in):
-        if not self.do_input_labels:
+    def _remove_labels_from_input(self, example_in):
+        """
+        _remove_labels_from_input(example_in) (private)
+        If example_in is a training example and do_input_labels is True, then the inputs will be the concatenation of
+        the previous frame and the current observations. Remove the labels from the input.
+        """
+        if not self._do_input_labels:
             return
 
         d_labels = self.labels.get_d_labels_input()
         example_in['input'] = example_in['input'][..., d_labels:]
 
     def set_params(self, params, override=True):
+        """
+        set_params(params, override=True)
+        Sets the parameters for the FlyExample object. 
+        params: Dict of parameters to set. Each key,value pair in the dict will be set as an attribute of the FlyExample object,
+        with the key prefixed by an underscore. The exception are those parameters defined in synonyms, which will get different 
+        names. 
+        override: Whether to override existing parameters. If False, will not overwrite existing parameters. Default is True. 
+        """
         synonyms = {'compute_pose_vel': 'is_velocity'}
         for k, v in params.items():
             if k in synonyms:
                 k = synonyms[k]
+            k = '_' + k
             if override or (not hasattr(self, k)) or (getattr(self, k) is None):
                 setattr(self, k, v)
 
     @staticmethod
     def get_default_params():
+        """
+        get_default_params()
+        Returns the default parameters for the FlyExample object as a dict.
+        """
 
         params = {
             'zscore_params': None,
@@ -670,12 +866,20 @@ class FlyExample:
         return params
 
     def get_params(self):
+        """
+        get_params()
+        Returns the parameters for the FlyExample object as a dict.
+        """
         default_params = FlyExample.get_default_params()
-        params = {k: getattr(self, k) for k in default_params.keys()}
+        params = {k: getattr(self, '_'+k) for k in default_params.keys()}
         return params
 
     @staticmethod
     def get_params_from_dataset(dataset):
+        """
+        get_params_from_dataset(dataset)
+        Returns the parameters for the FlyExample object taken from a FlyMLMDataset object as a dict.
+        """
         params = {
             'zscore_params': dataset.get_zscore_params(),
             'do_input_labels': dataset.input_labels,
@@ -697,45 +901,74 @@ class FlyExample:
         return params
 
     def get_poselabel_params(self):
+        """
+        get_poselabel_params()
+        Returns the parameters for the PoseLabels object as a dict.
+        """
         params = self.get_params()
         params = PoseLabels.flyexample_to_poselabels_params(params)
 
         return params
 
     def get_observationinputs_params(self):
+        """
+        get_observationinputs_params()
+        Returns the parameters for the ObservationInputs object as a dict.
+        """
         params = self.get_params()
         params = ObservationInputs.flyexample_to_observationinput_params(params)
         return params
 
     @property
     def ntimepoints(self):
+        """
+        ntimepoints
+        Number of time points
+        """
         # number of time points
         return self.labels.ntimepoints
 
-    @property
-    def szrest(self):
-        return self.labels.szrest
+    # @property
+    # def szrest(self):
+    #     return self._labels.szrest
 
-    def get_labels(self):
-        return self.labels
+    # def get_labels(self):
+    #     return self._labels
 
-    def get_inputs(self):
-        return self.inputs
+    # def get_inputs(self):
+    #     return self._inputs
 
     def get_metadata(self, makecopy=True):
+        """
+        get_metadata(makecopy=True)
+        Returns the metadata for the FlyExample object. If makecopy is True, returns a deep copy of the metadata. Default: True.
+        """
         if makecopy:
             return copy.deepcopy(self.metadata)
         else:
             return self.metadata
 
     def get_raw_example(self, format='standard', makecopy=True):
+        """
+        get_raw_example(format='standard', makecopy=True)
+        Returns the raw example for the FlyExample object as a dict. 
+        Optional arguments:
+        format: Format of the labels. If 'standard', then the key names used within the object are returned. These are 
+        'continuous' and 'discrete. If 'original', then it will use the key names that were input when the FlyExample was created.
+        Default is 'standard'.
+        makecopy: Whether to make a copy of the example. Default is True.
+        """
         example = self.labels.get_raw_labels(format=format, makecopy=makecopy)
         example['input'] = self.inputs.get_raw_inputs(makecopy=makecopy)
         example['metadata'] = self.get_metadata(makecopy=makecopy)
         return example
 
     def get_input_labels(self):
-        if self.do_input_labels == False:
+        """
+        get_input_labels()
+        Returns the input labels for the FlyExample object.
+        """
+        if self._do_input_labels == False:
             return None
         else:
             return self.labels.get_input_labels()
@@ -754,7 +987,7 @@ class FlyExample:
                                                     do_add_noise=do_add_noise)
         train_labels = self.labels.get_train_labels(added_noise=train_inputs['eta'])
 
-        flatten = self.flatten_labels or self.flatten_obs
+        flatten = self._flatten_labels or self._flatten_obs
         assert flatten == False, 'flatten not implemented'
         
         res = {'input': train_inputs['input'], 'labels': train_labels['continuous'],
@@ -772,7 +1005,7 @@ class FlyExample:
         return res
 
     def get_train_metadata(self):
-        starttoff = self.starttoff
+        starttoff = self._starttoff
         metadata = self.get_metadata()
         if metadata is None:
             return None
