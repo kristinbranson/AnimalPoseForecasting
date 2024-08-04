@@ -974,9 +974,44 @@ class FlyExample:
             return self.labels.get_input_labels()
 
     def get_n_input_labels(self):
-        return len(self.labels.idx_nextcossin_to_multi)
+        """
+        get_n_input_labels()
+        Returns the number of input labels for the FlyExample object.
+        """
+        if self._do_input_labels:
+            return self.labels.get_d_labels_input()
+        else:
+            return 0
 
     def get_train_example(self, do_add_noise=False):
+        """
+        get_train_example(do_add_noise=False)
+        Returns the training example consisting of inputs and labels.
+        Optional arguments:
+        do_add_noise: Whether to add noise to the inputs. Default is False.
+        Returns a dictionary with the following keys:
+            'input': ndarray of size (pre_sz x ) ntimepoints x d_input with the observations of the fly at each time point
+            'labels': ndarray of size (pre_sz x ) ntimepoints x d_continuous with the continuous pose labels for the fly
+            at each time point
+            'labels_discrete': ndarray of size (pre_sz x ) ntimepoints x d_discrete x nbins with the binned pose labels
+            for the fly at each time point
+            'labels_todiscretize': ndarray of size (pre_sz x ) ntimepoints x d_discrete with the continuous versions of the
+            discrete labels. As discrete is non-invertible, this can be used when getting keypoints or other continuous
+            representations of the data. 
+            'init': ndarray of size (pre_sz x ) d_next with the initial pose of the fly
+            'scale': scale parameters for converting from keypoints to features and vice-versa
+            'categories': dictionary with the categories from the MABe dataset. Currently not used for anything, may be buggy.
+            'metadata': dictionary with metadata about which fly and video frames the observations were derived from
+            'input_init': ndarray of size (pre_sz x ) 1 x d_input with the observations of the fly on the first frame of the 
+            sequence. This should be part of a training example in which the first frame has been cropped from input for a causal
+            network.
+            'labels_init': ndarray of size (pre_sz x ) 1 x d_continuous with the initial continuous pose labels for the fly
+            'labels_discrete_init': ndarray of size (pre_sz x ) 1 x d_discrete x nbins with the initial discretized pose
+            'labels_todiscretize_init': ndarray of size (pre_sz x ) 1 x d_discrete with the initial continuous versions of the
+            discrete labels. As discrete is non-invertible, this can be used when getting keypoints or other continuous
+            representations of the data. 
+            'init_all': ndarray of size (pre_sz x ) starttoff x d_next with the initial pose of the fly
+        """
 
         # to do: add noise
         metadata = self.get_train_metadata()
@@ -1005,6 +1040,10 @@ class FlyExample:
         return res
 
     def get_train_metadata(self):
+        """
+        get_train_metadata()
+        Returns the metadata for the training example, offset by starttoff.
+        """
         starttoff = self._starttoff
         metadata = self.get_metadata()
         if metadata is None:
@@ -1016,6 +1055,10 @@ class FlyExample:
 
     @staticmethod
     def split_zscore_params(zscore_params):
+        """
+        split_zscore_params(zscore_params) (static)
+        Splits the zscore_params into input and labels zscore parameters.
+        """
         if zscore_params is not None:
             zscore_params_input = {'mu_input': zscore_params['mu_input'], 'sig_input': zscore_params['sig_input']}
             zscore_params_labels = {'mu_labels': zscore_params['mu_labels'], 'sig_labels': zscore_params['sig_labels']}
@@ -1025,57 +1068,75 @@ class FlyExample:
         return zscore_params_input, zscore_params_labels
 
     def set_zscore_params(self, zscore_params):
+        """
+        set_zscore_params(zscore_params)
+        Sets the zscore parameters for the FlyExample object.
+        """
         zscore_params_input, zscore_params_labels = FlyExample.split_zscore_params(zscore_params)
         self.inputs.set_zscore_params(zscore_params_input)
         self.labels.set_zscore_params(zscore_params_labels)
 
 
 class PoseLabels:
+    """
+    PoseLabels
+    Class for handling pose labels for a fly for multiple time points. Can be used with batches.
+    
+    The data are stored in labels_raw, which is the format that will be used for training and prediction. 
+    This is the 'labels' output of compute_features, with the following additions:
+    zscoring: if zscore_params is not None, then the labels will be z-scored.
+    discretization: if discretize_params is not None, then features in discrete_idx will be discretized. 
+    The continuous features are stored in labels_raw['continuous'] and the discrete features are stored in
+    labels_raw['discrete']. If available, the continuous versions of the discrete features are stored in
+    labels_raw['todiscretize'] when we want to invert feature computations. 
+    init_pose stores the initial pose of the fly. Since some of the features represent velocities and/or
+    are in egocentric coordinate systems, we will need to integrate to invert the feature computation, and
+    the start of integration is init_pose. 
+    The PoseLabels class allows access to the following representations of the data:
+    - labels_raw: representation used for training/prediction, made up of continuous and discrete labels (get_raw_labels())
+    - multi: continuous version of the labels, with discrete features converted to continuous values. (get_multi())
+      This conversion can be done in multiple ways, depending on the parameters:
+      -- use_todiscretize=True: use the continuous versions of the discrete features in labels_raw['todiscretize']
+      -- nsamples > 1: sample from the continuous distribution of the discrete features.
+      -- nsamples = 0: use the mean of the continuous distribution of the discrete features.
+    - un-zscored multi: multi before z-scoring (zscored=False)
+    - multi_idct: if dct_m is not None, then multi_idct applies the inverse dct transform to relative features. 
+    - un-zscored multi_idct: multi_idct before z-scoring (zscored=False)
+    - next frame pose features, with angles represented as cos/sin pairs if applicable (get_nextcossin)
+    - next frame pose features (get_next_pose), with angles represented in radians (get_next_pose)
+    - next frame keypoints (get_next_keypoints)
+
+    Main properties:
+    labels_raw: Dictionary with the raw labels. 
+    
+    Main methods:
+        
+    """
     def __init__(self, example_in=None,
                  Xkp=None, scale=None, metadata=None,
                  dozscore=False, dodiscretize=False,
                  dataset=None, **kwargs):
 
-        # different representations of labels:
-        # labels_raw -- representation used for training/prediction
-        # store in this format so that it is efficient for training
-        # this contains the follow:
-        # continuous: (sz) x d_output_continuous
-        # discrete: (sz) x d_output_discrete x nbins
-        # todiscretize: (sz) x d_output_discrete
-        # stacked: (sz) x ntypes x d_output_flatten
-        # these will be z-scored if zscore_params is not None
-        #
-        # full_labels_discreteidx: indices of
-
+        # set parameters
         self.set_params(kwargs)
         if dataset is not None:
             self.set_params(self.get_params_from_dataset(dataset), override=False)
         default_params = PoseLabels.get_default_params()
         self.set_params(default_params, override=False)
 
-        # default_params = self.get_default_params()
-        # self.set_params(default_params,override=False)
+        # initialize
+        self._label_keys = {}
+        self._labels_raw = {}
+        self._pre_sz = None
+        self._metadata = metadata
+        self._categories = None
+        self._init_pose = None
 
-        # copy over labels_in
-        self.label_keys = {}
-        self.labels_raw = {}
-        self.pre_sz = None
-        self.metadata = metadata
-        self.categories = None
-        self.init_pose = None
-
-        if (self.discretize_params is not None) and ('bin_edges' in self.discretize_params) \
-                and (self.discretize_params['bin_edges'] is not None):
-            self.discretize_nbins = self.discretize_params['bin_edges'].shape[-1] - 1
-        else:
-            self.discretize_nbins = 0
-
-        # to do: include flattening
-
+        # initialize from example_in
         if example_in is not None:
             self.set_raw_example(example_in, dozscore=dozscore, dodiscretize=dodiscretize)
         elif Xkp is not None:
+            # initialize from keypoints
             self.set_keypoints(Xkp, scale)
 
         if 'continuous' in self.labels_raw:
@@ -1084,8 +1145,53 @@ class PoseLabels:
             assert self.d_multidiscrete == self.labels_raw['discrete'].shape[-2]
 
         return
+    
+    @property
+    def labels_raw(self):
+        """
+        labels_raw
+        Dictionary with the raw labels. 
+        """
+        return self._labels_raw
+    
+    @property
+    def pre_sz(self):
+        """
+        pre_sz
+        Size of the input, not empty when storing a batch
+        """
+        return self._pre_sz
+    
+    @property
+    def metadata(self):
+        """
+        metadata
+        Dictionary with metadata about which fly and video frames the observations were derived from.
+        """
+        return self._metadata
+    
+    @property
+    def categories(self):
+        """
+        categories
+        Dictionary with the categories from the MABe dataset. Currently not used for anything, may be buggy. 
+        """
+        return self._categories
+    
+    @property
+    def zscore_params(self):
+        """
+        zscore_params
+        Z-score parameters for the PoseLabels object. 
+        TODO- maybe don't make these publicly available?
+        """
+        return self._zscore_params
 
     def __str__(self):
+        """
+        __str__()
+        Returns a string representation of the PoseLabels object. 
+        """
         s = f'PoseLabels:\n'
         if len(self.labels_raw) == 0:
             s += 'No data set'
@@ -1099,15 +1205,44 @@ class PoseLabels:
             s += f'  nbins: {self.labels_raw["discrete"].shape[-1]}\n'
         return s
 
-    def set_prediction(self, predin, ts=None, zscored=True, use_todiscretize=False, nsamples=1):
+    def set_prediction(self, predin, ts=None, zscored=True, use_todiscretize=None, nsamples=1):
+        """
+        set_prediction(predin, ts=None, zscored=True, use_todiscretize=None, nsamples=1)
+        Sets labels_raw according to the input prediction predin for time points ts, usually an 
+        output of the forecasting model. Only fields of labels_raw will be set, not init_pose. This will set
+        labels_raw['todiscretize'], either based on predin['todiscretize'] if use_todiscretize==True or
+        by creating a continuous version of the discrete features based on nsamples parameter. 
+        Parameters:
+        predin: dictionary with the prediction. This can be the output of a forecasting model or of
+        compute_features. It should have the following fields:
+            'continuous': ndarray of size (pre_sz x ) ntimepoints x d_continuous with the continuous pose for the fly
+            'discrete': ndarray of size (pre_sz x ) ntimepoints x d_discrete x nbins with the binned pose for the fly
+            'todiscretize': ndarray of size (pre_sz x ) ntimepoints x d_discrete with the continuous versions of the 
+            discrete pose. 
+        Optional parameters:
+        ts: indices of the time points to set. Time points must be contiguous, limited checking done. ts should work if it is
+        an ndarray, a list, a scalar, a slice, or a range. If None, all time points are set (but not init_pose). Default is None.
+        zscored: Whether the prediction is z-scored. Default is True. If it is not zscored and self.is_zscored(), then
+        the prediction will be z-scored.
+        use_todiscretize: Whether to use the continuous versions of the discrete features in predin. If None, then will use 
+        'todiscretize' if it is in predin. Default is None.
+        nsamples: How to set the continuous version of the discrete features, if use_todiscretize==False. If nsamples=0, then
+        the mean of the continuous distribution of the discrete features will be used. If nsamples == 1, then the continuous
+        features will be set by sampling from the distribution defined by the discrete features. Default is 1.
+        """
+
+        assert nsamples <= 1
 
         # convert to ndarray if torch tensors
         pred = {k: v.numpy() if type(v) is torch.Tensor else v for k, v in predin.items()}
         
         if ts is None:
-            ts = slice(self.starttoff,None)
+            ts = slice(self._starttoff,None)
         
-        # if discretized, this will sample from discrete        
+        # store the prediction in labels_raw
+        # if discretized and use_todiscretize==False, this will sample from discrete to set labels_raw['todiscretize']
+        if use_todiscretize is None:
+            use_todiscretize = 'todiscretize' in pred
         multi = self.raw_labels_to_multi(pred, use_todiscretize=use_todiscretize, nsamples=nsamples, zscored=zscored, collapse_samples=True, ts=ts)
         
         # if discretized, send through the discretized values, otherwise sample will be discretized
@@ -1118,48 +1253,25 @@ class PoseLabels:
             multi_discrete = None
         self.set_multi(multi,multi_discrete=multi_discrete,zscored=zscored,ts=ts)
         
-        # if self.is_continuous():
-        #     if 'continuous' in pred:
-        #         self.labels_raw['continuous'][..., ts, :] = pred['continuous']
-        #     elif 'labels' in pred:
-        #         self.labels_raw['continuous'][..., ts, :] = pred['labels']
-        #     else:
-        #         raise ValueError('pred must contain continuous or labels')
-        # if self.is_discretized():
-        #     if 'discrete' in pred:
-        #         self.labels_raw['discrete'][..., ts, :, :] = pred['discrete']
-        #     elif 'labels_discrete' in pred:
-        #         self.labels_raw['discrete'][..., ts, :, :] = pred['labels_discrete']
-        #     else:
-        #         raise ValueError('pred must contain discrete or labels_discrete')
-            
-        # if 'todiscretize' in self.labels_raw:
-        #     if 'labels_todiscretize' in pred:
-        #         self.labels_raw['todiscretize'][...,ts,:] = pred['labels_todiscretize']
-        #     elif 'todiscretize' in pred:
-        #         self.labels_raw['todiscretize'][...,ts,:] = pred['todiscretize']
-        #     else:
-        #         self.labels_raw['todiscretize'][...,ts,:] = np.nan
-
         return
 
     def set_raw_example(self, example_in, dozscore=False, dodiscretize=False):
 
         if example_in is None:
-            self.labels_raw = {}
-            self.label_keys = {}
-            self.metadata = None
-            self.categories = None
-            self.pre_sz = None
+            self._labels_raw = {}
+            self._label_keys = {}
+            self._metadata = None
+            self._categories = None
+            self._pre_sz = None
             self.scale = None
             return
 
         if 'labels' in example_in:
             labels_in = example_in['labels']
-            self.label_keys['continuous'] = 'labels'
+            self._label_keys['continuous'] = 'labels'
         elif 'continuous' in example_in:
             labels_in = example_in['continuous']
-            self.label_keys['continuous'] = 'continuous'
+            self._label_keys['continuous'] = 'continuous'
         else:
             raise ValueError('labels_in must contain labels or continuous')
         tinit = 0
@@ -1173,10 +1285,10 @@ class PoseLabels:
 
         if 'labels_discrete' in example_in:
             labels_discrete = example_in['labels_discrete']
-            self.label_keys['discrete'] = 'labels_discrete'
+            self._label_keys['discrete'] = 'labels_discrete'
         elif 'discrete' in example_in:
             labels_discrete = example_in['discrete']
-            self.label_keys['discrete'] = 'discrete'
+            self._label_keys['discrete'] = 'discrete'
         else:
             labels_discrete = None
         if labels_discrete is not None:
@@ -1189,10 +1301,10 @@ class PoseLabels:
 
         if 'labels_todiscretize' in example_in:
             labels_todiscretize = example_in['labels_todiscretize']
-            self.label_keys['todiscretize'] = 'labels_todiscretize'
+            self._label_keys['todiscretize'] = 'labels_todiscretize'
         elif 'todiscretize' in example_in:
             labels_todiscretize = example_in['todiscretize']
-            self.label_keys['todiscretize'] = 'todiscretize'
+            self._label_keys['todiscretize'] = 'todiscretize'
         else:
             labels_todiscretize = None
         if labels_todiscretize is not None:
@@ -1205,9 +1317,9 @@ class PoseLabels:
             self.labels_raw['todiscretize'] = labels_todiscretize
 
         if self.is_continuous():
-            self.pre_sz = self.labels_raw['continuous'].shape[:-2]
+            self._pre_sz = self.labels_raw['continuous'].shape[:-2]
         else:
-            self.pre_sz = self.labels_raw['discrete'].shape[:-3]
+            self._pre_sz = self.labels_raw['discrete'].shape[:-3]
 
         if 'mask' in example_in:
             self.labels_raw['mask'] = np.atleast_1d(example_in['mask'])
@@ -1217,18 +1329,18 @@ class PoseLabels:
 
         # if 'labels_stacked' in example_in:
         #   self.labels_raw['stacked'] = example_in['labels_stacked']
-        #   self.label_keys['stacked'] = 'labels_stacked'
+        #   self._label_keys['stacked'] = 'labels_stacked'
         # elif 'stacked' in example_in:
         #   self.labels_raw['stacked'] = example_in['stacked']
-        #   self.label_keys['stacked'] = 'stacked'
+        #   self._label_keys['stacked'] = 'stacked'
         self.scale = example_in['scale']
         if 'metadata' in example_in:
-            self.metadata = example_in['metadata']
+            self._metadata = example_in['metadata']
         else:
-            self.metadata = None
+            self._metadata = None
 
         if 'categories' in example_in:
-            self.categories = example_in['categories']
+            self._categories = example_in['categories']
 
         if dozscore and self.is_zscored():
             self.labels_raw['continuous'] = self.zscore_multi(self.labels_raw['continuous'])
@@ -1237,9 +1349,9 @@ class PoseLabels:
         
         if 'init_all' in example_in:
           # output of get_train_example/get_train_labels, need to use init_all
-          self.init_pose = example_in['init_all']
+          self._init_pose = example_in['init_all']
         elif 'init' in example_in:
-            self.init_pose = example_in['init']
+            self._init_pose = example_in['init']
 
     def append_raw(self, pred):
         if 'labels' in pred:
@@ -1320,12 +1432,12 @@ class PoseLabels:
 
     def erase_labels(self):
         if self.is_continuous() and 'continuous' in self.labels_raw:
-            self.labels_raw['continuous'][..., self.starttoff:, :] = np.nan
+            self.labels_raw['continuous'][..., self._starttoff:, :] = np.nan
         if self.is_discretized():
             if 'discrete' in self.labels_raw:
-                self.labels_raw['discrete'][..., self.starttoff:, :, :] = np.nan
+                self.labels_raw['discrete'][..., self._starttoff:, :, :] = np.nan
             if 'todiscretize' in self.labels_raw:
-                self.labels_raw['todiscretize'][..., self.starttoff:, :] = np.nan
+                self.labels_raw['todiscretize'][..., self._starttoff:, :] = np.nan
         return
 
     @staticmethod
@@ -1352,18 +1464,18 @@ class PoseLabels:
 
     def get_params(self):
         kwlabels = {
-            'zscore_params': self.zscore_params,
-            'discreteidx': self.idx_nextdiscrete_to_next,
-            'tspred_global': self.tspred_global,
-            'discrete_tspred': self.discrete_tspred,
-            'ntspred_relative': self.ntspred_relative,
-            'discretize_params': self.discretize_params,
-            'is_velocity': self.is_velocity,
-            'simplify_out': self.simplify_out,
-            'starttoff': self.starttoff,
-            'flatten_labels': self.flatten_labels,
-            'dct_m': self.dct_m,
-            'idct_m': self.idct_m,
+            'zscore_params': self._zscore_params,
+            'discreteidx': self._idx_nextdiscrete_to_next,
+            'tspred_global': self._tspred_global,
+            'discrete_tspred': self._discrete_tspred,
+            'ntspred_relative': self._ntspred_relative,
+            'discretize_params': self._discretize_params,
+            'is_velocity': self._is_velocity,
+            'simplify_out': self._simplify_out,
+            'starttoff': self._starttoff,
+            'flatten_labels': self._flatten_labels,
+            'dct_m': self._dct_m,
+            'idct_m': self._idct_m,
         }
         return kwlabels
 
@@ -1372,8 +1484,16 @@ class PoseLabels:
         for k, v in params.items():
             if k in translatedict:
                 k = translatedict[k]
+            k = '_' + k
             if override or (not hasattr(self, k)) or (getattr(self, k) is None):
                 setattr(self, k, v)
+                
+        if hasattr(self,'_discretize_params') \
+            and (self._discretize_params is not None) and ('bin_edges' in self._discretize_params) \
+            and (self._discretize_params['bin_edges'] is not None):
+            self._discretize_nbins = self._discretize_params['bin_edges'].shape[-1] - 1
+        else:
+            self._discretize_nbins = 0
 
     @property
     def ntimepoints(self):
@@ -1387,11 +1507,19 @@ class PoseLabels:
 
     @property
     def ntimepoints_train(self):
-        return self.ntimepoints - self.starttoff
+        return self.ntimepoints - self._starttoff
 
     @property
     def device(self):
         return self.labels_raw['continuous'].device
+    
+    @property
+    def tspred_global(self):
+        return self._tspred_global
+    
+    @property
+    def ntspred_relative(self):
+        return self._ntspred_relative
 
     @property
     def dtype(self):
@@ -1412,19 +1540,19 @@ class PoseLabels:
         return self.ntspred_relative > 1
 
     def set_init_pose(self, init_pose):
-        self.init_pose = init_pose
+        self._init_pose = init_pose
 
     def get_init_pose(self, starttoff=None, makecopy=False):
         if starttoff is None:
-            init_pose = self.init_pose
+            init_pose = self._init_pose
         else:
-            init_pose = self.init_pose[:, starttoff]
+            init_pose = self._init_pose[:, starttoff]
         if makecopy:
             init_pose = init_pose.copy()
         return init_pose
 
     def get_init_global(self, starttoff=None, makecopy=True):
-        init_global0 = self.init_pose[..., self.idx_nextglobal_to_next, :]
+        init_global0 = self._init_pose[..., self.idx_nextglobal_to_next, :]
         if starttoff is None:
             init_global = init_global0
             if makecopy:
@@ -1482,7 +1610,7 @@ class PoseLabels:
     # which indices of pose (next frame, global + relative) are relative
     @property
     def idx_nextrelative_to_next(self):
-        if self.simplify_out is None:
+        if self._simplify_out is None:
             return np.nonzero(featrelative)[0]
         else:
             return np.array([])
@@ -1504,7 +1632,7 @@ class PoseLabels:
     @property
     def idx_nextcontinuous_to_next(self):
         iscontinuous = np.ones(self.d_next, dtype=bool)
-        iscontinuous[self.idx_nextdiscrete_to_next] = False
+        iscontinuous[self._idx_nextdiscrete_to_next] = False
         return np.nonzero(iscontinuous)[0]
 
     # we will use a cosine/sine representation for relative pose
@@ -1522,10 +1650,10 @@ class PoseLabels:
         return np.arange(self.d_next_global)
 
     def get_idx_nextrelative_to_nextcossinrelative(self):
-        if self.is_velocity:
+        if self._is_velocity:
             return np.arange(self.d_next_relative), self.d_next_relative
         else:
-            return relfeatidx_to_cossinidx(self.idx_nextdiscrete_to_next)
+            return relfeatidx_to_cossinidx(self._idx_nextdiscrete_to_next)
 
     @property
     def idx_nextrelative_to_nextcossinrelative(self):
@@ -1573,7 +1701,7 @@ class PoseLabels:
     def idx_nextcossindiscrete_to_nextcossin(self):
         idx = []
         idx_next_to_nextcossin = self.idx_next_to_nextcossin
-        for inext in self.idx_nextdiscrete_to_next:
+        for inext in self._idx_nextdiscrete_to_next:
             inextcossin = idx_next_to_nextcossin[inext]
             idx.append(inextcossin)
         return idx
@@ -1646,7 +1774,7 @@ class PoseLabels:
         isdiscrete = (np.isin(idx_multi_to_multifeattpred[:, 0], self.idx_nextcossindiscrete_to_nextcossin) & \
                       (idx_multi_to_multifeattpred[:, 1] == 1)) | \
                      (np.isin(idx_multi_to_multifeattpred[:, 0], self.idx_nextcossinglobal_to_nextcossin) & \
-                      np.isin(idx_multi_to_multifeattpred[:, 1], self.discrete_tspred))
+                      np.isin(idx_multi_to_multifeattpred[:, 1], self._discrete_tspred))
         return isdiscrete
 
     @property
@@ -1694,10 +1822,10 @@ class PoseLabels:
         return ftidx
 
     def is_zscored(self):
-        return self.zscore_params is not None
+        return self._zscore_params is not None
 
     def is_discretized(self):
-        return self.discretize_params is not None
+        return self._discretize_params is not None
 
     def is_continuous(self):
         return 'continuous' in self.labels_raw
@@ -1714,7 +1842,7 @@ class PoseLabels:
             if format == 'standard':
                 kout = kin
             else:
-                kout = self.label_keys[kin]
+                kout = self._label_keys[kin]
             if makecopy:
                 labels_out[kout] = self.labels_raw[kin].copy()
             else:
@@ -1743,7 +1871,7 @@ class PoseLabels:
         return self.d_multidiscrete + int(self.is_continuous())
 
     def get_flatten_max_doutput(self):
-        return np.max(self.d_multicontinuous, self.discretize_nbins)
+        return np.max(self.d_multicontinuous, self._discretize_nbins)
 
     def get_train_labels(self, added_noise=None, namingscheme='standard'):
 
@@ -1771,10 +1899,10 @@ class PoseLabels:
         train_labels = {}
 
         if self.is_discretized():
-            train_labels[rename_dict['discrete']] = raw_labels['discrete'][..., self.starttoff:, :, :]
-            train_labels[rename_dict['todiscretize']] = raw_labels['todiscretize'][..., self.starttoff:, :]
-            train_labels[rename_dict['discrete_init']] = raw_labels['discrete'][..., :self.starttoff, :, :]
-            train_labels[rename_dict['todiscretize_init']] = raw_labels['todiscretize'][..., :self.starttoff, :]
+            train_labels[rename_dict['discrete']] = raw_labels['discrete'][..., self._starttoff:, :, :]
+            train_labels[rename_dict['todiscretize']] = raw_labels['todiscretize'][..., self._starttoff:, :]
+            train_labels[rename_dict['discrete_init']] = raw_labels['discrete'][..., :self._starttoff, :, :]
+            train_labels[rename_dict['todiscretize_init']] = raw_labels['todiscretize'][..., :self._starttoff, :]
         else:
             train_labels[rename_dict['discrete']] = None
             train_labels[rename_dict['todiscretize']] = None
@@ -1782,18 +1910,18 @@ class PoseLabels:
             train_labels[rename_dict['todiscretize_init']] = None
 
         train_labels['init_all'] = raw_labels['init']
-        train_labels['init'] = raw_labels['init'][..., self.starttoff]
+        train_labels['init'] = raw_labels['init'][..., self._starttoff]
         train_labels['scale'] = raw_labels['scale']
         if 'categories' in raw_labels:
             train_labels['categories'] = raw_labels['categories']
         else:
             train_labels['categories'] = None
 
-        if not self.flatten_labels:
-            train_labels[rename_dict['continuous']] = raw_labels['continuous'][..., self.starttoff:, :]
-            train_labels[rename_dict['continuous_init']] = raw_labels['continuous'][..., :self.starttoff, :]
+        if not self._flatten_labels:
+            train_labels[rename_dict['continuous']] = raw_labels['continuous'][..., self._starttoff:, :]
+            train_labels[rename_dict['continuous_init']] = raw_labels['continuous'][..., :self._starttoff, :]
             if 'mask' in raw_labels:
-                train_labels['mask'] = raw_labels['mask'][..., self.starttoff:]
+                train_labels['mask'] = raw_labels['mask'][..., self._starttoff:]
         else:
             contextl = self.ntimepoints
             dtype = raw_labels['continuous'].dtype
@@ -1802,7 +1930,7 @@ class PoseLabels:
             flatlabels = torch.zeros(self.pre_sz + (contextl, ntokens, flatten_max_doutput), dtype=dtype)
             for i in range(self.d_output_discrete):
                 # inputnum = self.flatten_nobs_types+i
-                flatlabels[..., i, :self.discretize_nbins] = raw_labels['discrete'][..., i, :]
+                flatlabels[..., i, :self._discretize_nbins] = raw_labels['discrete'][..., i, :]
                 # newinput[:,inputnum,self.flatten_input_type_to_range[inputnum,0]:self.flatten_input_type_to_range[inputnum,1]] = raw_labels['labels_discrete'][:,i,:]
                 # if mask is None:
                 #   newmask[:,self.flatten_nobs_types+i] = True
@@ -1831,13 +1959,13 @@ class PoseLabels:
     def unzscore_multi(self, multi):
         if not self.is_zscored():
             return multi
-        multi = unzscore(multi, self.zscore_params['mu_labels'], self.zscore_params['sig_labels'])
+        multi = unzscore(multi, self._zscore_params['mu_labels'], self._zscore_params['sig_labels'])
         return multi
 
     def zscore_multi(self, multi_unz):
         if not self.is_zscored():
             return multi_unz
-        multi = zscore(multi_unz, self.zscore_params['mu_labels'], self.zscore_params['sig_labels'])
+        multi = zscore(multi_unz, self._zscore_params['mu_labels'], self._zscore_params['sig_labels'])
         return multi
 
     def labels_discrete_to_continuous(self, labels_discrete, epsilon=1e-3):
@@ -1850,7 +1978,7 @@ class PoseLabels:
         labels_discrete = labels_discrete.reshape((n, nfeat, nbins))
 
         # nfeat x nbins
-        bin_centers = self.discretize_params['bin_medians']
+        bin_centers = self._discretize_params['bin_medians']
         s = np.sum(labels_discrete, axis=-1)
         assert np.max(np.abs(1 - s)) < epsilon, 'discrete labels do not sum to 1'
         continuous = np.sum(bin_centers[None, ...] * labels_discrete, axis=-1) / s
@@ -1866,7 +1994,7 @@ class PoseLabels:
         szrest = sz[:-2]
         n = int(np.prod(np.array(szrest)))
         labels_discrete = labels_discrete.reshape((n, nfeat, nbins))
-        bin_samples = self.discretize_params['bin_samples']
+        bin_samples = self._discretize_params['bin_samples']
         nsamples_per_bin = bin_samples.shape[0]
         continuous = np.zeros((nsamples,) + szrest + (nfeat,), dtype=labels_discrete.dtype)
         for f in range(nfeat):
@@ -1953,7 +2081,7 @@ class PoseLabels:
             labels_raw['todiscretize'][...,ts,:] = multi[..., self.idx_multidiscrete_to_multi]
             if multi_discrete is None:
                 labels_raw['discrete'][...,ts,:,:] = discretize_labels(labels_raw['todiscretize'][..., ts, :],
-                                                                    self.discretize_params['bin_edges'],
+                                                                    self._discretize_params['bin_edges'],
                                                                     soften_to_ends=True)
             else:
                 labels_raw['discrete'][...,ts,:,:] = multi_discrete
@@ -2009,7 +2137,7 @@ class PoseLabels:
         if not self.is_discretized():
             return None
         labels_raw = self.get_raw_labels(format='standard', ts=ts, makecopy=False)
-        labels_discrete = np.zeros(self.pre_sz + (self.ntimepoints, self.d_multi, self.discretize_nbins),
+        labels_discrete = np.zeros(self.pre_sz + (self.ntimepoints, self.d_multi, self._discretize_nbins),
                                    dtype=self.dtype)
         labels_discrete[:] = np.nan
         labels_discrete[..., self.idx_multidiscrete_to_multi, :] = labels_raw['discrete']
@@ -2023,7 +2151,7 @@ class PoseLabels:
             ntspred = 1
 
         labels_discrete = labels_discrete.reshape(
-            self.pre_sz + (self.ntimepoints, ntspred, self.d_next_cossin_global, self.discretize_nbins))
+            self.pre_sz + (self.ntimepoints, ntspred, self.d_next_cossin_global, self._discretize_nbins))
         return labels_discrete
 
     def futureglobal_to_futureglobalpos(self, globalpos0, futureglobalvel, **kwargs):
@@ -2082,7 +2210,7 @@ class PoseLabels:
 
     def get_future_relative_pose(self, tspred=None, **kwargs):
         futurerel = self.get_future_relative(tspred=tspred, **kwargs)
-        if not self.is_velocity:
+        if not self._is_velocity:
             return futurerel
         relpose0 = self.get_next_pose_relative(**kwargs)
         return futurerel + relpose0[..., :-1, None, :]
@@ -2199,7 +2327,7 @@ class PoseLabels:
         T = globalvel.shape[1]
 
         if init_pose is None:
-            init_pose = self.init_pose[...,starttoff]
+            init_pose = self._init_pose[...,starttoff]
             
         globalpos0 = init_pose[..., self.idx_nextglobal_to_next]
         xorigin0 = globalpos0[..., :2]
@@ -2222,10 +2350,10 @@ class PoseLabels:
         T = relrep.shape[1]
 
         if init_pose is None:
-            init_pose = self.init_pose[..., starttoff]
+            init_pose = self._init_pose[..., starttoff]
         relpose0 = init_pose[..., self.idx_nextrelative_to_next]
 
-        if self.is_velocity:
+        if self._is_velocity:
             relpose = np.cumsum(np.concatenate((relpose0.reshape((n, 1, -1)), relrep), axis=-2), axis=-2)
         else:
             relpose = np.concatenate((relpose0.reshape((n, 1, -1)), relrep), axis=-2)
@@ -2259,7 +2387,7 @@ class PoseLabels:
         T = nextpose.shape[-2]
         nextpose = nextpose.reshape((n, T, self.d_next))
         init_pose = nextpose[..., 0, :]
-        if self.is_velocity:
+        if self._is_velocity:
             next = np.diff(nextpose, axis=1)
         else:
             idx_nextglobal_to_next = self.idx_nextglobal_to_next
@@ -2272,7 +2400,7 @@ class PoseLabels:
 
     def next_to_nextvelocity(self, next):
 
-        if self.is_velocity:
+        if self._is_velocity:
             return next
 
         szrest = next.shape[:-2]
@@ -2280,7 +2408,7 @@ class PoseLabels:
         T = next.shape[-2]
         idx_nextrelative_to_next = self.idx_nextrelative_to_next
         velrel = np.zeros((n, T + 1, self.d_next_relative), dtype=next.dtype)
-        velrel[:, 0, :] = self.init_pose[idx_nextrelative_to_next]
+        velrel[:, 0, :] = self._init_pose[idx_nextrelative_to_next]
         velrel[:, 1:, :] = next[..., idx_nextrelative_to_next].reshape((n, T, self.d_next_relative))
         velrel[:, :-1, :] = np.diff(velrel, axis=1)
         velrel = velrel[:, :-1, :]
@@ -2321,7 +2449,7 @@ class PoseLabels:
         return nextpose_global
 
     def set_next_pose(self, nextpose):
-        self.pre_sz = nextpose.shape[:-2]
+        self._pre_sz = nextpose.shape[:-2]
         next, init_pose = self.nextpose_to_next(nextpose)
         self.set_init_pose(init_pose.T)
         self.set_next(next, zscored=False)
@@ -2369,7 +2497,7 @@ class PoseLabels:
         assert example['continuous'].shape[-1] == self.d_multi
         discretize_idx = self.idx_multidiscrete_to_multi
         example['todiscretize'] = example['continuous'][..., discretize_idx].copy()
-        example['discrete'] = discretize_labels(example['todiscretize'], self.discretize_params['bin_edges'],
+        example['discrete'] = discretize_labels(example['todiscretize'], self._discretize_params['bin_edges'],
                                                 soften_to_ends=True)
         example['continuous'] = example['continuous'][..., self.idx_multicontinuous_to_multi]
         return
@@ -2381,17 +2509,17 @@ class PoseLabels:
 
         # function for computing features
         example = compute_features(Xkp[..., None], scale_perfly=scale, outtype=np.float32,
-                                   simplify_out=self.simplify_out,
-                                   dct_m=self.dct_m,
+                                   simplify_out=self._simplify_out,
+                                   dct_m=self._dct_m,
                                    tspred_global=self.tspred_global,
-                                   compute_pose_vel=self.is_velocity,
-                                   discreteidx=self.idx_nextdiscrete_to_next,
+                                   compute_pose_vel=self._is_velocity,
+                                   discreteidx=self._idx_nextdiscrete_to_next,
                                    simplify_in='no_sensory')
 
         self.set_raw_example(example,dozscore=self.is_zscored(),dodiscretize=self.is_discretized())
         
-        if self.init_pose is None:
-          self.init_pose = kp2feat(Xkp[:,:,:2],scale)[...,0]
+        if self._init_pose is None:
+          self._init_pose = kp2feat(Xkp[:,:,:2],scale)[...,0]
         
         return
     
@@ -2400,7 +2528,7 @@ class PoseLabels:
         next = self.get_next(**kwargs)
 
         # global will always be velocity
-        if self.is_velocity:
+        if self._is_velocity:
             return next
 
         next_vel = self.next_to_nextvelocity(next)
@@ -2408,7 +2536,7 @@ class PoseLabels:
         return next_vel
 
     def set_zscore_params(self, zscore_params):
-        self.zscore_params = zscore_params
+        self._zscore_params = zscore_params
         return
 
     def add_next_noise(self, eta_next, zscored=False):
