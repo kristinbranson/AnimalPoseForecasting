@@ -414,7 +414,7 @@ class FlyMLMDataset(torch.utils.data.Dataset):
         bin_epsilon[:] = np.nan
         for i, i_next in enumerate(discreteidx_next):
             # indices for all tspred associated with this feature
-            idx_multi_curr, _ = dummyexample.labels.convert_idx_next_to_multi_anyt(i_next)
+            idx_multi_curr, _ = dummyexample.labels.get_multiidx_for_featidx(i_next)
             idx_multi_curr = idx_multi_curr[dummyexample.labels.get_multi_isdiscrete(idx_multi_curr)]
             #idx_multi_curr = idx_multi_curr[np.isin(idx_multi_curr, dummyexample.labels.idx_multidiscrete_to_multi)]
             bin_epsilon[idx_multi_curr] = bin_epsilon_feat[i]

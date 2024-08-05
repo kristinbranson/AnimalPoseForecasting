@@ -1385,7 +1385,7 @@ class PoseLabels:
         if dozscore and self.is_zscored():
             self.labels_raw['continuous'] = self.zscore_multi(self.labels_raw['continuous'])
         if dodiscretize and self.is_discretized():
-            self.discretize_multi(self.labels_raw)
+            self._discretize_multi(self.labels_raw)
 
         # initial pose        
         if 'init_all' in example_in:
@@ -2453,8 +2453,7 @@ class PoseLabels:
         multi[:] = np.nan
 
         if self.is_discretized():
-            if use_todiscretize:
-                assert 'todiscretize' in self.labels_raw
+            if use_todiscretize and 'todiscretize' in self.labels_raw:
                 # shape is pre_sz x T x d_multi_discrete
                 labels_discrete = labels_raw['todiscretize']
             elif nsamples > 0:
@@ -2796,9 +2795,17 @@ class PoseLabels:
         multi = self.get_multi(**kwargs)
         return self._multi_to_multiidct(multi)
 
-    def multiidct_to_futurecossinrelative(self, multi_idct, tspred=None):
+    def _multiidct_to_futurecossinrelative(self, multi_idct, tspred=None):
         """
-        multiidct_to_futurecossinrelative(multi_idct, tspred=None)
+        _multiidct_to_futurecossinrelative(multi_idct, tspred=None)
+        Convert from the multi_idct representation (full labels, relatve features have been un-DCTed) to the future relative features.
+        Parameters:
+        multi_idct: ndarray of size (pre_sz x ) ntimepoints x d_multi with the multi_idct representation of the labels.
+        Optional parameters:
+        tspred: values for tspred into the future to return indices for. If None, all relative features for all tspred are returned.
+        Default: None.
+        Returns:
+        futurerelcs: ndarray of size (pre_sz x ) ntimepoints x ntspred x d_next_cossin_relative with the future relative features
         """
         if not self.is_dct():
             return np.zeros(self.pre_sz + (self.ntimepoints, 0), dtype=multi_idct.dtype)
@@ -2812,96 +2819,290 @@ class PoseLabels:
                              np.isin(idx_multi_to_multifeattpred[:, 1], tspred))[0]
         return multi_idct[..., idxfeat].reshape((multi_idct.shape[:-1]) + (ntspred, self.d_next_cossin_relative))
 
-    def get_future_cossin_relative(self, tspred=None, **kwargs):
+    def _get_future_cossin_relative(self, tspred=None, **kwargs):
+        """
+        _get_future_cossin_relative(tspred=None, use_todiscretize=False, nsamples=0, zscored=False, collapse_samples=False, ts=None)
+        Returns the future relative features for frames into the future tspred.
+        Optional parameters:
+        tspred: values for tspred into the future to return indices for. If None, all relative features for all tspred are returned.
+        Default: None.
+        zscored: whether to return the z-scored version of multi. If False, multi will be unzscored. Default is False.
+        collapse_samples: whether to collapse the samples dimension if nsamples=1 the first dimension. Default is False.
+        ts: indices of the time points to return. Time points must be contiguous, limited checking done. ts should work if it is
+        an ndarray, a list, a scalar, a slice, or a range. If None, all time points are returned. Default is None.
+        Returns:
+        futurerelcs: ndarray of size (pre_sz x ) ntimepoints x ntspred x d_next_cossin_relative with the future relative features
+        """
 
         multi_idct = self.get_multi_idct(**kwargs)
-        futurerelcs = self.multiidct_to_futurecossinrelative(multi_idct, tspred=tspred)
+        futurerelcs = self._multiidct_to_futurecossinrelative(multi_idct, tspred=tspred)
         return futurerelcs
 
     def get_future_relative(self, tspred=None, **kwargs):
-        futurerelcs = self.get_future_cossin_relative(tspred=tspred, **kwargs)
-        futurerel = np.moveaxis(self.nextcossinrelative_to_nextrelative(np.moveaxis(futurerelcs, -2, 0)), 0, -2)
+        """
+        get_future_relative(tspred=None, use_todiscretize=False, nsamples=0, zscored=False, collapse_samples=False, ts=None)
+        Returns the future relative features for frames into the future tspred.
+        Optional parameters:
+        tspred: values for tspred into the future to return indices for. If None, all relative features for all tspred are returned.
+        Default: None.
+        zscored: whether to return the z-scored version of multi. If False, multi will be unzscored. Default is False.
+        collapse_samples: whether to collapse the samples dimension if nsamples=1 the first dimension. Default is False.
+        ts: indices of the time points to return. Time points must be contiguous, limited checking done. ts should work if it is
+        an ndarray, a list, a scalar, a slice, or a range. If None, all time points are returned. Default is None.
+        Returns:
+        futurerel: ndarray of size (pre_sz x ) ntimepoints x ntspred x d_next_relative with the future relative features
+        """
+        futurerelcs = self._get_future_cossin_relative(tspred=tspred, **kwargs)
+        futurerel = np.moveaxis(self._nextcossinrelative_to_nextrelative(np.moveaxis(futurerelcs, -2, 0)), 0, -2)
         return futurerel
 
-    def get_future_relative_pose(self, tspred=None, **kwargs):
-        futurerel = self.get_future_relative(tspred=tspred, **kwargs)
+    def get_future_relative_pose(self, tspred=None, zscored=False, **kwargs):
+        """
+        get_future_relative_pose(tspred=None, ts=None)
+        Returns the future relative pose for frames into the future tspred.
+        Optional parameters:
+        tspred: values for tspred into the future to return indices for. If None, all relative features for all tspred are returned.
+        Default: None.
+        ts: indices of the time points to return. Time points must be contiguous, limited checking done. 
+        Returns:
+        futurerelpose: ndarray of size (pre_sz x ) ntimepoints x ntspred x d_next_relative with the future relative pose.
+        """
+        assert zscored == False
+        futurerel = self.get_future_relative(tspred=tspred, zscored=False,**kwargs)
         if not self._is_velocity:
             return futurerel
+        # if self._is_velocity, then futurerel is a velocity, so add it to current next pose relative
         relpose0 = self.get_next_pose_relative(**kwargs)
         return futurerel + relpose0[..., :-1, None, :]
 
-    def multi_to_nextcossin(self, multi):
+    def _multi_to_nextcossin(self, multi):
+        """
+        _multi_to_nextcossin(multi)
+        Convert from the full multi (or multi_idct) representation to the next_cossin representation -- both global
+        and relative features, but only for the next frame prediction. multi and multi_idct both work, as we don't use
+        the next frame prediction in the DCT representation.
+        Parameters:
+        multi: ndarray of size (pre_sz x ) ntimepoints x d_multi with the multi representation of the labels.
+        Returns:
+        next_cossin: ndarray of size (pre_sz x ) ntimepoints x d_next_cossin with the next_cossin representation of the labels.
+        """
         next_cossin = multi[..., self._idx_nextcossin_to_multi]
         return next_cossin
 
     def get_nextcossin(self, **kwargs):
+        """
+        get_nextcossin(use_todiscretize=False, nsamples=0, zscored=False, collapse_samples=False, ts=None)
+        Returns the next_cossin representation of the labels -- both global and relative features, but only for the next 
+        frame prediction. Angles in the relative features will be in the cos,sin representaiton. 
+        Optional parameters:
+        use_todiscretize: whether to use the continuous versions of the discrete labels, if available, to
+        convert discrete to continuous. Default is False.
+        nsamples: Method for converting from discrete to continuous. If 0, the weighted mean of bin centers is computed. If > 0,
+        specifies the number of samples to take according to the bin distributions. Default is 0.
+        zscored: whether to return the z-scored version of multi. If False, multi will be unzscored. Default is False.
+        collapse_samples: whether to collapse the samples dimension if nsamples=1 the first dimension. Default is False.
+        ts: indices of the time points to return. Time points must be contiguous, limited checking done. ts should work if it is
+        an ndarray, a list, a scalar, a slice, or a range. If None, all time points are returned. Default is None.
+        Returns:
+        next_cossin: ndarray of size (pre_sz x ) ntimepoints x d_next_cossin with the next_cossin representation of the labels.
+        """
+        
         # note that multi_idct is ignored since we don't use the dct representation for the next frame
         multi = self.get_multi(**kwargs)
-        return self.multi_to_nextcossin(multi)
+        return self._multi_to_nextcossin(multi)
 
-    def set_nextcossin(self, nextcossin, **kwargs):
+    def set_nextcossin(self, nextcossin, use_discretized=True,**kwargs):
+        """
+        set_nextcossin(nextcossin, zscored=False, ts=None, nsamples=0)
+        Sets the next_cossin representation of the labels. This will only update the next frame labels, not the 
+        future frame labels. Note that if there are future features that are discrete and self.is_todiscretize() == False, then 
+        todiscretize for those features will be set based on sampling strategies described by nsamples. 
+        Parameters:
+        nextcossin: ndarray of size (pre_sz x ) ntimepoints x d_next_cossin with the next_cossin representation of the labels.
+        Optional parameters:
+        zscored: whether the input nextcossin is zscored. If it is not, then nextcossin will be zscored (if self.is_zscored()) before
+        storing. Default is False.
+        nsamples: Method for converting from discrete to continuous when getting multi to fill in. If 0, the weighted mean of bin 
+        centers is computed. If 1, then it will sample from the bin distributions. Default is 0.
+        """
+        if self.is_todiscretize():
+            assert use_discretized == True
         nextcossin = np.atleast_2d(nextcossin)
-        multi = self.get_multi(**kwargs)
+        # get all multi features
+        # if self.is_todiscretize() == False, then get_multi will convert from discrete to continuous for all features. 
+        # This will get overwritten for the next frame features, but not for the future frame features.
+        # TODO - maybe do this better?
+        multi = self.get_multi(use_discretized=True,**kwargs)
+        # fill in next features
         multi[..., self._idx_nextcossin_to_multi] = nextcossin
         self.set_multi(multi, **kwargs)
 
-    def nextcossinglobal_to_nextglobal(self, next_cossinglobal):
+    def _nextcossinglobal_to_nextglobal(self, next_cossinglobal):
+        """
+        _nextcossinglobal_to_nextglobal(next_cossinglobal)
+        Convert the global features in the next_cossin representation to the next_global representation.
+        cos,sin representation only affects relative features, so this is the identity. 
+        Parameters:
+        next_cossinglobal: ndarray of size (pre_sz x ) ntimepoints x d_next_cossin_global with the global features in the
+        next_cossin representation.
+        Returns:
+        next_global: ndarray of size (pre_sz x ) ntimepoints x d_next_global with the global features in the next_global
+        representation.
+        """
         return next_cossinglobal
 
-    def nextcossinrelative_to_nextrelative(self, next_cossin_relative):
+    def _nextcossinrelative_to_nextrelative(self, next_cossin_relative):
+        """
+        _nextcossinrelative_to_nextrelative(next_cossin_relative)
+        Convert the relative features in the next_cossin representation to the next_relative representation. All 
+        relative angle features are converted from cos,sin to radians using the arctan2 function.
+        Parameters:
+        next_cossin_relative: ndarray of size (pre_sz x ) ntimepoints x d_next_cossin_relative with the relative features in the
+        next_cossin representation.
+        Returns:
+        next_relative: ndarray of size (pre_sz x ) ntimepoints x d_next_relative with the relative features in the next_relative
+        representation.
+        """
+        # reshape so we can mostly ignore pre_sz
         szrest = next_cossin_relative.shape[:-2]
         T = next_cossin_relative.shape[-2]
         n = int(np.prod(szrest))
         next_cossin_relative = next_cossin_relative.reshape((n, T, self.d_next_cossin_relative))
+
+        # allocate
         next_relative = np.zeros((n, T, self.d_next_relative), dtype=next_cossin_relative.dtype)
         idx_nextrelative_to_nextcossinrelative = self._idx_nextrelative_to_nextcossinrelative
         for inext in range(self.d_next_relative):
+            # indices of the next_cossin_relative features that correspond to inext
             inextcossin = idx_nextrelative_to_nextcossinrelative[inext]
+            # if this is an ndarray, then we need to convert from cos,sin to radians
             if type(inextcossin) is np.ndarray:
                 next_relative[..., inext] = np.arctan2(next_cossin_relative[..., inextcossin[1]],
                                                        next_cossin_relative[..., inextcossin[0]])
             else:
+                # otherwise just copy
                 next_relative[..., inext] = next_cossin_relative[..., inextcossin]
+
+        # reshape back
         next_relative = next_relative.reshape(szrest + (T, self.d_next_relative))
+        
         return next_relative
 
-    def nextcossin_to_next(self, next_cossin):
+    def _nextcossin_to_next(self, next_cossin):
+        """
+        _nextcossin_to_next(next_cossin)
+        Convert from the next_cossin representation to the next representation. This will convert the cos,sin representation
+        of relative angles to radians.
+        Parameters:
+        next_cossin: ndarray of size (pre_sz x ) ntimepoints x d_next_cossin with the next_cossin representation of the labels.
+        Returns:
+        next: ndarray of size (pre_sz x ) ntimepoints x d_next with the next representation of the labels.
+        """
         next = np.zeros(next_cossin.shape[:-1] + (self.d_next,), dtype=next_cossin.dtype)
+        # convert global features (does nothing)
         next[..., self._idx_nextglobal_to_next] = \
-            self.nextcossinglobal_to_nextglobal(next_cossin[..., self._idx_nextcossinglobal_to_nextcossin])
+            self._nextcossinglobal_to_nextglobal(next_cossin[..., self._idx_nextcossinglobal_to_nextcossin])
+        # convert relative features
         next[..., self._idx_nextrelative_to_next] = \
-            self.nextcossinrelative_to_nextrelative(next_cossin[..., self._idx_nextcossinrelative_to_nextcossin])
+            self._nextcossinrelative_to_nextrelative(next_cossin[..., self._idx_nextcossinrelative_to_nextcossin])
         return next
 
-    def next_to_nextcossin(self, next):
+    def _next_to_nextcossin(self, next):
+        """
+        _next_to_nextcossin(next)
+        Convert from the next representation to the next_cossin representation. This will convert the relative angles in radians
+        to cos,sin.
+        Parameters:
+        next: ndarray of size (pre_sz x ) ntimepoints x d_next with the next representation of the labels.
+        Returns:
+        next_cossin: ndarray of size (pre_sz x ) ntimepoints x d_next_cossin with the next_cossin representation of the labels.
+        """
         szrest = next.shape[:-1]
         n = np.prod(szrest)
         next_cossin = np.zeros((n, self.d_next_cossin), dtype=next.dtype)
         idx_next_to_nextcossin = self._idx_next_to_nextcossin
         for inext in range(self.d_next):
+            # indices of the next_cossin features that correspond to inext
             inextcossin = idx_next_to_nextcossin[inext]
+            # if two indices, then we need to convert from radians to cos,sin
             if type(inextcossin) is np.ndarray:
                 next_cossin[..., inextcossin[0]] = np.cos(next[..., inext])
                 next_cossin[..., inextcossin[1]] = np.sin(next[..., inext])
             else:
+                # otherwise just copy
                 next_cossin[..., inextcossin] = next[..., inext]
         return next_cossin
 
     def next_to_input_labels(self, next):
-        return self.next_to_nextcossin(next)
+        """
+        next_to_input_labels(next)
+        Convert from the next representation to the input_labels representation. This will convert the relative angles in radians.
+        This is currently only used by ObservationInputs class for adding noise. 
+        Parameters:
+        next: ndarray of size (pre_sz x ) ntimepoints x d_next with the next representation of the labels.
+        Returns:
+        input_labels: ndarray of size (pre_sz x ) ntimepoints x d_input_labels with the input_labels representation of the labels.
+        """
+        return self._next_to_nextcossin(next)
 
-    def get_input_labels(self, **kwargs):
-        return self.get_nextcossin(zscored=True, use_todiscretize=True, **kwargs)
+    def get_input_labels(self):
+        """
+        get_input_labels()
+        Returns the labels that will be input from the previous frame to the model. 
+        This will be an ndarray of size (pre_sz x ) ntimepoints x d_input_labels.
+        """
+        assert self.is_todiscretize(), 'get_input_labels only works when todiscretize is set'
+        return self.get_nextcossin(zscored=self.is_zscored(), use_todiscretize=True)
 
     def get_next(self, **kwargs):
+        """
+        get_next(use_todiscretize=False, nsamples=0, zscored=False, collapse_samples=False, ts=None)
+        Returns the next-frame features. 
+        Optional parameters:
+        use_todiscretize: whether to use the continuous versions of the discrete labels, if available, to
+        convert discrete to continuous. Default is False.
+        nsamples: Method for converting from discrete to continuous. If 0, the weighted mean of bin centers is computed. If > 0,
+        specifies the number of samples to take according to the bin distributions. Default is 0.
+        zscored: whether to return the z-scored version of multi. If False, multi will be unzscored. Default is False.
+        collapse_samples: whether to collapse the samples dimension if nsamples=1 the first dimension. Default is False.
+        ts: indices of the time points to return. Time points must be contiguous, limited checking done. ts should work if it is
+        an ndarray, a list, a scalar, a slice, or a range. If None, all time points are returned. Default is None.
+        Returns:
+        next: ndarray of size (pre_sz x ) ntimepoints x d_next with the next representation of the labels.
+        """
         next_cossin = self.get_nextcossin(**kwargs)
-        return self.nextcossin_to_next(next_cossin)
+        return self._nextcossin_to_next(next_cossin)
 
     def set_next(self, next, **kwargs):
-        nextcossin = self.next_to_nextcossin(next)
+        """
+        set_next(next, zscored=False, ts=None, nsamples=0)
+        Sets the next representation of the labels. This will only update the next frame labels, not the 
+        future frame labels. Note that if there are future features that are discrete and self.is_todiscretize() == False, then 
+        todiscretize for those features will be set based on sampling strategies described by nsamples. 
+        Parameters:
+        next: ndarray of size (pre_sz x ) ntimepoints x d_next with the next representation of the labels.
+        Optional parameters:
+        zscored: whether the input next is zscored. If it is not, then next will be zscored (if self.is_zscored()) before
+        storing. Default is False.
+        nsamples: Method for converting from discrete to continuous when getting multi to fill in. If 0, the weighted mean of bin 
+        centers is computed. If 1, then it will sample from the bin distributions. Default is 0.
+        """
+        
+        # convert to nextcossin
+        nextcossin = self._next_to_nextcossin(next)
+        # set nextcossin
         self.set_nextcossin(nextcossin, **kwargs)
 
-    def convert_idx_next_to_nextcossin(self, idx_next):
+    def _convert_idx_next_to_nextcossin(self, idx_next):
+        """
+        _convert_idx_next_to_nextcossin(idx_next)
+        Convert the input indices for the next representation to the indices for the next_cossin representation.
+        The return value will be a list of all indices, with correspondences potentially lost. 
+        Parameters:
+        idx_next: list/ndarray/scalar of indices for the next representation
+        Returns:
+        idx_next_cossin: list of indices for the next_cossin representation
+        """
 
         if not hasattr(idx_next, '__len__'):
             idx_next = [idx_next, ]
@@ -2918,25 +3119,63 @@ class PoseLabels:
 
         return idx_next_cossin
 
-    def convert_idx_nextcossin_to_multi(self, idx_nextcossin):
+    def _convert_idx_nextcossin_to_multi(self, idx_nextcossin):
+        """
+        _convert_idx_nextcossin_to_multi(idx_nextcossin)
+        Convert the input indices for the next_cossin representation to the indices for the multi representation.
+        Parameters:
+        idx_nextcossin: ndarray of indices for the next_cossin representation.
+        Returns:
+        idx_multi: ndarray of indices for the multi representation.
+        """
         idx_nextcossin_to_multi = self._idx_nextcossin_to_multi
         idx_multi = idx_nextcossin_to_multi[idx_nextcossin]
         return idx_multi
 
-    def convert_idx_next_to_multi(self, idx_next):
-        idx_next_cossin = self.convert_idx_next_to_nextcossin(idx_next)
-        idx_multi = self.convert_idx_nextcossin_to_multi(idx_next_cossin)
+    def _convert_idx_next_to_multi(self, idx_next):
+        """
+        _convert_idx_next_to_multi(idx_next)
+        Convert the input indices for the next representation to the indices for the multi representation.
+        Parameters:
+        idx_next: list/ndarray/scalar of indices for the next representation
+        Returns:
+        idx_multi: ndarray of indices for the multi representation.
+        """
+        idx_next_cossin = self._convert_idx_next_to_nextcossin(idx_next)
+        idx_multi = self._convert_idx_nextcossin_to_multi(idx_next_cossin)
 
         return idx_multi
 
-    def convert_idx_next_to_multi_anyt(self, idx_next):
-        idx_next_cossin = self.convert_idx_next_to_nextcossin(idx_next)
+    def get_multiidx_for_featidx(self, featidx):
+        """
+        get_multiidx_for_featidx(idx_next)
+        Returns the indices of multi, and the associated tspred, for each feature in featidx.
+        Correspondences may be lost, so this probably makes the most sense used with featidx
+        as a scalar. 
+        Parameters:
+        featidx: list/ndarray/scalar of indices for the next representation
+        Returns:
+        idx_multi: ndarray of indices for the multi representation.
+        ts: ndarray of tspred for each feature in featidx.
+        """
+        idx_next_cossin = self._convert_idx_next_to_nextcossin(featidx)
         idx_multi_to_multifeattpred = self._idx_multi_to_multifeattpred
         idx_multi_anyt = np.nonzero(np.isin(idx_multi_to_multifeattpred[:, 0], idx_next_cossin))[0]
         ts = idx_multi_to_multifeattpred[idx_multi_anyt, 1]
         return idx_multi_anyt, ts
 
-    def globalvel_to_globalpos(self, globalvel, starttoff=0, init_pose=None):
+    def _globalvel_to_globalpos(self, globalvel, starttoff=0, init_pose=None):
+        """
+        _globalvel_to_globalpos(globalvel, starttoff=0, init_pose=None)
+        Convert from global velocities to global positions by integrating.
+        Parameters:
+        globalvel: ndarray of size (pre_sz x ) ntimepoints x d_next_global with the global velocities.
+        starttoff: offset for the initial pose. Default is 0.
+        init_pose: ndarray of size (pre_sz x ) d_next_global with the initial pose. If None, 
+        self._init_pose is used. Default is None.
+        Returns:
+        globalpos: ndarray of size (pre_sz x ) ntimepoints x d_next_global with the global positions.
+        """
 
         n = globalvel.shape[0]
         T = globalvel.shape[1]
@@ -2959,7 +3198,20 @@ class PoseLabels:
         globalpos = np.concatenate((xorigin, xtheta[..., None]), axis=-1)
         return globalpos
 
-    def relrep_to_relpose(self, relrep, init_pose=None, starttoff=0):
+    def _relrep_to_relpose(self, relrep, init_pose=None, starttoff=0):
+        """
+        _relrep_to_relpose(relrep, init_pose=None, starttoff=0)
+        Convert from relative representation to relative poses. If self._is_velocity is True, then 
+        this will require integrating from the initial pose. Otherwise, initial pose is just concatenated.
+        Parameters:
+        relrep: ndarray of size (pre_sz x ) ntimepoints x d_next_relative with the relative representation.
+        Optional parameters:
+        init_pose: ndarray of size (pre_sz x ) d_next with the initial pose. If None, self._init_pose is used
+        to derive this. Default is None.
+        starttoff: offset for the initial pose. Default is 0.
+        Returns:
+        relpose: ndarray of size (pre_sz x ) ntimepoints x d_next_relative with the relative poses.
+        """
 
         n = relrep.shape[0]
         T = relrep.shape[1]
@@ -2975,7 +3227,19 @@ class PoseLabels:
 
         return relpose
 
-    def next_to_nextpose(self, next, init_pose=None):
+    def _next_to_nextpose(self, next, init_pose=None):
+        """
+        _next_to_nextpose(next, init_pose=None)
+        Convert from the next representation to the next pose representation. Will integrate velocities
+        starting from init_pose. 
+        Parameters:
+        next: ndarray of size (pre_sz x ) ntimepoints x d_next with the next representation of the labels.
+        Optional parameters:
+        init_pose: ndarray of size (pre_sz x ) d_next with the initial pose. If None, self._init_pose is used.
+        Default is None.
+        Returns:
+        pose: ndarray of size (pre_sz x ) ntimepoints x d_next with the next pose representation of the labels.
+        """
 
         szrest = next.shape[:-2]
         n = int(np.prod(szrest))
@@ -2983,10 +3247,10 @@ class PoseLabels:
         T = next.shape[-2]
         next = next.reshape((n, T, self.d_next))
         globalvel = next[..., self._idx_nextglobal_to_next]
-        globalpos = self.globalvel_to_globalpos(globalvel, starttoff=starttoff, init_pose=init_pose)
+        globalpos = self._globalvel_to_globalpos(globalvel, starttoff=starttoff, init_pose=init_pose)
 
         relrep = next[..., self._idx_nextrelative_to_next]
-        relpose = self.relrep_to_relpose(relrep, init_pose=init_pose, starttoff=starttoff)
+        relpose = self._relrep_to_relpose(relrep, init_pose=init_pose, starttoff=starttoff)
 
         pose = np.concatenate((globalpos, relpose), axis=-1)
         pose[..., self.is_angle_next] = modrange(pose[..., self.is_angle_next], -np.pi, np.pi)
@@ -2995,17 +3259,31 @@ class PoseLabels:
 
         return pose
 
-    def nextpose_to_next(self, nextpose):
+    def _nextpose_to_next(self, nextpose):
+        """
+        _nextpose_to_next(nextpose)
+        Convert from the next pose representation to the next representation. Differences between
+        pairs of frames will be computed for all velocity features.
+        Parameters:
+        nextpose: ndarray of size (pre_sz x ) ntimepoints x d_next with the next pose representation of the labels.
+        Returns:
+        next: ndarray of size (pre_sz x ) ntimepoints x d_next with the next representation of the labels.
+        init_pose: ndarray of size (pre_sz x ) d_next with the initial pose.
+        """
 
         szrest = nextpose.shape[:-2]
         n = int(np.prod(szrest))
         T = nextpose.shape[-2]
         nextpose = nextpose.reshape((n, T, self.d_next))
         init_pose = nextpose[..., 0, :]
+        
+        # if is_velocity, then compute diff for all features
         if self._is_velocity:
             next = np.diff(nextpose, axis=1)
         else:
+            # otherwise just compute for global features
             idx_nextglobal_to_next = self._idx_nextglobal_to_next
+            # offset by 1 to get the next frame's relative features
             next = nextpose[..., 1:, :].copy()
             next[..., idx_nextglobal_to_next] = np.diff(nextpose[..., idx_nextglobal_to_next], axis=1)
         next[..., self.is_angle_next] = modrange(next[..., self.is_angle_next], -np.pi, np.pi)
@@ -3013,7 +3291,16 @@ class PoseLabels:
 
         return next, init_pose
 
-    def next_to_nextvelocity(self, next):
+    def _next_to_nextvelocity(self, next):
+        """
+        _next_to_nextvelocity(next)
+        Convert from next representation to next velocity representation, with differences computed for all features.
+        If self._is_velocity is True, then this will be the identity.
+        Parameters:
+        next: ndarray of size (pre_sz x ) ntimepoints x d_next with the next representation of the labels.
+        Returns:
+        vel: ndarray of size (pre_sz x ) ntimepoints x d_next with the next velocity representation of the labels.
+        """
 
         if self._is_velocity:
             return next
@@ -3034,6 +3321,20 @@ class PoseLabels:
         return vel
 
     def get_next_pose(self, init_pose=None, zscored=False, ts=None, **kwargs):
+        """
+        get_next_pose(init_pose=None, zscored=False, ts=None, use_todiscretize=False, nsamples=0)
+        Returns the next pose representation of the labels. This will integrate velocities from init_pose.
+        Optional parameters:
+        init_pose: ndarray of size (pre_sz x ) d_next with the initial pose. If None, self._init_pose is used.
+        Default is None.
+        ts: indices of the time points to return. Time points must be contiguous, limited checking done. 
+        use_to_discretize: whether to use the continuous versions of the discrete labels, if available, to
+        convert discrete to continuous. Default is False.
+        nsamples: Method for converting from discrete to continuous. If 0, the weighted mean of bin centers is computed. If > 0,
+        specifies the number of samples to take according to the bin distributions. Default is 0.
+        Returns:
+        nextpose: ndarray of size (pre_sz x ) ntimepoints x d_next with the next pose representation of the labels.
+        """
         
         assert zscored == False, 'zscored must be False'
         if (ts is not None) and np.array(ts)[0] > 0:
@@ -3042,34 +3343,92 @@ class PoseLabels:
         # only deal with un-zscored data, as we will be concatenating with init, which is not zscored
         next = self.get_next(zscored=False,ts=ts,**kwargs)
         # global will always be velocity, still need to do an integration
-        next_pose = self.next_to_nextpose(next, init_pose=init_pose)
+        next_pose = self._next_to_nextpose(next, init_pose=init_pose)
         return next_pose
 
-    def next_to_nextrelative(self, next):
+    def _next_to_nextrelative(self, next):
+        """
+        _next_to_nextrelative(next)
+        Convert from the next representation to the next_relative representation. This subselects the 
+        relative features and returns those.
+        Parameters:
+        next: ndarray of size (pre_sz x ) ntimepoints x d_next with the next representation of the labels.
+        Returns:
+        next_relative: ndarray of size (pre_sz x ) ntimepoints x d_next_relative with the next_relative representation of the labels.
+        """
         next_relative = next[..., self._idx_nextrelative_to_next]
         return next_relative
 
     def next_to_nextglobal(self, next):
+        """
+        next_to_nextglobal(next)
+        Convert from the next representation to the next_global representation. This subselects the
+        global features and returns those.
+        Parameters:
+        next: ndarray of size (pre_sz x ) ntimepoints x d_next with the next representation of the labels.
+        Returns:
+        next_global: ndarray of size (pre_sz x ) ntimepoints x d_next_global with the next_global representation of the labels.
+        """
         next_global = next[..., self._idx_nextglobal_to_next]
         return next_global
 
-    def get_next_pose_relative(self, **kwargs):
+    def get_next_pose_relative(self, zscored=False, **kwargs):
+        """
+        get_next_pose_relative(ts=None)
+        Returns the relative pose for the next frame.
+        Optional parameters:
+        ts: indices of the time points to return. Time points must be contiguous, limited checking done.
+        Returns:
+        nextpose_relative: ndarray of size (pre_sz x ) ntimepoints x d_next_relative with the relative pose.
+        """
+        assert zscored == False, 'zscored must be False'
         nextpose = self.get_next_pose(**kwargs)
-        nextpose_relative = self.next_to_nextrelative(nextpose)
+        nextpose_relative = self._next_to_nextrelative(nextpose)
         return nextpose_relative
 
     def get_next_pose_global(self, **kwargs):
+        """
+        get_next_pose_global(ts=None,use_todiscretize=False, nsamples=0)
+        Returns the global pose for the next frame.
+        Optional parameters:
+        ts: indices of the time points to return. Time points must be contiguous, limited checking done.
+        use_todiscretize: whether to use the continuous versions of the discrete labels, if available, to
+        convert discrete to continuous. Default is False.
+        nsamples: Method for converting from discrete to continuous. If 0, the weighted mean of bin centers is computed. If 1,
+        then it will sample from the bin distributions. Default is 0.
+        Returns:
+        nextpose_global: ndarray of size (pre_sz x ) ntimepoints x d_next_global with the global pose.
+        """
         nextpose = self.get_next_pose(**kwargs)
         nextpose_global = self.next_to_nextglobal(nextpose)
         return nextpose_global
 
-    def set_next_pose(self, nextpose):
+    def set_next_pose(self, nextpose, **kwargs):
+        """
+        set_next_pose(nextpose,nsamples=0)
+        Sets the next pose representation of the labels. This will only update the next frame labels, not the
+        future frame labels. Note that if there are future features that are discrete and self.is_todiscretize() == False, then
+        todiscretize for those features will be set based on sampling strategies described by nsamples.
+        Parameters:
+        nextpose: ndarray of size (pre_sz x ) ntimepoints x d_next with the next pose representation of the labels.
+        Optional parameters:
+        nsamples: Method for converting from discrete to continuous when getting multi to fill in. If 0, the weighted mean of bin
+        centers is computed. If 1, then it will sample from the bin distributions. Default is 0.
+        """
         self._pre_sz = nextpose.shape[:-2]
-        next, init_pose = self.nextpose_to_next(nextpose)
+        next, init_pose = self._nextpose_to_next(nextpose)
         self._init_pose = init_pose.T
-        self.set_next(next, zscored=False)
+        self.set_next(next, zscored=False, **kwargs)
 
-    def nextpose_to_nextkeypoints(self, pose):
+    def _nextpose_to_nextkeypoints(self, pose):
+        """
+        _nextpose_to_nextkeypoints(pose)
+        Convert from the next pose representation to the next keypoints representation. 
+        Parameters:
+        pose: ndarray of size (pre_sz x ) ntimepoints x d_next with the next pose representation of the labels.
+        Returns:
+        kp: ndarray of size (pre_sz x ) ntimepoints x nkpts x 2 with the next keypoints representation of the labels.
+        """
 
         if self._scale.ndim == 1:
             nflies = 1
@@ -3101,12 +3460,36 @@ class PoseLabels:
         return kp
 
     def get_next_keypoints(self, **kwargs):
-
+        """
+        get_next_keypoints(use_todiscretize=False, nsamples=0, collapse_samples=False, ts=None)
+        Returns the labels in keypoint representation.
+        Optional parameters:
+        use_todiscretize: whether to use the continuous versions of the discrete labels, if available, to
+        convert discrete to continuous. Default is False.
+        nsamples: Method for converting from discrete to continuous. If 0, the weighted mean of bin centers is computed. If > 0,
+        specifies the number of samples to take according to the bin distributions. Default is 0.
+        collapse_samples: whether to collapse the samples dimension if nsamples=1 the first dimension. Default is False.
+        ts: indices of the time points to return. Time points must be contiguous, limited checking done. ts should work if it is
+        an ndarray, a list, a scalar, a slice, or a range. If None, all time points are returned. Default is None.
+        Returns:
+        kp: ndarray of size (nsamples x ) (pre_sz x ) ntimepoints x nkpts x 2 with the keypoint representation of the labels.
+        """
         next_pose = self.get_next_pose(**kwargs)
-        next_keypoints = self.nextpose_to_nextkeypoints(next_pose)
+        next_keypoints = self._nextpose_to_nextkeypoints(next_pose)
         return next_keypoints
 
-    def discretize_multi(self, example):
+    def _discretize_multi(self, example):
+        """
+        _discretize_multi(example)
+        Discretize the features in example['continuous'] that should be discretized
+        and store them in example['discrete']. The original continuous versions are 
+        stored in example['todiscretize']. Dictionary input example is modified 
+        in place.
+        Parameters:
+        example: dictionary with key 'continuous' containing the full
+        continuous representation of the labels.
+        """
+        
         if not self.is_discretized():
             return
         assert example['continuous'].shape[-1] == self.d_multi
@@ -3118,6 +3501,16 @@ class PoseLabels:
         return
 
     def set_keypoints(self, Xkp, scale=None):
+        """
+        set_keypoints(Xkp, scale=None)
+        Set the keypoints representation of the labels. This will compute the features and store them in the
+        labels_raw dictionary.
+        Parameters:
+        Xkp: ndarray of size (pre_sz x ) nkpts x 2 x ntimepoints with the keypoints representation of the labels.
+        Optional parameters:
+        scale: ndarray of size (pre_sz x ) nkpts x 2 with the scale for each keypoint. If None, self._scale is used.
+        Note that _scale is not set. Default is None.
+        """
 
         if (scale is None) and (self._scale is not None):
             scale = self._scale
@@ -3134,11 +3527,24 @@ class PoseLabels:
         self.set_raw_example(example,dozscore=self.is_zscored(),dodiscretize=self.is_discretized())
         
         if self._init_pose is None:
-          self._init_pose = kp2feat(Xkp[:,:,:2],scale)[...,0]
+            self._init_pose = kp2feat(Xkp[:,:,:2],scale)[...,0]
         
         return
     
     def get_next_velocity(self, **kwargs):
+        """
+        get_next_velocity(use_todiscretize=False, nsamples=0, collapse_samples=False, ts=None)
+        Returns the next frame features in velocity representation.
+        Optional parameters:
+        use_todiscretize: whether to use the continuous versions of the discrete labels, if available, to
+        convert discrete to continuous. Default is False.
+        nsamples: Method for converting from discrete to continuous. If 0, the weighted mean of bin centers is computed. If > 0,
+        specifies the number of samples to take according to the bin distributions. Default is 0.
+        collapse_samples: whether to collapse the samples dimension if nsamples=1 the first dimension. Default is False.
+        ts: indices of the time points to return. Time points must be contiguous, limited checking done.
+        Returns:
+        vel: ndarray of size (pre_sz x ) ntimepoints x d_next with the next velocity representation of the labels.
+        """
 
         next = self.get_next(**kwargs)
 
@@ -3146,27 +3552,59 @@ class PoseLabels:
         if self._is_velocity:
             return next
 
-        next_vel = self.next_to_nextvelocity(next)
+        next_vel = self._next_to_nextvelocity(next)
 
         return next_vel
 
     def set_zscore_params(self, zscore_params):
+        """
+        set_zscore_params(zscore_params)
+        Set the zscore parameters.
+        Parameters:
+        zscore_params: dictionary with keys 'mu_labels' and 'sigma_labels' containing the mean and standard deviation
+        """
         self._zscore_params = zscore_params
         return
 
     def add_next_noise(self, eta_next, zscored=False):
+        """
+        add_next_noise(eta_next, zscored=False)
+        Add noise to the next frame features. Currently not used/debugged.
+        Parameters:
+        eta_next: ndarray of size (pre_sz x ) ntimepoints x d_next with the noise to add.
+        zscored: whether the input eta_next is zscored. If it is not, then eta_next will be zscored (if self.is_zscored()) before
+        adding. Default is False.
+        """
         next = self.get_next(zscored=zscored)
         next = next + eta_next
         self.set_next(next, zscored=zscored)
 
     def get_nextglobal_names(self):
+        """
+        get_nextglobal_names()
+        Returns the names of the global features.
+        Returns:
+        nextglobal_names: list of names of the global features.
+        """
         return ['forward', 'sideways', 'orientation']
 
     def get_nextrelative_names(self):
+        """
+        get_nextrelative_names()
+        Returns the names of the relative features.
+        Returns:
+        nextrelative_names: list of names of the relative features.
+        """
         idx_nextrelative_to_next = self._idx_nextrelative_to_next
         return [posenames[i] for i in idx_nextrelative_to_next]
 
     def get_next_names(self):
+        """
+        get_next_names()
+        Returns the names of the next features.
+        Returns:
+        next_names: list of names of the next features.
+        """
         next_names = [None, ] * self.d_next
         next_names_global = self.get_nextglobal_names()
         next_names_relative = self.get_nextrelative_names()
@@ -3177,6 +3615,12 @@ class PoseLabels:
         return next_names
 
     def get_nextcossin_names(self):
+        """
+        get_nextcossin_names()
+        Returns the names of the next_cossin features.
+        Returns:
+        next_names_cossin: list of names of the next_cossin features.
+        """
         next_names = self.get_next_names()
         idx_next_to_nextcossin = self._idx_next_to_nextcossin
         next_names_cossin = [None, ] * self.d_next_cossin
@@ -3189,6 +3633,12 @@ class PoseLabels:
         return next_names_cossin
 
     def get_multi_names(self):
+        """
+        get_multi_names()
+        Returns the names of the multi features.
+        Returns:
+        multi_names: list of names of the multi features.
+        """
         ft = self._idx_multi_to_multifeattpred
         ismulti = (np.max(self.tspred_global) > 1) or (self.ntspred_relative > 1)
         multi_names = [None, ] * self.d_multi
@@ -3199,6 +3649,10 @@ class PoseLabels:
         return multi_names
 
     def select_featidx_plot(self, ntsplot=None, ntsplot_global=None, ntsplot_relative=None):
+        """
+        select_featidx_plot(ntsplot=None, ntsplot_global=None, ntsplot_relative=None)
+        Select a subset of the features to plot. This will return the indices and the feature-time pairs.
+        """
 
         idx_multi_to_multifeattpred = self._idx_multi_to_multifeattpred
         idx_multifeattpred_to_multi = self._idx_multifeattpred_to_multi
