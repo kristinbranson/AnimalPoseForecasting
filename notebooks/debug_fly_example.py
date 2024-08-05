@@ -431,7 +431,7 @@ contextlpad = train_dataset.contextl + npad + 1
 Xkp = data['X'][:,:,flyexample.metadata['t0']:flyexample.metadata['t0']+contextlpad,:]
 T = Xkp.shape[2]
 flynum = flyexample.metadata['flynum']
-scale = flyexample.labels.scale
+scale = flyexample.labels.get_scale()
 metadata = flyexample.metadata
 Xkp_debug_curr = Xkp[:,:,0,flynum]
 
@@ -497,7 +497,8 @@ assert np.allclose(pose_example2[keyfeatidx,:,0],pose_debug[keyfeatidx,:T0,0],at
 
 # check the inputs
 relpose = debug_example.inputs.get_inputs_type('pose')
-relidx = np.nonzero(debug_example.labels.idx_nextrelative_to_next==keyfeatidx)[0][0]
+# private variable access for debugging
+relidx = np.nonzero(debug_example.labels._idx_nextrelative_to_next==keyfeatidx)[0][0]
 print('pose_debug->kp->debug_example->inputs->get_pose: ')
 print(str(relpose[keyfeatidx,:10]) + ' ...')
 print('inputs.pose.shape = ' + str(relpose.shape))
@@ -510,7 +511,8 @@ from flyllm.features import split_features
 zmu = debug_example.labels.zscore_params['mu_labels'][multifeatidx]
 zsig = debug_example.labels.zscore_params['sig_labels'][multifeatidx]
 
-inputlabelidx = np.nonzero(debug_example.labels.idx_nextcossin_to_multi == multifeatidx)[0][0]
+# private variable access for debugging
+inputlabelidx = np.nonzero(debug_example.labels._idx_nextcossin_to_multi == multifeatidx)[0][0]
 zinput_labels = debug_example.get_input_labels()
 input_label = zinput_labels[:,inputlabelidx]*zsig + zmu
 
@@ -537,7 +539,8 @@ print(str(input_pose[:10]) + ' ...')
 print('input_pose.shape = ' + str(zinput_pose.shape))
 assert np.allclose(input_pose,pose_debug[keyfeatidx,1:T0,0],atol=1e-2), f'Error in train example input pose for feature {keyfeatidx}'
 
-contidx = debug_example.labels.idx_multi_to_multicontinuous[multifeatidx]
+# private variable access for debugging
+contidx = debug_example.labels._idx_multi_to_multicontinuous[multifeatidx]
 label_pose = train_ex['labels'][:,contidx]*zsig + zmu
 print('debug_example->train_ex->labels: ')
 print(str(label_pose[:10]) + ' ...')

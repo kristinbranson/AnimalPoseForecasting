@@ -593,8 +593,9 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
 
         ax[i].cla()
 
-        idx_multi_to_multidiscrete = examplecurr.labels.idx_multi_to_multidiscrete
-        idx_multi_to_multicontinuous = examplecurr.labels.idx_multi_to_multicontinuous
+        # TODO make this use the new PoseLabels class better
+        idx_multi_to_multidiscrete = examplecurr.labels._idx_multi_to_multidiscrete
+        idx_multi_to_multicontinuous = examplecurr.labels._idx_multi_to_multicontinuous
         for featii, feati in enumerate(featidxplot):
             featidx = idx_multi_to_multidiscrete[feati]
             if featidx < 0:
@@ -879,7 +880,7 @@ def debug_plot_predictions_vs_labels(all_pred, all_labels, ax=None,
         plt.tight_layout(h_pad=0)
 
     pred_cmap = lambda x: plt.get_cmap("tab10")(x % 10)
-    discreteidx = list(all_labels[0].idx_multidiscrete_to_multi)
+    discreteidx = list(all_labels[0]._idx_multidiscrete_to_multi)
     outnames = all_labels[0].get_multi_names()
     for i, feati in enumerate(featidxplot):
         ax[i].cla()
@@ -976,7 +977,8 @@ def debug_plot_global_histograms(all_pred, all_labels, train_dataset, nbins=50, 
     if train_dataset.discretize:
 
         bin_edges = train_dataset.get_bin_edges(zscored=False)
-        ftidx = all_labels[0].idx_multi_to_multifeattpred[all_labels[0].idx_multidiscrete_to_multi]
+        # TODO: better use of labels class
+        ftidx = all_labels[0]._idx_multi_to_multifeattpred[all_labels[0]._idx_multidiscrete_to_multi]
         bins = []
         for f in featglobal:
             j = np.nonzero(np.all(ftidx == np.array([f, 1])[None, ...], axis=1))[0][0]
