@@ -3651,20 +3651,37 @@ class PoseLabels:
     def select_featidx_plot(self, ntsplot=None, ntsplot_global=None, ntsplot_relative=None):
         """
         select_featidx_plot(ntsplot=None, ntsplot_global=None, ntsplot_relative=None)
-        Select a subset of the features to plot. This will return the indices and the feature-time pairs.
+        Select a hopefully representative subset of the features to plot. This will return the indices and the 
+        feature-time pairs.
+        Optional parameters:
+        ntsplot_global: Number of tspred into the future to plot for global features. If None, will default
+        to ntsplot_global = ntsplot. If both are None, then will plot all global features. If ntsplot_global
+        is less than the total number of tspred_global, then it will try to select different ntsplot_global
+        for each global feature to cover the range of tspred_global. 
+        ntsplot_relative: Number of tspred into the future to plot for relative features. If None, will default
+        ntsplot. As with ntsplot_global, if ntsplot_relative is less than ntspred_relative,
+        then it will try to select different ntsplot_relative for each relative feature to cover the range of
+        ntspred_relative.
+        ntsplot: Default ntsplot for both global and relative features. If None, and ntsplot_global
+        or ntsplot_relative is not None, then all timepoints will be selected. 
         """
 
         idx_multi_to_multifeattpred = self._idx_multi_to_multifeattpred
         idx_multifeattpred_to_multi = self._idx_multifeattpred_to_multi
         ntspred_global = len(self.tspred_global)
+        
+        # number of tsplot for global
         if ntsplot_global is None and ntsplot is not None:
             ntsplot_global = ntsplot
+            
         if ntsplot_global is None or (ntsplot >= ntspred_global):
+            # select all features
             idxglobal = self._idx_multiglobal_to_multi
             ftglobal = idx_multi_to_multifeattpred[idxglobal, :]
             ntsplot_global = ntspred_global
         else:
             d_next_global = self.d_next_global
+            # which indices of tspred_global to select for each feature
             tidxplot_global = np.concatenate((np.zeros((d_next_global, 1), dtype=int),
                                               np.round(np.linspace(1, ntspred_global - 1,
                                                                    (ntsplot_global - 1) * d_next_global)).astype(
@@ -3680,9 +3697,11 @@ class PoseLabels:
             idxglobal = np.array(idxglobal)
 
         ntspred_relative = self.ntspred_relative
+        # number of tsplot for relative
         if ntsplot_relative is None and ntsplot is not None:
             ntsplot_relative = ntsplot
         if ntsplot_relative is None or (ntsplot_relative >= ntspred_relative):
+            # select all features
             idxrelative = self._idx_multirelative_to_multi
             ftrelative = idx_multi_to_multifeattpred[idxrelative, :]
             ntsplot_relative = ntspred_relative
@@ -3691,6 +3710,7 @@ class PoseLabels:
             ftrelative = np.zeros((0, 2), dtype=int)
         else:
             d_next_cossin_relative = self.d_next_cossin_relative
+            # which tsplot to select for each feature
             tplot_relative = np.concatenate((np.ones((d_next_cossin_relative, 1), dtype=int),
                                              np.round(np.linspace(2, ntspred_relative, (
                                                          ntsplot_relative - 1) * d_next_cossin_relative)).astype(
