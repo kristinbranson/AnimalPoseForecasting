@@ -1,0 +1,21 @@
+name: transformer
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - numpy
+  - scipy
+  - matplotlib
+  - tqdm
+  - ffmpeg
+  - transformers
+  - pytorch=2.3.1
+  - torchvision=0.18.1
+  - torchaudio=2.3.1
+  - pytorch-cuda=11.8
+  - ipykernel
+  - jupytext
+  - ipywidgets
+  - pip:
+    - opencv-python

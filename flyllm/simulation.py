@@ -7,7 +7,7 @@ from apf.data import get_real_agents
 from flyllm.features import compute_pose_features, split_features
 from flyllm.config import ARENA_RADIUS_MM
 from flyllm.plotting import plot_flies, plot_arena
-from flyllm.pose import PoseLabels
+from flyllm.pose import PoseLabels, FlyExample
 
 
 def get_pose_future(data, scales, tspred_global, ts=None, fliespred=None):
@@ -282,7 +282,7 @@ def animate_pose(Xkps, focusflies=[], ax=None, fig=None, t0=0,
             titletext_str = ''
 
         for i, k in enumerate(Xkps):
-            plot_flies(Xkps[k][..., trel, :], ax=ax[0], hkpts=h['kpt'][i], hedges=h['edge'][i])
+            plot_flies(Xkps[k][..., trel, :], ax=ax[i], hkpts=h['kpt'][i], hedges=h['edge'][i])
             if plotfuture and k in globalpos_future:
                 ntsfuture = globalpos_future[k].shape[2]
                 for j in range(len(focusflies)):
@@ -333,46 +333,78 @@ def animate_pose(Xkps, focusflies=[], ax=None, fig=None, t0=0,
     return ani
 
 
-def animate_predict_open_loop(model, dataset, data, scale_perfly, config, fliespred, t0, tpred, burnin=None,
-                              debug=False, plotattnweights=False, plotfuture=False, nsamplesfuture=1):
+def animate_predict_open_loop(model, dataset, Xkp_init, fliespred, scales, tpred, burnin=None,
+                              debug=False, plotattnweights=False, plotfuture=False, nsamplesfuture=1, metadata=None):
     # ani = animate_predict_open_loop(model,val_dataset,valdata,val_scale_perfly,config,fliespred,t0,tpred,debug=False,
     #                            plotattnweights=False,plotfuture=train_dataset.ntspred_global>1,nsamplesfuture=nsamplesfuture)
 
     if burnin is None:
-        burnin = config['contextl'] - 1
+        burnin = dataset.contextl
 
-    Xkp_true = data['X'][..., t0:t0 + tpred + dataset.ntspred_max, :].copy()
+    # Xkp_init is nkp x 2 x Tinit x nflies
+    Tinit = Xkp_init.shape[-2]
+    nflies = Xkp_init.shape[-1]
+    szrest = Xkp_init.shape[:-2]
+
+    # Xkp* should be nkp x 2 x T x nflies 
+    # where t is npred + ntspred_max
+    ntspred_max = dataset.ntspred_max
+    T = tpred + ntspred_max
+
+    # true keypoints for comparing to predictions
+    Xkp_true = np.zeros(szrest+(T,nflies))+np.nan
+    Xkp_true[...,:min(Tinit,T),:] = Xkp_init[...,:min(Tinit,T),:]
+
+    # initialize Xkp with the true data, use real data for burn in
     Xkp = Xkp_true.copy()
-
-    ids = data['ids'][t0, fliespred]
-    scales = scale_perfly[:, ids]
+    # overwrite data we will predict with nans to make sure we aren't cheating
+    Xkp[...,burnin+1:,:][...,fliespred] = np.nan
 
     # fliespred = np.nonzero(mabe.get_real_agents(Xkp))[0]
+    labels_true = []
+    examples_pred = []
     for i, flynum in enumerate(fliespred):
-        id = data['ids'][t0, flynum]
-        scale = scale_perfly[:, id]
-        metadata = {'flynum': flynum, 'id': id, 't0': t0, 'videoidx': data['videoidx'][t0, 0],
-                    'frame0': data['frames'][t0, 0]}
-        Xkp_obj = PoseLabels(Xkp=Xkp_true[..., flynum], scale=scale, metadata=metadata, dataset=dataset)
+        scale = scales[i]
+        label_true = PoseLabels(Xkp=Xkp_true[..., flynum], scale=scale, dataset=dataset)
+        labels_true.append(label_true)
+        # note that labels for > 1 frame into the future may be nan here if t+tspred > burnin
+        # labels and pred should match up to t = burnin
+        example_pred = FlyExample(Xkp=Xkp, flynum=flynum, scale=scale, dataset=dataset)
+        examples_pred.append(example_pred)
 
+    # TODOKB: reimplement this
     if plotfuture:
+        plotfuture = False
+        # warn that plot future is not implemented currently
+        print('TODO Plot future is not implemented currently')
+
         # subtract one from tspred_global, as the tspred_global for predicted data come from the previous frame
-        globalposfuture_true, relposefuture_true = get_pose_future(data, scales, [t + 1 for t in dataset.tspred_global],
-                                                                   ts=np.arange(t0, t0 + tpred), fliespred=fliespred)
+        #globalposfuture_true, relposefuture_true = get_pose_future(data, scales, [t + 1 for t in dataset.tspred_global],
+        #                                                           ts=np.arange(t0, t0 + tpred), fliespred=fliespred)
+        globalposfuture_true = None
+        relposefuture_true = None
 
     model.eval()
 
-    # capture all outputs of predict_open_loop in a tuple
-    res = dataset.predict_open_loop(Xkp, fliespred, scales, burnin, model, maxcontextl=config['contextl'],
-                                    debug=debug, need_weights=plotattnweights, nsamples=nsamplesfuture)
-    Xkp_pred, zinputs, globalposfuture_pred, relposefuture_pred = res[:4]
-    if plotattnweights:
-        attn_weights0 = res[4]
+    Xkp_fill = Xkp[...,:-dataset.ntspred_max+1,:].copy()
 
-    Xkps = {'Pred': Xkp_pred.copy(), 'True': Xkp_true.copy()}
-    # Xkps = {'Pred': Xkp_pred.copy()}
+    # capture all outputs of predict_open_loop in a tuple
+    res = dataset.predict_open_loop(examples_pred, fliespred, scales, Xkp_fill, burnin, model, maxcontextl=dataset.contextl+1,
+                                    debug=debug, need_weights=plotattnweights, nsamples=nsamplesfuture, 
+                                    labels_true=labels_true)
+    if plotattnweights:
+        examples_pred,attn_weights0 = res
+    else:
+        examples_pred = res
+
+    Xkps = {'Pred': Xkp_fill.copy(), 'True': Xkp_true.copy()}
     if len(fliespred) == 1:
-        inputs = {'Pred': split_features(zinputs, axis=1)}
+        starttoff = dataset.get_start_toff()
+        split_inputs = examples_pred[0].inputs.get_split_inputs(zscored=False,makecopy=True)
+        if starttoff > 0:
+            for k, v in split_inputs.items():
+                split_inputs[k] = np.r_[np.nan+np.zeros((starttoff,v.shape[-1])),v]
+        inputs = {'Pred': split_inputs}
     else:
         inputs = None
 
@@ -390,9 +422,13 @@ def animate_predict_open_loop(model, dataset, data, scale_perfly, config, fliesp
     else:
         future_args = {}
 
+    if (metadata is not None) and ('t0' in metadata):
+        t0 = metadata['t0']
+    else:
+        t0 = 0
     ani = animate_pose(Xkps, focusflies=focusflies, t0=t0, titletexts=titletexts,
-                       trel0=np.maximum(0, config['contextl'] - 64),
-                       inputs=inputs, contextl=config['contextl'] - 1, attn_weights=attn_weights,
+                       trel0=np.maximum(0, dataset.contextl - 63),
+                       inputs=inputs, contextl=dataset.contextl, attn_weights=attn_weights,
                        **future_args)
 
     return ani

@@ -111,9 +111,14 @@ def angledist2xy(origin, angle, dist):
 def len_wrapper(x, defaultlen=None):
     if x is None:
         return defaultlen
-    if hasattr(x, '__len__'):
+    elif hasattr(x, '__len__'):
         return len(x)
-    return 1
+    elif type(x) is slice:
+        # figure out the length of the slice
+        assert defaultlen is not None, 'if defaultlen is None, the length of the slice cannot be determined'
+        return len(range(*x.indices(defaultlen)))
+    else:
+        return 1
 
 
 def dict_convert_torch_to_numpy(d):
@@ -123,3 +128,11 @@ def dict_convert_torch_to_numpy(d):
         elif type(v) is dict:
             d[k] = dict_convert_torch_to_numpy(v)
     return d
+
+
+def unzscore(x, mu, sig):
+    return x * sig + mu
+
+
+def zscore(x, mu, sig):
+    return (x - mu) / sig

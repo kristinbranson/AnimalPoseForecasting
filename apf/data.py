@@ -213,6 +213,7 @@ def discretize_labels(movement, bin_edges, soften_to_ends=False):
         lastbin = 1
 
     for i in range(nfeat):
+        # nans will get put in the last bin...
         binnum = np.digitize(movement[:, i], bin_edges[i, :])
         binnum = np.minimum(nbins - 1, np.maximum(0, binnum - 1))
         # soft binning

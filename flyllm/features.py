@@ -12,7 +12,7 @@ from flyllm.config import (
     featglobal, kpvision_other, kptouch_other, featthetaglobal, kpeye, kptouch,
     SENSORY_PARAMS, PXPERMM
 )
-from apf.utils import modrange, rotate_2d_points, boxsum, angledist2xy, mod2pi, atleast_4d
+from apf.utils import modrange, rotate_2d_points, boxsum, angledist2xy, mod2pi, atleast_4d, compute_npad
 
 LOG = logging.getLogger(__name__)
 
@@ -529,6 +529,7 @@ def compute_movement(
     Returns:
         movement (ndarray, d_output x T-1 x nflies): Per-frame movement. movement[:,t,i] is the movement from frame
         t for fly i.
+        init (ndarray, npose x ninit=2 x nflies): Initial pose for each fly
     """
 
     if relpose is None or globalpos is None:
@@ -565,14 +566,21 @@ def compute_movement(
     # dXoriginrel[tau,:,t,fly] is the global position for fly fly at time t+tau in the coordinate system of the fly at time t
     dXoriginrel, dtheta = compute_global_velocity(Xorigin, Xtheta, tspred_global)
 
+    ninit = 2
     # relpose_rep is (nrelrep,T,ntspred_dct+1,nflies)
     if simplify == 'global':
         relpose_rep = np.zeros((0, T, ntspred_global + 1, nflies), dtype=relpose.dtype)
+        relpose_init = np.zeros(0, ninit, nflies, dtype=relpose.dtype)
     elif compute_pose_vel:
         relpose_rep = compute_relpose_velocity(relpose, tspred_dct)
+        relpose_init = relpose[:,:ninit]
     else:
         relpose_rep = compute_relpose_tspred(relpose, tspred_dct, discreteidx=discreteidx)
+        relpose_init = relpose[:,:ninit]
+
     nrelrep = relpose_rep.shape[0]
+
+    init = np.r_[globalpos[:, :ninit],relpose_init]
 
     if debug:
         # try to reconstruct xorigin, xtheta from dxoriginrel and dtheta
@@ -631,6 +639,7 @@ def compute_movement(
     if nd == 2:  # no flies dimension
         movement_global = movement_global[..., 0]
         relpose_rep = relpose_rep[..., 0]
+        init = init[..., 0]
 
     # concatenate everything together
     movement = np.concatenate((movement_global, relpose_rep), axis=0)
@@ -642,9 +651,9 @@ def compute_movement(
                                                          dct_m=dct_m, tspred_global=tspred_global,
                                                          nrelrep=nrelrep)
         idxinfo['relative'] = [ntspred_global * nglobal, ntspred_global * nglobal + nrelrep * (ntspred_dct + 1)]
-        return movement, idxinfo
+        return movement, init, idxinfo
 
-    return movement
+    return movement, init
 
 
 """Compute sensory features
@@ -930,7 +939,8 @@ def combine_inputs(relpose=None, sensory=None, input=None, labels=None, dim=0):
 
 def compute_features(X, id=None, flynum=0, scale_perfly=None, smush=True, outtype=None,
                      simplify_out=None, simplify_in=None, dct_m=None, tspred_global=[1, ],
-                     npad=1, compute_pose_vel=True, discreteidx=[], returnidx=False):
+                     npad=None, compute_pose_vel=True, discreteidx=[], returnidx=False,
+                     compute_labels=True):
     res = {}
 
     # convert to relative locations of body parts
@@ -942,6 +952,13 @@ def compute_features(X, id=None, flynum=0, scale_perfly=None, smush=True, outtyp
     relpose, globalpos = compute_pose_features(X[..., flynum], scale)
     relpose = relpose[..., 0]
     globalpos = globalpos[..., 0]
+    
+    # how many frames should we cut from the end because of future frame predictions
+    # use the minimum value by default
+    min_npad = compute_npad(tspred_global,dct_m)
+    if npad is None:
+      npad = min_npad
+      
     if npad == 0:
         endidx = None
     else:
@@ -954,9 +971,21 @@ def compute_features(X, id=None, flynum=0, scale_perfly=None, smush=True, outtyp
             idxinfo['input'] = {}
             idxinfo['input']['relpose'] = [0, relpose.shape[0]]
     else:
-        out = compute_sensory_wrapper(X[:, :, :endidx, :], flynum, theta_main=globalpos[featthetaglobal, :endidx],
+        # some frames may have all nan data, just for pre-allocating. ignore those
+        isdata = np.any(np.isfinite(X[...,flynum]), axis=(0, 1))
+        if endidx is not None:
+            isdata[endidx:] = False
+        out = compute_sensory_wrapper(X[:, :, isdata, :], flynum, theta_main=globalpos[featthetaglobal, isdata],
                                       returnall=True, returnidx=returnidx)
+        out = list(out)
+
+        for i in range(4):
+            outcurr = np.zeros(out[i].shape[:-1]+isdata.shape) + np.nan
+            outcurr[...,isdata] = out[i]
+            outcurr = outcurr[...,:endidx]
+            out[i] = outcurr
         sensory, wall_touch, otherflies_vision, otherflies_touch = out[:4]
+        
         if returnidx:
             idxinfo = {}
             idxinfo['input'] = out[4]
@@ -966,32 +995,7 @@ def compute_features(X, id=None, flynum=0, scale_perfly=None, smush=True, outtyp
             idxinfo['input'] = {k: [vv + relpose.shape[0] for vv in v] for k, v in idxinfo['input'].items()}
             idxinfo['input']['relpose'] = [0, relpose.shape[0]]
 
-    out = compute_movement(relpose=relpose, globalpos=globalpos, simplify=simplify_out, dct_m=dct_m,
-                           tspred_global=tspred_global, compute_pose_vel=compute_pose_vel,
-                           discreteidx=discreteidx, returnidx=returnidx)
-    if returnidx:
-        movement, idxinfo['labels'] = out
-    else:
-        movement = out
-
-    if simplify_out is not None:
-        if simplify_out == 'global':
-            movement = movement[featglobal, ...]
-        else:
-            raise
-
-    res['labels'] = movement.T
-    res['init'] = globalpos[:, :2]
-    res['scale'] = scale
-
-    if not smush:
-        res['global'] = globalpos[:, :-1]
-        res['relative'] = relpose[:, :-1]
-        res['nextglobal'] = globalpos[:, -1]
-        res['nextrelative'] = relpose[:, -1]
-        if simplify_in == 'no_sensory':
-            pass
-        else:
+        if not smush:
             res['wall_touch'] = wall_touch[:, :-1]
             res['otherflies_vision'] = otherflies_vision[:, :-1]
             res['next_wall_touch'] = wall_touch[:, -1]
@@ -1000,8 +1004,50 @@ def compute_features(X, id=None, flynum=0, scale_perfly=None, smush=True, outtyp
                 res['otherflies_touch'] = otherflies_touch[:, :-1]
                 res['next_otherflies_touch'] = otherflies_touch[:, -1]
 
+    res['scale'] = scale
+
+    # if we can't/shouldn't compute labels, just output the inputs
+    if relpose.shape[-1] <= min_npad or not compute_labels:
+        # sequence to short to compute movement
+        res['labels'] = None
+        res['init'] = None
+        
+        if not smush:
+            res['global'] = None
+            res['relative'] = None
+            res['nextglobal'] = None
+            res['nextrelative'] = None
+        
+    else:
+        out = compute_movement(relpose=relpose, globalpos=globalpos, simplify=simplify_out, dct_m=dct_m,
+                              tspred_global=tspred_global, compute_pose_vel=compute_pose_vel,
+                              discreteidx=discreteidx, returnidx=returnidx)
+        movement = out[0]
+        init = out[1]
+        if returnidx:
+            idxinfo['labels'] = out[2]
+
+        if simplify_out is not None:
+            if simplify_out == 'global':
+                movement = movement[featglobal, ...]
+            else:
+                raise
+
+        res['labels'] = movement.T
+        res['init'] = init
+        #res['init'] = np.r_[globalpos[:, :2],relpose[:,:2]]
+
+
+        if not smush:
+            res['global'] = globalpos[:, :-1]
+            res['relative'] = relpose[:, :-1]
+            res['nextglobal'] = globalpos[:, -1]
+            res['nextrelative'] = relpose[:, -1]
+
     if outtype is not None:
-        res = {key: val.astype(outtype) for key, val in res.items()}
+      for key, val in res.items():
+        if val is not None:
+          res[key] = val.astype(outtype)
 
     if returnidx:
         return res, idxinfo
@@ -1012,6 +1058,8 @@ def compute_features(X, id=None, flynum=0, scale_perfly=None, smush=True, outtyp
 def split_features(X, simplify=None, axis=-1):
     res = {}
     idx = get_sensory_feature_idx(simplify)
+    sz = list(idx.values())[-1][-1]
+    assert X.shape[-1] == sz, f'X.shape[-1] = {X.shape[-1]}, should be {sz}'
     for k, v in idx.items():
         if torch.is_tensor(X):
             res[k] = torch.index_select(X, axis, torch.tensor(range(v[0], v[1])))
@@ -1162,7 +1210,6 @@ def feat2kp(Xfeat, scale_perfly, flyid=None):
 
     return Xkp
 
-
 def sanity_check_tspred(data, compute_feature_params, npad, scale_perfly, contextl=512, t0=510, flynum=0):
     # sanity check on computing features when predicting many frames into the future
     # compute inputs and outputs for frames t0:t0+contextl+npad+1 with tspred_global set by config
@@ -1201,7 +1248,6 @@ def sanity_check_tspred(data, compute_feature_params, npad, scale_perfly, contex
         assert np.all(np.abs(xcurr1['labels'][:, i1] - xcurr0['labels'][:, i0]) < epsilon)
 
     return
-
 
 def compute_noise_params(data, scale_perfly, sig_tracking=.25 / PXPERMM,
                          simplify_out=None, compute_pose_vel=True):

@@ -81,9 +81,15 @@ def masked_criterion(tgt, pred, mask):
 
 def mixed_masked_criterion(tgt, pred, mask, device, weight_discrete=.5, extraout=False):
     n = torch.count_nonzero(mask)
-    err_continuous = lossfcn_continuous(pred['continuous'][mask, :], tgt['labels'].to(device=device)[mask, :]) * n
-    err_discrete = lossfcn_discrete(pred['discrete'][mask, ...],
-                                    tgt['labels_discrete'].to(device=device)[mask, ...]) * n
+    if 'labels' in tgt:
+        err_continuous = lossfcn_continuous(pred['continuous'][mask, :], tgt['labels'].to(device=device)[mask, :]) * n
+    else:
+        err_continuous = 0.
+    if 'labels_discrete' in tgt:
+        err_discrete = lossfcn_discrete(pred['discrete'][mask, ...],
+                                        tgt['labels_discrete'].to(device=device)[mask, ...]) * n
+    else:
+        err_discrete = 0.
     err = (1 - weight_discrete) * err_continuous + weight_discrete * err_discrete
     if extraout:
         return err, err_discrete, err_continuous
@@ -92,10 +98,35 @@ def mixed_masked_criterion(tgt, pred, mask, device, weight_discrete=.5, extraout
 
 
 def criterion_wrapper(example, pred, criterion, dataset, config):
-    tgt_continuous, tgt_discrete = dataset.get_continuous_discrete_labels(example)
-    pred_continuous, pred_discrete = dataset.get_continuous_discrete_labels(pred)
+    if 'continuous' in example:
+        tgt_continuous = example['continuous']
+    elif 'labels' in example:
+        tgt_continuous = example['labels']
+    else:
+        tgt_continuous = None
+    if 'discrete' in example:
+        tgt_discrete = example['discrete']
+    elif 'labels_discrete' in example:  
+        tgt_discrete = example['labels_discrete']
+    else:
+        tgt_discrete = None
     tgt = {'labels': tgt_continuous, 'labels_discrete': tgt_discrete}
-    pred1 = {'continuous': pred_continuous, 'discrete': pred_discrete}
+    
+    if 'continuous' in pred:
+        pred_continuous = pred['continuous']
+    elif 'labels' in pred:
+        pred_continuous = pred['labels']
+    else:
+        pred_continuous = None
+    
+    if 'discrete' in pred:
+        pred_discrete = pred['discrete']
+    elif 'labels_discrete' in pred:
+        pred_discrete = pred['labels_discrete']
+    else:
+        pred_discrete = None
+    pred1 = {'continuous': pred_continuous, 'discrete': pred_discrete}        
+
     if config['modeltype'] == 'mlm':
         if dataset.discretize:
             loss, loss_discrete, loss_continuous = criterion(tgt, pred1, mask=example['mask'].to(pred.device),
