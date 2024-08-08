@@ -240,10 +240,10 @@ val_dataset = FlyMLMDataset(valX,**dataset_params)
 print('Done.')
 
 # get properties of examples from the first training example
-example = train_dataset[0]
-d_input = example['input'].shape[-1]
-d_output = train_dataset.d_output
-outnames = train_dataset.get_outnames()
+example = train_dataset.get_example(0)
+d_input = example.d_input
+d_output = example.d_labels
+
 
 train_dataloader = torch.utils.data.DataLoader(train_dataset,
                                                 batch_size=config['batch_size'],

@@ -248,51 +248,55 @@ contextl = flyexample.ntimepoints
 datakp,id = data_to_kp_from_metadata(data,flyexample.metadata,contextl)
 # compute next frame pose feature representation directly
 datafeat = kp2feat(datakp.transpose(1,2,0),scale_perfly[:,id])[...,0].T
-if config['compute_pose_vel']:
 
-  # compare next frame rep computed from FlyMLMDataset to those from flyexample
-  print('\nComparing next frame movements from train_dataset to those from flyexample')
-  chunknext = train_dataset.get_next_movements(movements=X[0]['labels'])
-  examplenext = flyexample.labels.get_next(use_todiscretize=True,zscored=False)
-  err_chunk_next = np.max(np.abs(chunknext-examplenext))
-  print('max diff between chunked labels and next: %e'%err_chunk_next)
-  assert err_chunk_next < 1e-3
-else:
+examplenext = flyexample.labels.get_next(use_todiscretize=True,zscored=False)
+examplenextcossin = flyexample.labels.get_nextcossin(use_todiscretize=True,zscored=False)
+examplefeat = flyexample.labels.get_next_pose(use_todiscretize=True)
+
+# this is all obsolete now that feature computations have been removed from the dataset
+# if config['compute_pose_vel']:
+
+# # compare next frame rep computed from FlyMLMDataset to those from flyexample
+# print('\nComparing next frame movements from train_dataset to those from flyexample')
+# chunknext = train_dataset.get_next_movements(movements=X[0]['labels'])
+# err_chunk_next = np.max(np.abs(chunknext-examplenext))
+# print('max diff between chunked labels and next: %e'%err_chunk_next)
+# assert err_chunk_next < 1e-3
+
+# else:
   
-  # compare next frame rep computed from FlyMLMDataset to those from flyexample
-  print('\nComparing next frame pose feature representation from train_dataset to that from flyexample')
-  chunknextcossin = train_dataset.get_next_movements(movements=X[0]['labels'])
-  examplenextcossin = flyexample.labels.get_nextcossin(use_todiscretize=True,zscored=False)
-  err_chunk_nextcossin = np.max(np.abs(chunknextcossin-examplenextcossin))
-  print('max diff between chunked labels and nextcossin: %e'%err_chunk_nextcossin)
-  assert err_chunk_nextcossin < 1e-3
+# # compare next frame rep computed from FlyMLMDataset to those from flyexample
+# print('\nComparing next frame pose feature representation from train_dataset to that from flyexample')
+# chunknextcossin = train_dataset.get_next_movements(movements=X[0]['labels'])
+# err_chunk_nextcossin = np.max(np.abs(chunknextcossin-examplenextcossin))
+# print('max diff between chunked labels and nextcossin: %e'%err_chunk_nextcossin)
+# assert err_chunk_nextcossin < 1e-3
 
-  # compare next frame angle rep
-  chunknext = train_dataset.convert_cos_sin_to_angle(chunknextcossin)
-  examplenext = flyexample.labels.get_next(use_todiscretize=True,zscored=False)
-  err_chunk_next = np.max(np.abs(chunknext-examplenext))
-  print('max diff between chunked labels and next: %e'%err_chunk_next)
-  assert err_chunk_next < 1e-3
+# # compare next frame angle rep
+# chunknext = train_dataset.convert_cos_sin_to_angle(chunknextcossin)
+# examplenext = flyexample.labels.get_next(use_todiscretize=True,zscored=False)
+# err_chunk_next = np.max(np.abs(chunknext-examplenext))
+# print('max diff between chunked labels and next: %e'%err_chunk_next)
+# assert err_chunk_next < 1e-3
 
-  # compare next frame pose feature representation from train_dataset to that from flyexample
-  examplefeat = flyexample.labels.get_next_pose(use_todiscretize=True)
-  
-  err_chunk_data_feat = np.max(np.abs(chunknext[:,featrelative]-datafeat[1:,featrelative]))
-  print('max diff between chunked and data relative features: %e'%err_chunk_data_feat)
-  assert err_chunk_data_feat < 1e-3
+# # compare next frame pose feature representation from train_dataset to that from flyexample
 
-  err_example_chunk_feat = np.max(np.abs(chunknext[:,featrelative]-examplefeat[1:,featrelative]))
-  print('max diff between chunked and example relative features: %e'%err_example_chunk_feat)
-  assert err_example_chunk_feat < 1e-3
+# err_chunk_data_feat = np.max(np.abs(chunknext[:,featrelative]-datafeat[1:,featrelative]))
+# print('max diff between chunked and data relative features: %e'%err_chunk_data_feat)
+# assert err_chunk_data_feat < 1e-3
 
-  err_example_data_global = np.max(np.abs(datafeat[:,featglobal]-examplefeat[:,featglobal]))
-  print('max diff between data and example global features: %e'%err_example_data_global)
-  assert err_example_data_global < 1e-3
+# err_example_chunk_feat = np.max(np.abs(chunknext[:,featrelative]-examplefeat[1:,featrelative]))
+# print('max diff between chunked and example relative features: %e'%err_example_chunk_feat)
+# assert err_example_chunk_feat < 1e-3
 
-  err_example_data_feat = np.max(np.abs(datafeat[:,featrelative]-examplefeat[:,featrelative]))
-  print('max diff between data and example relative features: %e'%err_example_data_feat)
-  assert err_example_data_feat < 1e-3
-  
+err_example_data_global = np.max(np.abs(datafeat[:,featglobal]-examplefeat[:,featglobal]))
+print('max diff between data and example global features: %e'%err_example_data_global)
+assert err_example_data_global < 1e-3
+
+err_example_data_feat = np.max(np.abs(datafeat[:,featrelative]-examplefeat[:,featrelative]))
+print('max diff between data and example relative features: %e'%err_example_data_feat)
+assert err_example_data_feat < 1e-3
+
 # compare next frame keypoints
 examplekp = flyexample.labels.get_next_keypoints(use_todiscretize=True)
 err_mean_example_data_kp = np.mean(np.abs(datakp[:]-examplekp))

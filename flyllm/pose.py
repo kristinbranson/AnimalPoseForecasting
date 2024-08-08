@@ -2,21 +2,17 @@ import numpy as np
 import torch
 import copy
 
-from flyllm.config import featglobal, featrelative, featangle, posenames, nfeatures
+from flyllm.config import featglobal, featrelative, featangle, posenames
 from apf.data import weighted_sample, discretize_labels
-from apf.utils import modrange, rotate_2d_points, len_wrapper, dict_convert_torch_to_numpy
+from apf.utils import modrange, rotate_2d_points, len_wrapper, dict_convert_torch_to_numpy, zscore, unzscore
 from flyllm.features import (
     compute_features,
-    combine_inputs,
     split_features,
     get_sensory_feature_idx,
     get_sensory_feature_shapes,
-    compute_sensory_wrapper,
     relfeatidx_to_cossinidx,
     ravel_label_index,
     unravel_label_index,
-    zscore,
-    unzscore,
     feat2kp,
     kp2feat
 )
@@ -450,7 +446,7 @@ class ObservationInputs:
         Returns the indices of the different types of sensory features in the input as a dict
         with keys feature types and values the start and end indices. 
         """
-        return get_sensory_feature_idx(self._simplify_in)
+        return copy.deepcopy(self._sensory_feature_idx)
 
     def get_train_inputs(self, input_labels=None, do_add_noise=False, labels=None):
         """
@@ -506,6 +502,12 @@ class ObservationInputs:
             train_inputs = flatinput
 
         return {'input': train_inputs, 'eta': eta, 'input_init': train_inputs_init}
+    
+    def get_input_shapes(self):
+        idx = copy.deepcopy(self._sensory_feature_idx)
+        sz = copy.deepcopy(self._sensory_feature_szs)
+        return idx,sz
+    
 
 class FlyExample:
     """
@@ -663,6 +665,38 @@ class FlyExample:
             self._metadata = example_in['metadata']
 
         return
+    
+    @property
+    def d_input(self):
+        """
+        d_input
+        Number of observation features
+        """
+        return self._inputs.d_input
+    
+    @property
+    def d_labels(self):
+        """
+        d_labels
+        Total number of pose label features
+        """
+        return self._labels.d_multi
+    
+    @property
+    def d_labels_discrete(self):
+        """
+        d_labels_discrete
+        Total number of discrete pose label features
+        """
+        return self.labels.d_multidiscrete
+    
+    @property
+    def d_labels_continuous(self):
+        """
+        d_labels_continuous
+        Total number of continuous pose label features
+        """
+        return self.labels.d_multicontinuous
     
     @property
     def labels(self):
@@ -1075,6 +1109,18 @@ class FlyExample:
         zscore_params_input, zscore_params_labels = FlyExample.split_zscore_params(zscore_params)
         self.inputs.set_zscore_params(zscore_params_input)
         self.labels.set_zscore_params(zscore_params_labels)
+        
+    def get_train_input_shapes(self):
+        idx,sz = self.inputs.get_input_shapes()
+        idx = copy.deepcopy(self.inputs._sensory_feature_idx)
+        sz = copy.deepcopy(self.inputs._sensory_feature_szs)
+        if self._do_input_labels:
+            d_input_labels = self.labels.get_d_labels_input()
+            for k, v in idx.items():
+                idx[k] = [x + d_input_labels for x in v]
+            idx['labels'] = [0, d_input_labels]
+            sz['labels'] = (d_input_labels,)
+        return idx, sz
 
 
 class PoseLabels:
@@ -1107,10 +1153,39 @@ class PoseLabels:
     - next frame keypoints (get_next_keypoints)
 
     Main properties:
-    labels_raw: Dictionary with the raw labels. 
-    
-    Main methods:
+    labels_raw: Dictionary with the raw labels. This will have the following keys:
+    'continuous': ndarray of size (pre_sz x ) ntimepoints x d_continuous with the continuous pose for the fly
+    'discrete': ndarray of size (pre_sz x ) ntimepoints x d_discrete x nbins with the binned pose for the fly
+    'todiscretize': ndarray of size (pre_sz x ) ntimepoints x d_discrete with the continuous versions of the discrete pose.
         
+    Main methods:
+
+    __init__: Constructor for initializing from an example or from keypoints.
+    
+    get_train_labels(): Returns the training labels as a dict. This is the labels portion of the dict ingested by the 
+    forecasting model. It offsets labels for causal models as necessary, and cropped frames are stored in keys with
+    'init' in their names. There is enough information in this dict to recreate this PoseLabels object. 
+    'continuous' will be or size (pre_sz x ) (ntimepoints-starttoff) x d_continuous with the continuous pose for the fly
+    and 'discrete' will be of size (pre_sz x ) (ntimepoints-starttoff) x d_discrete x nbins with the binned pose for the fly.
+    get_multi(): Returns the continuous version of the full labels, with discrete features converted to continuous values.
+    This implements sampling from distributions of discrete features. The output will be of size 
+    (pre_sz x ) ntimepoints x d_multi. 
+    get_multi_idct(): Returns the continuous version of the full labels. Multi-time predictions that have been
+    combined with the DCT have had the inverse DCT applied. The output will be of size (pre_sz x ) ntimepoints x d_multi.
+    get_nextcossin(): Returns all features associated with one-frame predictions. The output will be of size
+    (pre_sz x ) ntimepoints x d_next_cossin. 
+    get_next(): Returns all features associated with one-frame predictions. For angle features that have been represented
+    by cos,sin pairs, this will convert them to angles in radians. The output will be of size (pre_sz x ) ntimepoints x d_next.
+    get_next_pose(): Returns the pose features for one-frame predictions. This pose representation should be a function of 
+    just a single frame's trajectory. For any feature that is a velocity or in a relative coordinate system, this will 
+    integrate velocities and do coordinate transformations to get the single-frame pose. The 'init' features will be used
+    to start the integration. The output will be of size (pre_sz x ) (ntimepoints+1) x d_next_pose. This +1 is because the
+    first frame is the initial pose.
+    get_next_keypoints(): Returns the keypoints for one-frame predictions. The output will be of size 
+    (pre_sz x ) ntimepoints x nkeypoints x 2.
+    
+    set_prediction(): Sets labels for time points ts, usually an output of the forecasting model. 
+    
     """
     def __init__(self, example_in=None,
                  Xkp=None, scale=None, metadata=None,
@@ -1776,6 +1851,14 @@ class PoseLabels:
         Returns the total number of features in the next frame pose.
         """
         return self.d_next_global + self.d_next_relative
+    
+    @property
+    def d_next_pose(self):
+        """
+        d_next_pose
+        Returns the total number of features in the next frame pose, including the global and relative features.
+        """
+        return self.d_next
 
     @property
     def is_angle_next(self):

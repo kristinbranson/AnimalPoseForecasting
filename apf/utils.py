@@ -128,3 +128,11 @@ def dict_convert_torch_to_numpy(d):
         elif type(v) is dict:
             d[k] = dict_convert_torch_to_numpy(v)
     return d
+
+
+def unzscore(x, mu, sig):
+    return x * sig + mu
+
+
+def zscore(x, mu, sig):
+    return (x - mu) / sig

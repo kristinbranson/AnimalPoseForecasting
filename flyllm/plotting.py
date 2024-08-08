@@ -949,7 +949,7 @@ def debug_plot_histograms(dataset, alpha=1):
         ax[fi].plot([bin_edges[i, -1], ] * 2, ti + np.array([-.5, .5]), 'k-')
         ax[fi].plot(bin_edges[i, [0, -1]], [ti + .5, ] * 2, 'k-')
         ax[fi].plot(bin_edges[i, [0, -1]], [ti - .5, ] * 2, 'k-')
-    fnames = dataset.get_movement_names()
+    fnames = dataset.get_next_feature_names()
     for i, f in enumerate(fs):
         ax[i].set_title(fnames[f])
         ax[i].set_xlim(edges[i, 0], edges[i, 1])
@@ -963,7 +963,7 @@ def debug_plot_histograms(dataset, alpha=1):
 
 
 def debug_plot_global_histograms(all_pred, all_labels, train_dataset, nbins=50, subsample=1, compare='time'):
-    outnames_global = train_dataset.get_movement_names_global()
+    outnames_global = train_dataset.get_next_global_feature_names()
 
     # global labels, continuous representation, unzscored
     # ntimepoints x tspred x nglobal
@@ -1043,7 +1043,7 @@ def debug_plot_global_error(all_pred, all_labels, train_dataset):
       all_labels: list of PoseLabels objects containing labels, each of shape (ntimepoints,d_output)
       train_dataset: FlyMLMDataset, the training dataset
     """
-    outnames_global = train_dataset.get_movement_names_global()
+    outnames_global = train_dataset.get_next_global_feature_names()
 
     # global predictions, continuous representation, z-scored
     # nexamples x ntimepoints x tspred x nglobal
@@ -1220,14 +1220,14 @@ def debug_plot_histogram_edges(train_dataset):
     fs = np.unique(ftidx[:, 0])
     ts = np.unique(ftidx[:, 1])
     fig, ax = plt.subplots(1, len(fs), sharey=True)
-    movement_names = train_dataset.get_movement_names()
+    feature_names = train_dataset.get_next_feature_names()
     for i, f in enumerate(fs):
         ax[i].cla()
         idx = ftidx[:, 0] == f
         tscurr = ftidx[idx, 1]
         tidx = npindex(ts, tscurr)
         ax[i].plot(bin_edges[idx, :], tidx, '.-')
-        ax[i].set_title(movement_names[f])
+        ax[i].set_title(feature_names[f])
         ax[i].set_xscale('symlog')
     ax[0].set_yticks(np.arange(len(ts)))
     ax[0].set_yticklabels([str(t) for t in ts])
