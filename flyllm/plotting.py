@@ -5,7 +5,7 @@ from matplotlib import cm, colors
 import torch
 
 from apf.models import criterion_wrapper
-from apf.utils import npindex
+from apf.utils import npindex, zscore, unzscore
 from apf.data import get_batch_idx, split_data_by_id, select_bin_edges, get_real_agents
 from flyllm.config import (
     DEFAULTCONFIGFILE, SENSORY_PARAMS, ARENA_RADIUS_MM,
@@ -14,7 +14,7 @@ from flyllm.config import (
     nglobal, nrelative, nkptouch, nfeatures
 )
 from flyllm.features import (
-    compute_features, zscore, unzscore, get_sensory_feature_idx,
+    compute_features, get_sensory_feature_idx,
     compute_noise_params, compute_scale_perfly, ensure_otherflies_touch_mult,
 )
 from flyllm.pose import FlyExample

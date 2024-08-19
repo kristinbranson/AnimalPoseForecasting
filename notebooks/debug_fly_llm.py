@@ -273,8 +273,6 @@ print(d_input, d_output)
 # train_dataset.data[0].shape
 # outnames
 
-print(train_dataset.dfeat)
-print(train_dataset.nextframeidx)
 
 # %%
 # set up debug plots

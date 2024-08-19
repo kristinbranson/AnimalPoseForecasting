@@ -363,13 +363,13 @@ def animate_predict_open_loop(model, dataset, Xkp_init, fliespred, scales, tpred
     # fliespred = np.nonzero(mabe.get_real_agents(Xkp))[0]
     labels_true = []
     examples_pred = []
-    for i, flynum in enumerate(fliespred):
+    for i, agentnum in enumerate(fliespred):
         scale = scales[i]
-        label_true = PoseLabels(Xkp=Xkp_true[..., flynum], scale=scale, dataset=dataset)
+        label_true = PoseLabels(Xkp=Xkp_true[..., agentnum], scale=scale, dataset=dataset)
         labels_true.append(label_true)
         # note that labels for > 1 frame into the future may be nan here if t+tspred > burnin
         # labels and pred should match up to t = burnin
-        example_pred = FlyExample(Xkp=Xkp, flynum=flynum, scale=scale, dataset=dataset)
+        example_pred = FlyExample(Xkp=Xkp, agentnum=agentnum, scale=scale, dataset=dataset)
         examples_pred.append(example_pred)
 
     # TODOKB: reimplement this

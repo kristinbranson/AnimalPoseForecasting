@@ -141,7 +141,7 @@ flyexample = train_dataset.data[0]
 contextlpad = train_dataset.contextl + npad + 1
 Xkp = data['X'][:,:,flyexample.metadata['t0']:flyexample.metadata['t0']+contextlpad,:]
 flyexample_kp = FlyExample(Xkp=Xkp,scale=scale_perfly[:,flyexample.metadata['id']],
-                            flynum=flyexample.metadata['flynum'],metadata=flyexample.metadata,
+                            agentnum=flyexample.metadata['flynum'],metadata=flyexample.metadata,
                             **train_dataset.get_flyexample_params())
 print(f"comparing flyexample initialized from FlyMLMDataset and from keypoints directly")
 err = np.max(np.abs(flyexample_kp.labels.labels_raw['continuous']-flyexample.labels.labels_raw['continuous']))
@@ -404,7 +404,7 @@ train_example0 = flyexample.get_train_example()
 
 Xkp0 = data['X'][:,:,flyexample.metadata['t0']:flyexample.metadata['t0']+contextlpad,:]
 flyexample_kp = FlyExample(Xkp=Xkp0,scale=scale_perfly[:,flyexample.metadata['id']],
-                            flynum=flyexample.metadata['flynum'],metadata=flyexample.metadata,
+                            agentnum=flyexample.metadata['flynum'],metadata=flyexample.metadata,
                             **flyexample.get_params())
 train_example_kp = flyexample_kp.get_train_example()
 print('Comparing FlyExample created from keypoints to FlyExample created from training example')
@@ -461,7 +461,7 @@ assert np.allclose(pose_debug[keyfeatidx],pose_debug2[keyfeatidx]), f'Error in f
 print('pose_debug2 shape: '+str(pose_debug.shape))
 
 # create a flyexample
-debug_example = FlyExample(Xkp=Xkp_debug, flynum=flynum, scale=scale, metadata=metadata, dataset=train_dataset)
+debug_example = FlyExample(Xkp=Xkp_debug, agentnum=flynum, scale=scale, metadata=metadata, dataset=train_dataset)
 
 # feature within multi -- can't check in the raw data as the raw data is zscored
 multifeatidx = debug_example.labels.get_multi_names().index(featname+'_1')

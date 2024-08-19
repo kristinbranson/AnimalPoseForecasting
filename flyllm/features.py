@@ -1068,15 +1068,6 @@ def split_features(X, simplify=None, axis=-1):
 
     return res
 
-
-def unzscore(x, mu, sig):
-    return x * sig + mu
-
-
-def zscore(x, mu, sig):
-    return (x - mu) / sig
-
-
 def feat2kp(Xfeat, scale_perfly, flyid=None):
     ndim = np.ndim(Xfeat)
     if ndim >= 2:
