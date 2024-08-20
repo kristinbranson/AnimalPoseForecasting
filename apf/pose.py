@@ -7,7 +7,7 @@ if typing.TYPE_CHECKING:
     from apf.dataset import AgentLLMDataset
 
 from apf.data import weighted_sample, discretize_labels
-from apf.utils import modrange, rotate_2d_points, len_wrapper, dict_convert_torch_to_numpy, zscore, unzscore
+from apf.utils import len_wrapper, dict_convert_torch_to_numpy, zscore, unzscore
 
 class ObservationInputs:
     """
@@ -71,9 +71,7 @@ class ObservationInputs:
             flatten_labels
             flatten_obs
             discreteidx
-            tspred_global
             discrete_tspred
-            ntspred_relative
             discretize_params
             is_velocity
             simplify_out
@@ -852,6 +850,12 @@ class PoseLabels:
             ntspred_continuous += self._dct_m.shape[0]
         self._d_next_continuous = self.d_multicontinuous / ntspred_continuous
 
+        # make tspred and isdct have an entry for each d_next        
+        if not hasattr(self._tspred[0],'__len__'):
+            self._tspred = [self._tspred,]*self._d_next
+        if not hasattr(self._isdct,'__len__'):
+            self._isdct = np.zeros(self._d_next,dtype=bool)+self._isdct
+
     def copy(self):
         """
         copy()
@@ -1000,12 +1004,13 @@ class PoseLabels:
         kwlabels = {
             'zscore_params': self._zscore_params,
             'discreteidx': self._idx_nextdiscrete_to_next,
-            'discrete_tspred': self._discrete_tspred,
+            'discrete_tspred': self._discrete_tspred, # todo make obsolete
             'discretize_params': self._discretize_params,
             'starttoff': self._starttoff,
             'flatten_labels': self._flatten_labels,
             'dct_m': self._dct_m,
             'idct_m': self._idct_m,
+            'tspred': self._tspred, # how many frames into the future to predict for each feature of next
         }
         return kwlabels
 
@@ -1110,7 +1115,7 @@ class PoseLabels:
         is_dct()
         Returns whether the DCT is computed for relative features. 
         """
-        return self._dct_m is not None
+        return (self._dct_m is not None) and np.any(self._isdct)
 
     def get_init_pose(self, starttoff=None, makecopy=False):
         """
@@ -1227,6 +1232,19 @@ class PoseLabels:
         return idx
 
     @property
+    def _idx_nextcossin_to_next(self):
+        """
+        _idx_nextcossin_to_next
+        Convert from nextcossin indices to next indices.
+        Returns a list of indices of next pose that are next cossin pose.
+        """
+        idx = np.zeros(self.d_next_cossin, dtype=int)
+        idx_next_to_nextcossin = self._idx_next_to_nextcossin
+        for inext,inextcossin in enumerate(idx_next_to_nextcossin):
+            idx[inextcossin] = inext
+        return idx
+
+    @property
     def _idx_nextcossindiscrete_to_nextcossin(self):
         """
         _idx_nextcossindiscrete_to_nextcossin
@@ -1236,6 +1254,26 @@ class PoseLabels:
         idx_next_to_nextcossin = self._idx_next_to_nextcossin
         idx = np.array([idx_next_to_nextcossin[inext] for inext in self._idx_nextdiscrete_to_next])
         return idx
+    
+    @property
+    def _isdct_nextcossin(self):
+        isdct_nextcossin = np.zeros(self.d_next_cossin, dtype=bool)
+        idx_next_to_nextcossin = self._idx_next_to_nextcossin
+        for inext,inextcossin in enumerate(idx_next_to_nextcossin):
+            isdct_nextcossin[inextcossin] = self._isdct[inext]
+        return isdct_nextcossin
+        
+    @property
+    def _tspred_nextcossin(self):
+        """
+        _tspred_nextcossin
+        Returns the number of frames into the future to predict for each feature of next cossin.
+        """
+        tspred_nextcossin = [None,]*self.d_next_cossin
+        idx_nextcossin_to_next = self._idx_nextcossin_to_next
+        for inextcossin,inext in enumerate(idx_nextcossin_to_next):
+            tspred_nextcossin[inextcossin] = self._tspred[inext]
+        return tspred_nextcossin
 
     @property
     def _idx_nextcossincontinuous_to_nextcossin(self):
@@ -1269,7 +1307,8 @@ class PoseLabels:
         Convert from nextcossin indices to multi indices.
         Returns a list of indices of multi pose that are next cossin pose.
         """
-        assert (np.min(self._discrete_tspred) == 1)
+        # list of lists
+        assert np.max([np.min(ts) for ts in self._tspred]) == 1
         return self.feattpred_to_multi([(f, 1) for f in range(self.d_next_cossin)])
 
     @property
@@ -1303,11 +1342,12 @@ class PoseLabels:
         _multi_isdiscrete
         Returns a boolean array indicating which features in the multi representation are discrete.
         """
+        
         idx_multi_to_multifeattpred = self._idx_multi_to_multifeattpred
-        isdiscrete = (np.isin(idx_multi_to_multifeattpred[:, 0], self._idx_nextcossindiscrete_to_nextcossin) & \
-                      (idx_multi_to_multifeattpred[:, 1] == 1)) | \
-                     (np.isin(idx_multi_to_multifeattpred[:, 0], self._idx_nextcossinglobal_to_nextcossin) & \
-                      np.isin(idx_multi_to_multifeattpred[:, 1], self._discrete_tspred))
+        # features that are discrete in the next frame prediction and either this is the next frame prediction or
+        # isdct is false
+        isdiscrete = np.isin(idx_multi_to_multifeattpred[:, 0], self._idx_nextcossindiscrete_to_nextcossin) & \
+                      ( (idx_multi_to_multifeattpred[:, 1] == 1) | (self._isdct_nextcossin[idx_multi_to_multifeattpred[:,0]]==False) )
         return isdiscrete
 
     @property
@@ -1383,7 +1423,7 @@ class PoseLabels:
         Returns the number of continuous features in the multi representation.
         """
         return len(self._idx_multicontinuous_to_multi)
-
+    
     def feattpred_to_multi(self, ftidx):
         """
         feattpred_to_multi(ftidx)
@@ -1392,8 +1432,26 @@ class PoseLabels:
         future.
         Returns an ndarray of size ... x 1 with the multi indices.
         """
-        raise NotImplementedError
-        return None
+
+        tspred = self._tspred_nextcossin
+        isdct = self._isdct_nextcossin
+
+        ftidx = np.array(ftidx)
+        sz = ftidx.shape
+        assert sz[-1] == 2
+        ftidx = ftidx.reshape((-1, 2))
+
+        idx = np.zeros(len(ftidx),dtype=int)
+        ntspred = np.array([len(ts) for ts in tspred])
+        off = np.r_[0,np.cumsum(ntspred[:-1])]
+        for i in range(len(ftidx)):
+            f,t = ftidx[i]
+            if isdct[f]:
+                t -= 1
+            tidx = np.nonzero(tspred[f] == t)[0]
+            idx[i] = off[f] + tidx
+        
+        return idx.reshape(sz[:-1])
 
     def multi_to_feattpred(self, idx):
         """
@@ -1402,9 +1460,28 @@ class PoseLabels:
         idx: ndarray of size ... x 1. idx are the multi indices.
         Returns an ndarray of size ... x 2 with the feature indices and number of frames into the future.
         """
-        raise NotImplementedError
-        return None
+        tspred = self._tspred_nextcossin
+        isdct = self._isdct_nextcossin
+        
+        idx = np.array(idx)
+        sz = idx.shape
+        idx = idx.flatten()
 
+        ntspred = np.array([len(ts) for ts in tspred])
+        off = np.r_[0,np.cumsum(ntspred[:-1])]
+        fs = np.searchsorted(off,idx,side='right') - 1
+        tidxs = idx - off[fs]
+        ts = np.zeros(fs.shape,dtype=int)
+        for i in range(len(idx)):
+            f = fs[i]
+            tidx = tidxs[i]
+            ts[i] = tspred[f][tidx] 
+            # add 1 -- 0 corresponds to next frame, 1:dct_tau correspond to 1:dct_tau
+            if isdct[f]:
+                ts[i] += 1
+
+        return np.c_[fs,ts].reshape(sz + (2,))
+        
     def is_zscored(self):
         """
         is_zscored()
@@ -1843,10 +1920,10 @@ class PoseLabels:
 
         return
 
-    def _multi_to_multiidct(self, multi):
+    def _multi_to_multiidct1(self, multi):
         """
         multi_to_multiidct(multi)
-        Performs the inverse DCT on relative pose features of multi to convert to the multi_idct representation, if applicable. 
+        Performs the inverse DCT on continuous pose features of multi to convert to the multi_idct representation, if applicable. 
         TODO- check that we are using multiidct rather than multi when we should be... 
         Parameters:
         multi: ndarray of size (pre_sz x ) ntimepoints x d_multi with the multi representation of the labels.
@@ -1858,28 +1935,24 @@ class PoseLabels:
         if not self.is_dct():
             return multi
 
-        raise NotImplementedError
-
         # allocate multi_idct
-        multi_idct = np.zeros(multi.shape, dtype=multi.dtype)
+        multi_idct = multi.copy()
         
-        idct_m = self.idct_m.T
+        idct_m = self._idct_m.T
+        dct_tau = idct_m.shape[0]
 
         # features to convert
-        idx_nextcossinrelative_to_nextcossin = self._idx_nextcossinrelative_to_nextcossin
-        idx_multi_to_multifeattpred = self._idx_multi_to_multifeattpred
+        isdct = self._isdct_nextcossin
+        fs = np.nonzero(isdct)[0]
+        ftcurr = np.zeros((dct_tau,2),dtype=int)
+        ftcurr[:,1] = np.arange(2,dct_tau+2)
+
+        for f in fs:
+            ftcurr[:,0] = f
+            idx_multi = self.feattpred_to_multi(ftcurr)
+            multi_curr = multi[..., idx_multi].reshape((-1, dct_tau))
+            multi_idct[..., idx_multi] = (multi_curr @ idct_m).reshape((multi.shape[:-1]) + (dct_tau,))
         
-        # for each realtive feature
-        for irel in range(self.d_next_cossin_relative):
-            i = idx_nextcossinrelative_to_nextcossin[irel]
-            # find all features of multi for the relative feature (all tspred_relative)
-            idxfeat = np.nonzero((idx_multi_to_multifeattpred[:, 0] == i) & \
-                                 (idx_multi_to_multifeattpred[:, 1] > 1))[0]
-            # make sure features are in order
-            assert np.all(idx_multi_to_multifeattpred[idxfeat, 1] == np.arange(2, self.ntspred_relative + 1))
-            # apply inverse DCT
-            multi_dct = multi[..., idxfeat].reshape((-1, self.ntspred_relative - 1))
-            multi_idct[..., idxfeat] = (multi_dct @ idct_m).reshape((multi.shape[:-1]) + (self.ntspred_relative - 1,))
         return multi_idct
 
     def get_multi_idct(self, **kwargs):
@@ -1900,30 +1973,6 @@ class PoseLabels:
         """
         multi = self.get_multi(**kwargs)
         return self._multi_to_multiidct(multi)
-
-    def _multiidct_to_futurecossinrelative(self, multi_idct, tspred=None):
-        """
-        _multiidct_to_futurecossinrelative(multi_idct, tspred=None)
-        Convert from the multi_idct representation (full labels, relatve features have been un-DCTed) to the future relative features.
-        Parameters:
-        multi_idct: ndarray of size (pre_sz x ) ntimepoints x d_multi with the multi_idct representation of the labels.
-        Optional parameters:
-        tspred: values for tspred into the future to return indices for. If None, all relative features for all tspred are returned.
-        Default: None.
-        Returns:
-        futurerelcs: ndarray of size (pre_sz x ) ntimepoints x ntspred x d_next_cossin_relative with the future relative features
-        """
-        if not self.is_dct():
-            return np.zeros(self.pre_sz + (self.ntimepoints, 0), dtype=multi_idct.dtype)
-        if tspred is None:
-            tspred = np.arange(2, self.ntspred_relative + 1)
-        elif not hasattr(tspred, '__len__'):
-            tspred = [tspred, ]
-        ntspred = len(tspred)
-        idx_multi_to_multifeattpred = self._idx_multi_to_multifeattpred
-        idxfeat = np.nonzero(np.isin(idx_multi_to_multifeattpred[:, 0], self._idx_nextcossinrelative_to_nextcossin) & \
-                             np.isin(idx_multi_to_multifeattpred[:, 1], tspred))[0]
-        return multi_idct[..., idxfeat].reshape((multi_idct.shape[:-1]) + (ntspred, self.d_next_cossin_relative))
 
     def _multi_to_nextcossin(self, multi):
         """
@@ -2405,7 +2454,7 @@ class PoseLabels:
         multi_names: list of names of the multi features.
         """
         ft = self._idx_multi_to_multifeattpred
-        ismulti = (np.max(self.tspred_global) > 1) or (self.ntspred_relative > 1)
+        ismulti = np.max([np.max(ts) for ts in self._tspred]) > 1
         multi_names = [None, ] * self.d_multi
         nextcs_names = self.get_nextcossin_names()
         for i in range(self.d_multi):
@@ -2529,6 +2578,7 @@ class AgentExample:
             self.set_keypoints(Xkp, agentnum, scale, metadata=metadata)
         
         else:
+            
             self.set_example(None)
 
         return
@@ -2830,7 +2880,9 @@ class AgentExample:
             'flatten_labels': False,
             'flatten_obs': False,
             'discreteidx': [],
-            'discrete_tspred': [1, ],
+            'tspred': [1,], # list of lists, each sublist is the frames into the future to predict for each feature
+            'isdct': False, # can be list-like, with an entry for each feature
+            'discrete_tspred': [1, ], # todo make obsolete
             'discretize_params': None,
             'flatten_obs_idx': None,
             'dct_m': None,
@@ -2863,7 +2915,9 @@ class AgentExample:
             'flatten_labels': dataset.flatten_labels,
             'flatten_obs': dataset.flatten_obs,
             'discreteidx': dataset.discretefeat,
-            'discrete_tspred': dataset.discrete_tspred,
+            'discrete_tspred': dataset.discrete_tspred, # todo make obsolete
+            'tspred': [1,], # todo: add this to dataset
+            'isdct': False, # todo: add this to dataset
             'discretize_params': dataset.get_discretize_params(),
             'flatten_obs_idx': dataset.flatten_obs_idx,
             'dct_m': dataset.dct_m,

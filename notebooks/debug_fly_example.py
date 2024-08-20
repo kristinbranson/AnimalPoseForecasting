@@ -31,7 +31,7 @@ from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, 
 from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx
 from apf.data import chunk_data, debug_less_data
 from flyllm.dataset import FlyMLMDataset
-from flyllm.pose import PoseLabels, FlyExample, ObservationInputs
+from flyllm.pose import FlyPoseLabels, FlyExample, FlyObservationInputs
 from flyllm.features import kp2feat
 from flyllm.plotting import debug_plot_pose, debug_plot_sample, debug_plot_batch_traj
 
@@ -50,7 +50,7 @@ config = read_config(configfile,
 # debug velocity representation
 #config['compute_pose_vel'] = True
 # debug dct
-#config['dct_tau'] = 4
+config['dct_tau'] = 4
 # debug no multi time-scale predictions
 #config['tspred_global'] = [1,]
 #config['discrete_tspred'] = [1,]
@@ -131,6 +131,10 @@ compute_feature_params = {
 }
 
 print('Creating training data set...')
+train_dataset = FlyMLMDataset(X,**train_dataset_params,**dataset_params)
+
+# %%
+
 train_dataset = FlyMLMDataset(X,**train_dataset_params,**dataset_params)
 
 # %%
@@ -409,17 +413,17 @@ flyexample_kp = FlyExample(Xkp=Xkp0,scale=scale_perfly[:,flyexample.metadata['id
 train_example_kp = flyexample_kp.get_train_example()
 print('Comparing FlyExample created from keypoints to FlyExample created from training example')
 compare_dicts(train_example0,train_example_kp,maxerr=1e-6)
-poselabels_kp = PoseLabels(Xkp=Xkp0[...,flynum],scale=scale_perfly[:,flyexample.metadata['id']],
+poselabels_kp = FlyPoseLabels(Xkp=Xkp0[...,flynum],scale=scale_perfly[:,flyexample.metadata['id']],
                            metadata=flyexample.metadata,
                            **flyexample.get_poselabel_params()) 
 train_labels_kp = poselabels_kp.get_train_labels(namingscheme='train')
-print('\nComparing PoseLabels created from keypoints to FlyExample created from training example')
+print('\nComparing FlyPoseLabels created from keypoints to FlyExample created from training example')
 compare_dicts(train_labels_kp,train_example0,maxerr=1e-6)
-obs_kp = ObservationInputs(Xkp=Xkp0,scale=scale_perfly[:,flyexample.metadata['id']],
+obs_kp = FlyObservationInputs(Xkp=Xkp0,scale=scale_perfly[:,flyexample.metadata['id']],
                            **flyexample.get_observationinputs_params())
 train_input_kp = obs_kp.get_train_inputs(input_labels=flyexample_kp.get_input_labels())
 err = torch.max(torch.abs(train_input_kp['input']-train_example0['input'])).item()
-print('\nComparing ObservationInputs created from keypoints to FlyExample created from training example')
+print('\nComparing FlyObservationInputs created from keypoints to FlyExample created from training example')
 print(f'max diff input: {err:e}')
 assert err < 1e-6
 

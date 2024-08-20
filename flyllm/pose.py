@@ -4,8 +4,7 @@ import copy
 import typing
 
 from flyllm.config import featglobal, featrelative, featangle, posenames
-from apf.data import weighted_sample, discretize_labels
-from apf.utils import modrange, rotate_2d_points, len_wrapper, dict_convert_torch_to_numpy, zscore, unzscore
+from apf.utils import modrange, rotate_2d_points
 from flyllm.features import (
     compute_features,
     split_features,
@@ -20,6 +19,24 @@ from apf.pose import AgentExample, PoseLabels, ObservationInputs
 
 if typing.TYPE_CHECKING:
     from flyllm.dataset import FlyLLMDataset
+
+
+# helper functions
+def modernize_fly_params(params):
+    if 'tspred_global' in params:
+        nfeatures = len(posenames)
+        tspred = [None,]*nfeatures
+        isdct = np.zeros(nfeatures, dtype=bool)
+        for i in range(nfeatures):
+            tspred[i] = [1,]
+            if featrelative[i] == False:
+                tspred[i] = params['tspred_global'].copy()
+            elif params['dct_m'] is not None:
+                tspred[i] = np.arange(params['ntspred_relative'])
+                isdct[i] = True
+        params['tspred'] = tspred
+        params['isdct'] = isdct
+    return params
 
 
 class FlyObservationInputs(ObservationInputs):
@@ -284,6 +301,7 @@ class FlyPoseLabels(PoseLabels):
         names. 
         override: Whether to override existing parameters. If False, will not overwrite existing parameters. Default is True. 
         """
+        params = modernize_fly_params(params)
         super().set_params(params, override=override)
 
         return
@@ -573,6 +591,8 @@ class FlyPoseLabels(PoseLabels):
         future.
         Returns an ndarray of size ... x 1 with the multi indices.
         """
+        # the order of features is a bit different than the default in PoseLabels
+        # for backward compatibility
         idx = ravel_label_index(ftidx, ntspred_relative=self.ntspred_relative,
                                 tspred_global=self.tspred_global, nrelrep=self.d_next_cossin_relative)
         return idx
@@ -584,6 +604,8 @@ class FlyPoseLabels(PoseLabels):
         idx: ndarray of size ... x 1. idx are the multi indices.
         Returns an ndarray of size ... x 2 with the feature indices and number of frames into the future.
         """
+        # the order of features is a bit different than the default in PoseLabels
+        # for backward compatibility
         ftidx = unravel_label_index(idx, ntspred_relative=self.ntspred_relative, tspred_global=self.tspred_global,
                                     nrelrep=self.d_next_cossin_relative)
         return ftidx
@@ -604,9 +626,9 @@ class FlyPoseLabels(PoseLabels):
             return multi
 
         # allocate multi_idct
-        multi_idct = np.zeros(multi.shape, dtype=multi.dtype)
+        multi_idct = multi.copy()
         
-        idct_m = self.idct_m.T
+        idct_m = self._idct_m.T
 
         # features to convert
         idx_nextcossinrelative_to_nextcossin = self._idx_nextcossinrelative_to_nextcossin
@@ -1451,6 +1473,9 @@ class FlyPoseLabels(PoseLabels):
 
         return idx, ft
 
+# The above code is attempting to define a Python class named `FlyExample`, but it contains a syntax
+# error. In Python, the class definition should include a colon `:` after the class name. The correct
+# syntax should be:
 class FlyExample(AgentExample):
     """
     
@@ -1599,6 +1624,7 @@ class FlyExample(AgentExample):
         names. 
         override: Whether to override existing parameters. If False, will not overwrite existing parameters. Default is True. 
         """
+        params = modernize_fly_params(params)
         synonyms = {'compute_pose_vel': 'is_velocity'}
         super().set_params(params,override=override,synonyms=synonyms)
 
