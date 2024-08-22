@@ -17,5 +17,6 @@ dependencies:
   - ipykernel
   - jupytext
   - ipywidgets
+  - hdf5storage
   - pip:
     - opencv-python

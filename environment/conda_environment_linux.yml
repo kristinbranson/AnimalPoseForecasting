@@ -32,9 +32,11 @@ dependencies:
   - brotli-python=1.1.0=py312h30efb56_1
   - bzip2=1.0.8=hd590300_5
   - c-ares=1.28.1=hd590300_0
-  - ca-certificates=2024.6.2=hbcca054_0
+  - ca-certificates=2024.7.4=hbcca054_0
+  - cached-property=1.5.2=hd8ed1ab_1
+  - cached_property=1.5.2=pyha770c72_1
   - cairo=1.18.0=h3faef2a_0
-  - certifi=2024.6.2=pyhd8ed1ab_0
+  - certifi=2024.7.4=pyhd8ed1ab_0
   - charset-normalizer=3.3.2=pyhd8ed1ab_0
   - colorama=0.4.6=pyhd8ed1ab_0
   - comm=0.2.2=pyhd8ed1ab_0
@@ -81,7 +83,10 @@ dependencies:
   - graphite2=1.3.13=h59595ed_1003
   - gst-plugins-base=1.24.4=h9ad1361_0
   - gstreamer=1.24.4=haf2f30d_0
+  - h5py=3.11.0=nompi_py312hb7ab980_102
   - harfbuzz=8.5.0=hfac3d4d_0
+  - hdf5=1.14.3=nompi_hdf9ad27_105
+  - hdf5storage=0.1.19=pyhd8ed1ab_0
   - huggingface_hub=0.23.4=pyhd8ed1ab_0
   - icu=73.2=h59595ed_0
   - idna=3.7=pyhd8ed1ab_0
@@ -107,6 +112,7 @@ dependencies:
   - ld_impl_linux-64=2.40=hf3520f5_7
   - lerc=4.0.0=h27087fc_0
   - libabseil=20240116.2=cxx17_h59595ed_0
+  - libaec=1.1.3=h59595ed_0
   - libarrow=16.1.0=h9102155_9_cpu
   - libarrow-acero=16.1.0=hac33072_9_cpu
   - libarrow-dataset=16.1.0=hac33072_9_cpu
@@ -235,7 +241,7 @@ dependencies:
   - ocl-icd=2.3.2=hd590300_1
   - openh264=2.4.1=h59595ed_0
   - openjpeg=2.5.2=h488ebb8_0
-  - openssl=3.3.1=h4ab18f5_0
+  - openssl=3.3.1=h4bc722e_2
   - orc=2.0.1=h17fec99_1
   - p11-kit=0.24.1=hc5aa10d_0
   - packaging=24.1=pyhd8ed1ab_0
@@ -343,5 +349,18 @@ dependencies:
   - zlib=1.3.1=h4ab18f5_1
   - zstd=1.5.6=ha6fb4c9_0
   - pip:
+      - asciitree==0.3.3
+      - dnspython==2.6.1
+      - fasteners==0.19
+      - funlib-geometry==0.3.0
+      - funlib-persistence==0.4.0
+      - imageio==2.34.2
+      - lazy-loader==0.4
+      - numcodecs==0.12.1
       - opencv-python==4.10.0.84
+      - psycopg2-binary==2.9.9
+      - pymongo==4.8.0
+      - scikit-image==0.24.0
+      - tifffile==2024.6.18
+      - zarr==2.18.2
 prefix: /home/bransonk@hhmi.org/miniforge3/envs/transformer
