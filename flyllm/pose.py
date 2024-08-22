@@ -301,7 +301,7 @@ class FlyPoseLabels(PoseLabels):
         names. 
         override: Whether to override existing parameters. If False, will not overwrite existing parameters. Default is True. 
         """
-        params = modernize_fly_params(params)
+        #params = modernize_fly_params(params)
         super().set_params(params, override=override)
 
         return
@@ -363,6 +363,25 @@ class FlyPoseLabels(PoseLabels):
         Returns ndarray of indices of next pose that are global
         """
         return np.array(featglobal)
+
+    @property
+    def _isdct(self):
+        if self._dct_m is None:
+            nfeatures = len(posenames)
+            return np.zeros(nfeatures, dtype=bool)
+        else:
+            return featrelative.copy()
+        
+    @property
+    def _tspred(self):
+        nfeatures = len(posenames)
+        tspred = [None,]*nfeatures
+        for i in range(nfeatures):
+            if featrelative[i] == False:
+                tspred[i] = self._tspred_global.copy()
+            else:
+                tspred[i] = np.arange(self._ntspred_relative)
+        return tspred
 
     @property
     def d_next_global(self):
@@ -1624,7 +1643,7 @@ class FlyExample(AgentExample):
         names. 
         override: Whether to override existing parameters. If False, will not overwrite existing parameters. Default is True. 
         """
-        params = modernize_fly_params(params)
+        #params = modernize_fly_params(params)
         synonyms = {'compute_pose_vel': 'is_velocity'}
         super().set_params(params,override=override,synonyms=synonyms)
 
@@ -1636,6 +1655,10 @@ class FlyExample(AgentExample):
         """
         
         params =  super(cls,cls).get_default_params()
+        if 'tspred' in params:
+            del params['tspred']
+        if 'isdct' in params:
+            del params['isdct']
         params['tspred_global'] = [1, ]
         params['ntspred_relative'] = 1
         params['is_velocity'] = False

@@ -3,8 +3,8 @@ import torch
 import copy
 import typing
 
-if typing.TYPE_CHECKING:
-    from apf.dataset import AgentLLMDataset
+# if typing.TYPE_CHECKING:
+#     from apf.dataset import AgentLLMDataset
 
 from apf.data import weighted_sample, discretize_labels
 from apf.utils import len_wrapper, dict_convert_torch_to_numpy, zscore, unzscore
@@ -168,7 +168,7 @@ class ObservationInputs:
         agentexample_to_observationinput_params(cls,params) (class)
         Converts parameters from AgentExample to ObservationInputs format.
         """
-        kwinputs = copy.deepcopy(params)
+        kwinputs = params #copy.deepcopy(params)
         zscore_params_input, _ = cls._exampleClass.split_zscore_params(params['zscore_params'])
         kwinputs['zscore_params'] = zscore_params_input
         return kwinputs
@@ -2346,7 +2346,7 @@ class PoseLabels:
             return
         assert example['continuous'].shape[-1] == self.d_multi
         discretize_idx = self._idx_multidiscrete_to_multi
-        example['todiscretize'] = example['continuous'][..., discretize_idx].copy()
+        example['todiscretize'] = example['continuous'][..., discretize_idx]#.copy()
         example['discrete'] = discretize_labels(example['todiscretize'], self._discretize_params['bin_edges'],
                                                 soften_to_ends=True)
         example['continuous'] = example['continuous'][..., self._idx_multicontinuous_to_multi]
@@ -2485,7 +2485,7 @@ class AgentExample:
     _inputsClass = ObservationInputs
     
     def __init__(self,example_in: typing.Optional[dict] = None,
-                 dataset: typing.Optional['AgentLLMDataset'] = None,
+                 dataset: typing.Any = None,
                  Xkp: typing.Optional[np.ndarray] = None,
                  agentnum: typing.Optional[int] = None,
                  scale: typing.Optional[np.ndarray] = None,
@@ -2566,7 +2566,7 @@ class AgentExample:
         # set the metadata
         self._metadata = None
         if metadata is not None:
-            self._metadata = copy.deepcopy(metadata)
+            self._metadata = metadata #copy.deepcopy(metadata)
 
         if example_in is not None:
             
@@ -2624,7 +2624,7 @@ class AgentExample:
             example_in = {k: v for k, v in example_in.items()}
             # copy the metadata, deep copy
             if (example_in is not None) and ('metadata' in example_in):
-                example_in['metadata'] = copy.deepcopy(example_in['metadata'])
+                example_in['metadata'] = example_in['metadata']#copy.deepcopy(example_in['metadata'])
 
         # whether the input is an example from compute_features or a training example from
         # get_train_example
@@ -2744,11 +2744,11 @@ class AgentExample:
         """
 
         example = {}
-        example['labels'] = Xkp[...,1:,agentnum].copy()
+        example['labels'] = Xkp[...,1:,agentnum]#.copy()
         pre_sz = Xkp.shape[:-4]
         ntimepoints = Xkp.shape[-2]
         example['input'] = np.zeros(pre_sz+(ntimepoints,0))
-        example['init'] = Xkp[...,[0,],agentnum].copy()
+        example['init'] = Xkp[...,[0,],agentnum]#.copy()
 
         return example
 

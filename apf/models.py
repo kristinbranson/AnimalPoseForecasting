@@ -205,7 +205,8 @@ class TransformerBestStateModel(torch.nn.Module):
 
     def __init__(self, d_input: int, d_output: int,
                  d_model: int = 2048, nhead: int = 8, d_hid: int = 512,
-                 nlayers: int = 12, dropout: float = 0.1, nstates: int = 8):
+                 nlayers: int = 12, dropout: float = 0.1, nstates: int = 8,
+                 dataset_params=None):
         super().__init__()
         self.model_type = 'TransformerBestState'
 
@@ -235,6 +236,10 @@ class TransformerBestStateModel(torch.nn.Module):
         self.d_model = d_model
         self.nstates = nstates
         self.d_output = d_output
+        
+        # store parameters associated with the training data
+        # zscoring, binning
+        self.dataset_params = dataset_params
 
         self.init_weights()
 
@@ -278,7 +283,7 @@ class TransformerStateModel(torch.nn.Module):
     def __init__(self, d_input: int, d_output: int,
                  d_model: int = 2048, nhead: int = 8, d_hid: int = 512,
                  nlayers: int = 12, dropout: float = 0.1, nstates: int = 64,
-                 minstateprob: float = None):
+                 minstateprob: float = None, dataset_params=None):
         super().__init__()
         self.model_type = 'TransformerState'
 
@@ -317,6 +322,10 @@ class TransformerStateModel(torch.nn.Module):
         self.nstates = nstates
         self.d_output = d_output
         self.minstateprob = minstateprob
+
+        # store parameters associated with the training data
+        # zscoring, binning
+        self.dataset_params = dataset_params
 
         self.init_weights()
 
@@ -406,6 +415,7 @@ class TransformerModel(torch.nn.Module):
                  ntokens_per_timepoint: int = 1,
                  input_idx=None, input_szs=None, embedding_types=None, embedding_params=None,
                  d_output_discrete=None, nbins=None,
+                 dataset_params=None,
                  ):
         super().__init__()
         self.model_type = 'Transformer'
@@ -447,6 +457,10 @@ class TransformerModel(torch.nn.Module):
         self.d_model = d_model
 
         self.init_weights()
+        
+        # store parameters associated with the training data
+        # zscoring, binning
+        self.dataset_params = dataset_params
 
     def init_weights(self) -> None:
         pass
@@ -991,6 +1005,8 @@ def initialize_model(config, train_dataset, device):
         d_output = train_dataset.d_output_continuous
     else:
         d_output = train_dataset.d_output
+        
+    MODEL_ARGS['dataset_params'] = train_dataset.get_model_params()
 
     if config['modelstatetype'] == 'prob':
         model = TransformerStateModel(d_input, d_output, **MODEL_ARGS).to(device)

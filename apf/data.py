@@ -361,6 +361,10 @@ def debug_less_data(data, n_frames_per_video=10000, max_n_videos=1):
     data['y'] = data['y'][:, frame_ids, :]
     data['isdata'] = data['isdata'][frame_ids, :]
     data['isstart'] = data['isstart'][frame_ids, :]
+    nframes = np.count_nonzero(data['isdata'])
+    nids = len(np.unique(data['ids'][data['isdata']]))
+    LOG.info(f'After less data: nframes = {nframes}, nids = {nids}, X.shape = {data["X"].shape}')
+
     return
 
 

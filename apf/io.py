@@ -306,6 +306,7 @@ def load_and_filter_data(infile, config, compute_scale_per_agent, compute_noise_
     # load data
     LOG.info(f"loading raw data from {infile}...")
     data = load_raw_npz_data(infile)
+    LOG.info(f"loaded data with X.shape {data['X'].shape}")
 
     # compute noise parameters
     if (len(config['discreteidx']) > 0) and config['discretize_epsilon'] is None:
@@ -320,11 +321,20 @@ def load_and_filter_data(infile, config, compute_scale_per_agent, compute_noise_
     # filter out data
     LOG.info('filtering data...')
     if config['categories'] is not None and len(config['categories']) > 0:
+        LOG.info(f"filtering data by categories {config['categories']}")
+        nframespre = np.count_nonzero(data['isdata'])
+        nidspre = len(np.unique(data['ids'][data['isdata']]))
         filter_data_by_categories(data, config['categories'])
+        nframespost = np.count_nonzero(data['isdata'])
+        nidspost = len(np.unique(data['ids'][data['isdata']]))
+        LOG.info(f"After filtering nids {nidspre} -> {nidspost}, nframes {nframespre} -> {nframespost}")
 
     # augment by flipping
     if 'augment_flip' in config and config['augment_flip']:
         assert keypointnames is not None, "Need keypointnames to perform flip augmentation"
+        LOG.info('augmenting data by flipping...')
+        nframespre = np.count_nonzero(data['isdata'])
+        nidspre = len(np.unique(data['ids'][data['isdata']]))
         flipvideoidx = np.max(data['videoidx']) + 1 + data['videoidx']
         data['videoidx'] = np.concatenate((data['videoidx'], flipvideoidx), axis=0)
         firstid = np.max(data['ids']) + 1
@@ -337,6 +347,9 @@ def load_and_filter_data(infile, config, compute_scale_per_agent, compute_noise_
         data['y'] = np.tile(data['y'], (1, 2, 1))
         data['isdata'] = np.tile(data['isdata'], (2, 1))
         data['isstart'] = np.tile(data['isstart'], (2, 1))
+        nframespost = np.count_nonzero(data['isdata'])
+        nidspost = len(np.unique(data['ids'][data['isdata']]))
+        LOG.info(f"After flip augmentation nids {nidspre} -> {nidspost}, nframes {nframespre} -> {nframespost}")
 
     # compute scale parameters
     LOG.info('computing scale parameters...')

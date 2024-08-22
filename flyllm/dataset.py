@@ -12,7 +12,8 @@ from apf.models import (  # TODO: dataset should not depend on models
     pred_apply_fun
 )
 from flyllm.pose import FlyExample
-
+import logging
+LOG = logging.getLogger(__name__)
 
 class FlyMLMDataset(torch.utils.data.Dataset):
     def __init__(
@@ -41,6 +42,7 @@ class FlyMLMDataset(torch.utils.data.Dataset):
             dct_ms: tuple[np.ndarray | None, np.ndarray | None] | None = None,
             tspred_global: tuple[int, ...] = (1, ),
             compute_pose_vel: bool = True,
+            noclass: bool = False,
     ) -> None:
         """
         Args
@@ -168,25 +170,34 @@ class FlyMLMDataset(torch.utils.data.Dataset):
         
         # zscore
         if dozscore:
-            print('Z-scoring data...')
+            LOG.info('Z-scoring data...')
             data = self.zscore(data, **zscore_params)
-            print('Done.')
+            LOG.info('Done.')
         
         # discretize
         if discreteidx is not None:
-            print('Discretizing labels...')
+            LOG.info('Discretizing labels...')
             data = self.discretize_labels(data, discreteidx, discrete_tspred, nbins=discretize_nbins,
                                           bin_epsilon=discretize_epsilon, **discretize_params)
-            print('Done.')
+            LOG.info('Done.')
 
         # flatten -- flattening hasn't been implemented in pose class yet
         self.set_flatten_params(flatten_labels=flatten_labels, flatten_obs_idx=flatten_obs_idx,
                                 flatten_do_separate_inputs=flatten_do_separate_inputs)
 
         # store examples in objects
-        self.data = []
-        for example_in in data:
-            self.data.append(FlyExample(example_in, dataset=self))
+        if noclass:
+            self.data = data
+        else:
+            LOG.info('Creating FlyExample objects...')
+            self.data = []
+            for i in tqdm.trange(len(data)):
+                example_in = data[i]
+                self.data.append(FlyExample(example_in, dataset=self))
+                # if i > 1000:
+                #     LOG.warning('DEBUGGING: breaking after 100 examples')
+                #     break
+            LOG.info('Done.')
 
         self.set_train_mode()
 
@@ -382,7 +393,7 @@ class FlyMLMDataset(torch.utils.data.Dataset):
             self.discretize_bin_medians = bin_medians
             assert nbins == bin_edges.shape[-1] - 1
 
-        for example in data:
+        for example in tqdm.tqdm(data):
             example['labels_todiscretize'] = example['labels'][:, self.discreteidx]
             example['labels_discrete'] = discretize_labels(example['labels_todiscretize'], self.discretize_bin_edges,
                                                            soften_to_ends=True)
@@ -998,6 +1009,13 @@ class FlyMLMDataset(torch.utils.data.Dataset):
             outnames (list of strings): names of each output motion
         """
         return self.data[0].labels.get_multi_names()
+
+    def get_model_params(self):
+        model_params = {
+            'zscore_params': self.get_zscore_params(),
+            'discretize_params': self.get_discretize_params(),
+        }
+        return model_params
 
     # REMOVE AFTER DEBUGGING FLATTENING
     # def unflatten_labels(self, labels_flattened):
