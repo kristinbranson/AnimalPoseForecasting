@@ -42,7 +42,7 @@ from apf.models import (
     sanity_check_temporal_dep,
     criterion_wrapper,
 )
-from apf.io import read_config, get_modeltype_str, load_and_filter_data
+from apf.io import read_config, get_modeltype_str, load_and_filter_data, save_model, load_model
 from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames, keypointnames
 from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx, compute_scale_perfly
 from flyllm.dataset import FlyMLMDataset
@@ -335,11 +335,22 @@ modeltype_str = get_modeltype_str(config, train_dataset)
 if ('model_nickname' in config) and (config['model_nickname'] is not None):
     modeltype_str = config['model_nickname']
     
-epoch = 0
-progress_bar = tqdm.tqdm(range(num_training_steps))
-# initialize structure to keep track of loss
-loss_epoch = initialize_loss(train_dataset, config)
+if restartmodelfile is not None:
+    loss_epoch = load_model(restartmodelfile, model, device, lr_optimizer=optimizer, scheduler=lr_scheduler)
+    update_loss_nepochs(loss_epoch, config['num_train_epochs'])
+    update_loss_plots(hloss, loss_epoch)
+    # loss_epoch = {k: v.cpu() for k,v in loss_epoch.items()}
+    epoch = np.nonzero(np.isnan(loss_epoch['train'].cpu().numpy()))[0][0]
+    progress_bar.update(epoch * ntrain)
+else:
+    epoch = 0
+    # initialize structure to keep track of loss
+    loss_epoch = initialize_loss(train_dataset, config)
 last_val_loss = None
+
+savetime = datetime.datetime.now()
+savetime = savetime.strftime('%Y%m%dT%H%M%S')
+
 
 # %% [markdown]
 # ### Train
@@ -358,10 +369,8 @@ hdebug['val'] = initialize_debug_plots(val_dataset, val_dataloader, valdata, nam
 
 hloss = initialize_loss_plots(loss_epoch)
 
-progress_bar = tqdm.tqdm(range(num_training_steps))
+progress_bar = tqdm.tqdm(range(num_training_steps),initial=epoch*ntrain_batches)
 
-savetime = datetime.datetime.now()
-savetime = savetime.strftime('%Y%m%dT%H%M%S')
 ntimepoints_per_batch = train_dataset.ntimepoints
 valexample = next(iter(val_dataloader))
 
@@ -439,6 +448,15 @@ for epoch in range(epoch, config['num_train_epochs']):
     update_plots([hdebug['train']['figpose'],hdebug['train']['figtraj'],hdebug['train']['figstate'],
                   hdebug['val']['figpose'],hdebug['val']['figtraj'],hdebug['val']['figstate'],hloss['fig']])
     
+    if (epoch + 1) % config['save_epoch'] == 0:
+        savefile = os.path.join(config['savedir'], f"fly{modeltype_str}_epoch{epoch + 1}_{savetime}.pth")
+        print(f'Saving to file {savefile}')
+        save_model(savefile, model,
+                    lr_optimizer=optimizer,
+                    scheduler=lr_scheduler,
+                    loss=loss_epoch,
+                    config=config)
+    
     # rechunk the training data
     if np.mod(epoch+1,config['epochs_rechunk']) == 0:
         print(f'Rechunking data after epoch {epoch}')
@@ -450,14 +468,10 @@ for epoch in range(epoch, config['num_train_epochs']):
 print('Done training')
 
 # %%
-update_loss_plots(hloss, loss_epoch)
-update_plots([hdebug['train']['figpose'],hdebug['train']['figtraj'],hdebug['train']['figstate'],
-                hdebug['val']['figpose'],hdebug['val']['figtraj'],hdebug['val']['figstate'],hloss['fig']])
-
-# rechunk the training data
-if np.mod(epoch+1,config['epochs_rechunk']) == 0:
-    print(f'Rechunking data after epoch {epoch}')
-    X = chunk_data(data,config['contextl'],reparamfun,**chunk_data_params)
-    
-    train_dataset = FlyMLMDataset(X,**train_dataset_params,**dataset_params)
-    print('New training data set created')
+savefile = os.path.join(config['savedir'], f"fly{modeltype_str}_epoch{epoch + 1}_{savetime}.pth")
+print(f'Saving to file {savefile}')
+save_model(savefile, model,
+            lr_optimizer=optimizer,
+            scheduler=lr_scheduler,
+            loss=loss_epoch,
+            config=config)
