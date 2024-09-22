@@ -3,7 +3,7 @@ import torch
 import copy
 import typing
 
-from flyllm.config import featglobal, featrelative, featangle, posenames
+from flyllm.config import featglobal, featrelative, featangle, posenames, keypointnames
 from apf.utils import modrange, rotate_2d_points
 from flyllm.features import (
     compute_features,
@@ -38,6 +38,12 @@ def modernize_fly_params(params):
         params['isdct'] = isdct
     return params
 
+def remove_implicit_params(params):
+    if 'tspred' in params:
+        del params['tspred']
+    if 'isdct' in params:
+        del params['isdct']
+    return params
 
 class FlyObservationInputs(ObservationInputs):
     """
@@ -273,6 +279,7 @@ class FlyPoseLabels(PoseLabels):
         """
         
         super(cls,cls).agentexample_to_poselabels_params(params)
+        params = remove_implicit_params(params)
         toremove = ['simplify_in',]
         for k in toremove:
             if k in params:
@@ -285,6 +292,7 @@ class FlyPoseLabels(PoseLabels):
         Returns the parameters for the PoseLabels object.
         """
         kwlabels = super().get_params()
+        kwlabels = remove_implicit_params(kwlabels)
         kwlabels['tspred_global'] = self._tspred_global
         kwlabels['ntspred_relative'] = self._ntspred_relative
         kwlabels['is_velocity'] = self._is_velocity
@@ -292,7 +300,7 @@ class FlyPoseLabels(PoseLabels):
 
         return kwlabels
 
-    def set_params(self, params, override=True):
+    def set_params(self, params, **kwargs):
         """
         set_params(params, override=True)
         Sets the parameters for the PoseLabels object. 
@@ -302,7 +310,7 @@ class FlyPoseLabels(PoseLabels):
         override: Whether to override existing parameters. If False, will not overwrite existing parameters. Default is True. 
         """
         #params = modernize_fly_params(params)
-        super().set_params(params, override=override)
+        super().set_params(params, **kwargs)
 
         return
 
@@ -486,8 +494,13 @@ class FlyPoseLabels(PoseLabels):
         d_next_cossin_relative
         Returns the number of relative features in the next cossin representation.
         """
-        _, d = self._get_idx_nextrelative_to_nextcossinrelative()
-        return d
+        # rewrote to speed up code
+        # number of next relative features + number of relative features that are angles and not discretized
+        nrelative = np.count_nonzero(featrelative)
+        iscossin = featangle & featrelative
+        iscossin[self._idx_nextdiscrete_to_next] = False
+        
+        return nrelative + np.count_nonzero(iscossin)
 
     @property
     def d_next_cossin(self):
@@ -556,6 +569,27 @@ class FlyPoseLabels(PoseLabels):
         Returns the total number of features in the multi representation.
         """
         return self.d_multi_global + self.d_multi_relative
+    
+    @property
+    def d_multidiscrete(self):
+        """
+        d_multidiscrete
+        Returns the total number of discrete features in the multi representation.
+        """
+        # compute faster
+        d_discrete_global = np.intersect1d(self._idx_nextglobal_to_next, self._idx_nextdiscrete_to_next).size
+        d_discrete_relative = np.intersect1d(self._idx_nextrelative_to_next, self._idx_nextdiscrete_to_next).size
+        d_multidiscrete = d_discrete_global * len(self.tspred_global) + d_discrete_relative
+        return d_multidiscrete
+        #return super().d_multidiscrete
+
+    @property
+    def d_multicontinuous(self):
+        """
+        d_multicontinuous
+        Returns the number of continuous features in the multi representation.
+        """
+        return self.d_multi - self.d_multidiscrete
 
     @property
     def _idx_multifeattpred_to_multi(self):
@@ -1289,6 +1323,10 @@ class FlyPoseLabels(PoseLabels):
             # kp is now nflies x T x nkpts x 2
             kp = kp.reshape(szrest + kp.shape[1:])
         return kp
+    
+    @property
+    def n_keypoints(self):
+        return len(keypointnames)
 
     def compute_features(self, Xkp, scale=None):
         
@@ -1492,9 +1530,6 @@ class FlyPoseLabels(PoseLabels):
 
         return idx, ft
 
-# The above code is attempting to define a Python class named `FlyExample`, but it contains a syntax
-# error. In Python, the class definition should include a colon `:` after the class name. The correct
-# syntax should be:
 class FlyExample(AgentExample):
     """
     
@@ -1655,10 +1690,7 @@ class FlyExample(AgentExample):
         """
         
         params =  super(cls,cls).get_default_params()
-        if 'tspred' in params:
-            del params['tspred']
-        if 'isdct' in params:
-            del params['isdct']
+        params = remove_implicit_params(params)
         params['tspred_global'] = [1, ]
         params['ntspred_relative'] = 1
         params['is_velocity'] = False
@@ -1675,6 +1707,7 @@ class FlyExample(AgentExample):
         """
         
         params = super(cls,cls).get_params_from_dataset(dataset)
+        params = remove_implicit_params(params)
         params['tspred_global'] = dataset.tspred_global
         params['ntspred_relative'] = dataset.ntspred_relative
         params['is_velocity'] = dataset.compute_pose_vel
@@ -1694,3 +1727,6 @@ class FlyExample(AgentExample):
             idx['labels'] = [0, d_input_labels]
             sz['labels'] = (d_input_labels,)
         return idx, sz
+
+FlyPoseLabels._exampleClass = FlyExample
+FlyObservationInputs._exampleClass = FlyExample

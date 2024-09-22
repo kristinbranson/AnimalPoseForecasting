@@ -279,16 +279,20 @@ class ObservationInputs:
         """
         return self._zscore_params is not None
 
-    def get_raw_inputs(self, makecopy=True):
+    def get_raw_inputs(self, makecopy=True, ts=None, ):
         """
         get_raw_inputs(makecopy=True)
         Returns the raw inputs, optionally making a copy.
         Could probably be removed, doesn't do much... 
         """
-        if makecopy:
-            return self._input.copy()
+        if ts is None:
+            input = self._input
         else:
-            return self._input
+            input = self._input[...,ts,:]
+        if makecopy:
+            return input.copy()
+        else:
+            return input
 
     def get_inputs(self, zscored=False, **kwargs):
         """
@@ -429,7 +433,7 @@ class ObservationInputs:
         """
         return copy.deepcopy(self._sensory_feature_idx)
 
-    def get_train_inputs(self, input_labels=None, do_add_noise=False, labels=None):
+    def get_train_inputs(self, input_labels=None, do_add_noise=False, labels=None, makecopy=True, ts=None):
         """
         get_train_inputs(input_labels=None, do_add_noise=False, labels=None)
         Returns the inputs for training. If input_labels is not None, it will concatenate
@@ -451,7 +455,8 @@ class ObservationInputs:
             'eta': added noise if do_add_noise is True, None otherwise.
         """
 
-        train_inputs = self.get_raw_inputs()
+        train_inputs = self.get_raw_inputs(makecopy=makecopy,ts=ts)
+        assert (makecopy == True) or (do_add_noise == False), 'makecopy must be True if do_add_noise is True'
 
         # makes a copy
         if do_add_noise:
@@ -462,18 +467,23 @@ class ObservationInputs:
         # makes a copy
         train_inputs = torch.tensor(train_inputs)
         train_inputs_init = None
+        
+        if ts is None:
+            n = self.ntimepoints
+        else:
+            n = len(ts)
 
         if not self._flatten_obs:
             # offset input_labels from inputs so that input_labels correspond to the previous frame
             # then concatenate
             if input_labels is not None:
                 train_inputs_init = train_inputs[..., :self._starttoff, :]
-                train_inputs = torch.cat((torch.tensor(input_labels[..., :self.ntimepoints-self._starttoff, :]),
+                train_inputs = torch.cat((torch.tensor(input_labels[..., :n-self._starttoff, :]),
                                           train_inputs[..., self._starttoff:, :]), dim=-1)
         else:
             # haven't debugged flattened stuff
             ntypes = len(self._flatten_obs_idx)
-            flatinput = torch.zeros(self.pre_sz + (self.ntimepoints, ntypes, self._flatten_max_dinput),
+            flatinput = torch.zeros(self.pre_sz + (n, ntypes, self._flatten_max_dinput),
                                     dtype=train_inputs.dtype)
             for i, v in enumerate(self._flatten_obs_idx.values()):
                 flatinput[..., i,
@@ -488,6 +498,22 @@ class ObservationInputs:
         idx = copy.deepcopy(self._sensory_feature_idx)
         sz = copy.deepcopy(self._sensory_feature_szs)
         return idx,sz
+    
+    
+    def __str__(self):
+        """
+        __str__()
+        Returns a string representation of the ObservationInputs object. 
+        """
+        s = f'{self.__class__.__name__}:\n'
+        if len(self._input) == 0:
+            s += 'No data set'
+            return s
+        s += f'  pre size: {self.pre_sz}\n'
+        s += f'  ntimepoints: {self.ntimepoints}\n'
+        s += f'  input dim: {self.d_input}\n'
+        return s
+
 
 class PoseLabels:
     """
@@ -559,14 +585,14 @@ class PoseLabels:
     def __init__(self, example_in=None,
                  Xkp=None, scale=None, metadata=None,
                  dozscore=False, dodiscretize=False,
-                 dataset=None, **kwargs):
+                 dataset=None, init_next=None, **kwargs):
 
         # set parameters
         self.set_params(kwargs)
         if dataset is not None:
-            self.set_params(self.__class__.get_params_from_dataset(dataset), override=False)
+            self.set_params(self.get_params_from_dataset(dataset), override=False, updatesizes=False)
         default_params = self.__class__.get_default_params()
-        self.set_params(default_params, override=False)
+        self.set_params(default_params, override=False, updatesizes=True)
 
         # initialize
         self._label_keys = {}
@@ -574,8 +600,11 @@ class PoseLabels:
         self._pre_sz = None
         self._metadata = metadata
         self._categories = None
-        self._init_pose = None
+        self._init_pose = init_next
 
+        # cache indices
+
+        
         # initialize from example_in
         if example_in is not None:
             self.set_raw_example(example_in, dozscore=dozscore, dodiscretize=dodiscretize)
@@ -841,20 +870,22 @@ class PoseLabels:
         elif 'init' in example_in:
             self._init_pose = example_in['init']
                                     
-        # set sizes
-        self._d_next_discrete = len(self._idx_nextdiscrete_to_next)
-        self._d_multi = d_multicontinuous + d_multidiscrete
-        ntspred_continuous = 1
-        # TODO - maybe allow multi-frame continuous predictions without dct?
-        if self._dct_m is not None:
-            ntspred_continuous += self._dct_m.shape[0]
-        self._d_next_continuous = self.d_multicontinuous / ntspred_continuous
+        # # set sizes
+        # #self._d_next_discrete = len(self._idx_nextdiscrete_to_next)
+        # self._d_multi = d_multicontinuous + d_multidiscrete
+        # ntspred_continuous = 1
+        # # TODO - maybe allow multi-frame continuous predictions without dct?
+        # if self._dct_m is not None:
+        #     ntspred_continuous += self._dct_m.shape[0]
+        # #self._d_next_continuous = self.d_multicontinuous / ntspred_continuous
+        # self._d_next = self.d_next_continuous + self.d_next_discrete
+        # np.sum([len(x) for x in self._tspred_nextcossin])
 
-        # make tspred and isdct have an entry for each d_next        
-        if not hasattr(self._tspred[0],'__len__'):
-            self._tspred = [self._tspred,]*self._d_next
-        if not hasattr(self._isdct,'__len__'):
-            self._isdct = np.zeros(self._d_next,dtype=bool)+self._isdct
+        # # make tspred and isdct have an entry for each d_next        
+        # if not hasattr(self._tspred[0],'__len__'):
+        #     self._tspred = [self._tspred,]*self._d_next
+        # if not hasattr(self._isdct,'__len__'):
+        #     self._isdct = np.zeros(self._d_next,dtype=bool)+self._isdct
 
     def copy(self):
         """
@@ -880,9 +911,22 @@ class PoseLabels:
         new: a copy of the AgentExample object with the specified indices and time points
         """
 
-        labels = self.get_raw_labels(makecopy=True)
+        if ts is not None:            
+            # convert ts to ndarray
+            if type(ts) is slice:
+                ts = range(*ts.indices(self.ntimepoints))
+            ts = np.atleast_1d(np.array(ts))
+            assert np.all(np.diff(ts) == 1), 'ts must be consecutive'
+
+        labels = self.get_raw_labels(makecopy=True,needinit=False)
         labels['metadata'] = self.get_metadata(makecopy=True)
-        init_next = self.get_init_pose()
+
+        if needinit:
+            init_next = self.get_init_pose(ts=ts)
+        else:
+            init_next = np.zeros(self._init_pose.shape)
+            init_next[:] = np.nan
+        labels['init'] = init_next
 
         if idx_pre is not None:
             ks = ['continuous', 'discrete', 'todiscretize', 'init', 'scale', 'categories', 'mask']
@@ -892,25 +936,10 @@ class PoseLabels:
             if labels['metadata'] is not None:
                 for k in labels['metadata'].keys():
                     labels['metadata'][k] = labels['metadata'][k][idx_pre]
-            init_next = init_next[idx_pre]
+            if needinit:
+                init_next = init_next[idx_pre]
 
         if ts is not None:
-            
-            # convert ts to ndarray
-            if type(ts) is slice:
-                ts = range(*ts.indices(self.ntimepoints))
-            ts = np.atleast_1d(np.array(ts))
-            assert np.all(np.diff(ts) == 1), 'ts must be consecutive'
-            
-            # if ts[0] > 0 and needinit, compute the initial pose by integrating
-            toff = ts[0]
-            if toff > 0:
-                if needinit:
-                    next_pose = self.get_next_pose(ts=np.arange(toff+1),use_todiscretize=self.is_todiscretize())
-                    init_pose = next_pose[-2:]
-                    init_next = init_pose.T
-                else:
-                    init_next[:] = np.nan # set to nans so that we know this is bad data            
             
             ks = ['continuous', 'discrete', 'todiscretize', 'mask']
 
@@ -944,7 +973,7 @@ class PoseLabels:
                     labels['metadata']['frame0'] += toff
 
         # create new PoseLabels object
-        new = PoseLabels(example_in=labels, init_next=init_next, **self.get_params())
+        new = self.__class__(example_in=labels, **self.get_params())
         return new
 
     def erase_labels(self):
@@ -1014,7 +1043,7 @@ class PoseLabels:
         }
         return kwlabels
 
-    def set_params(self, params, override=True, translatedict=None):
+    def set_params(self, params, override=True, translatedict=None, updatesizes=True):
         """
         set_params(params, override=True)
         Sets the parameters for the PoseLabels object. 
@@ -1041,6 +1070,37 @@ class PoseLabels:
         else:
             self._discretize_nbins = 0
             
+        if updatesizes:
+            self.update_sizes()
+
+    def update_sizes(self):
+        """
+        update_sizes()
+        Update cached sizes, should be called after setting parameters is complete
+        """
+                    
+        # make tspred and isdct have an entry for each d_next        
+        self._d_next = len(self._tspred)
+        if not hasattr(self._tspred[0],'__len__'):
+            self._tspred = [self._tspred,]*self._d_next
+        elif len(self._tspred) < self._d_next:
+            self._tspred = self._tspred + [self._tspred[-1],]*(self._d_next-len(self._tspred))
+        elif len(self._tspred) > self._d_next:
+            self._tspred = self._tspred[:self._d_next]
+            
+        if not hasattr(self._isdct,'__len__'):
+            self._isdct = np.zeros(self._d_next,dtype=bool)+self._isdct
+        elif len(self._isdct) < self._d_next:
+            self._isdct = np.concatenate((self._isdct, np.zeros(self._d_next-len(self._isdct),dtype=bool)))
+        elif len(self._isdct) > self._d_next:
+            self._isdct = self._isdct[:self._d_next]
+        
+        self._d_multi = np.sum([len(x) for x in self._tspred_nextcossin])
+        # cache indices
+        self._idx_multi_to_multifeattpred = self.multi_to_feattpred(np.arange(self.d_multi))
+        self._multi_isdiscrete = self.compute_multi_isdiscrete()
+        self._idx_nextcossin_to_multi = self.compute_idx_nextcossin_to_multi()
+
         
     def _labels_raw_to_ntimepoints(self,labels_raw):
         """
@@ -1117,21 +1177,46 @@ class PoseLabels:
         """
         return (self._dct_m is not None) and np.any(self._isdct)
 
-    def get_init_pose(self, starttoff=None, makecopy=False):
+    def get_init_pose(self,starttoff=None,makecopy=False,ts=None):
         """
-        get_init_pose(starttoff=None, makecopy=False)
+        get_init_pose(starttoff=None, makecopy=False,ts=None)
         Returns the initial pose of the agent. 
         Optional parameters:
         starttoff: which frame of init_pose to return. If none, it will return all frames. Default is None.
         makecopy: whether to return a copy of the data. Default is False.
+        ts: time points selected
         """
-        if starttoff is None:
+        if ts is None:
+            toff = 0
+        else:
+            ts = np.atleast_1d(ts)
+            toff = ts[0]
+        if toff == 0:
             init_pose = self._init_pose
         else:
+            next_pose = self.get_next_pose(ts=np.arange(toff+1),use_todiscretize=self.is_todiscretize())
+            init_pose = next_pose[-2:].T
+        if starttoff is not None:
             init_pose = self._init_pose[:, starttoff]
         if makecopy:
             init_pose = init_pose.copy()
         return init_pose
+
+    # def get_init_pose(self, starttoff=None, makecopy=False):
+    #     """
+    #     get_init_pose(starttoff=None, makecopy=False)
+    #     Returns the initial pose of the agent. 
+    #     Optional parameters:
+    #     starttoff: which frame of init_pose to return. If none, it will return all frames. Default is None.
+    #     makecopy: whether to return a copy of the data. Default is False.
+    #     """
+    #     if starttoff is None:
+    #         init_pose = self._init_pose
+    #     else:
+    #         init_pose = self._init_pose[:, starttoff]
+    #     if makecopy:
+    #         init_pose = init_pose.copy()
+    #     return init_pose
 
     def get_metadata(self, makecopy=True):
         """
@@ -1161,6 +1246,7 @@ class PoseLabels:
         """
         return len(self._idx_nextdiscrete_to_next)
     
+    @property
     def d_next_continuous(self):
         """
         d_next_continuous
@@ -1300,10 +1386,9 @@ class PoseLabels:
         """
         return self._d_multi
 
-    @property
-    def _idx_nextcossin_to_multi(self):
+    def compute_idx_nextcossin_to_multi(self):
         """
-        _idx_nextcossin_to_multi
+        compute_idx_nextcossin_to_multi
         Convert from nextcossin indices to multi indices.
         Returns a list of indices of multi pose that are next cossin pose.
         """
@@ -1311,16 +1396,16 @@ class PoseLabels:
         assert np.max([np.min(ts) for ts in self._tspred]) == 1
         return self.feattpred_to_multi([(f, 1) for f in range(self.d_next_cossin)])
 
-    @property
-    def _idx_multi_to_multifeattpred(self):
-        """
-        idx_multi_to_multifeattpred
-        Convert from multi indices to which feature and frames into the future are predicted. 
-        Returns an ndarray of size d_nextcossin x 2.
-        """
-        # look up table from multi index to (feat,tpred)
-        # d_multi x 2 array
-        return self.multi_to_feattpred(np.arange(self.d_multi))
+    # @property
+    # def _idx_multi_to_multifeattpred(self):
+    #     """
+    #     idx_multi_to_multifeattpred
+    #     Convert from multi indices to which feature and frames into the future are predicted. 
+    #     Returns an ndarray of size d_nextcossin x 2.
+    #     """
+    #     # look up table from multi index to (feat,tpred)
+    #     # d_multi x 2 array
+    #     return self.multi_to_feattpred(np.arange(self.d_multi))
 
     @property
     def _idx_multifeattpred_to_multi(self):
@@ -1336,10 +1421,9 @@ class PoseLabels:
             idx_multifeattpred_to_multi[tuple(ft.tolist())] = idx
         return idx_multifeattpred_to_multi
 
-    @property
-    def _multi_isdiscrete(self):
+    def compute_multi_isdiscrete(self):
         """
-        _multi_isdiscrete
+        compute_multi_isdiscrete
         Returns a boolean array indicating which features in the multi representation are discrete.
         """
         
@@ -1371,6 +1455,15 @@ class PoseLabels:
             return self._multi_isdiscrete.copy()
         else:
             return self._multi_isdiscrete[idx].copy()
+        
+    def get_multi_iscontinuous(self,idx=None):
+        """
+        get_multi_iscontinuous(idx=None)
+        Returns a boolean array indicating which features in the multi representation are continuous.
+        Optional parameters:
+        idx: indices of the multi features to return. If None, all features are returned. Default is None.
+        """
+        return self.get_multi_isdiscrete(idx) == False
 
     @property
     def _idx_multicontinuous_to_multi(self):
@@ -1516,10 +1609,10 @@ class PoseLabels:
         Returns whether the labels have a mask in labels_raw. Currently not used/debugged.
         """
         return 'mask' in self.labels_raw
-
-    def get_raw_labels(self, format='standard', ts=None, makecopy=True):
+    
+    def get_raw_labels_basic(self, format='standard', ts=None, makecopy=True, ks=None):
         """
-        get_raw_labels(format='standard', ts=None, makecopy=True)
+        get_raw_labels_basic(ts=None, makecopy=True)
         Returns the raw labels as a dict. 
         Optional parameters:
         format: whether to return the labels in the standard format or the format used for training. Default is 'standard'.
@@ -1528,11 +1621,14 @@ class PoseLabels:
         makecopy: whether to return a copy of the data. Default is True.
         """
         labels_out = {}
-        for kin in self.labels_raw.keys():
+        if ks is None:
+            ks = self.labels_raw.keys()
+        for kin in ks:
             if format == 'standard':
                 kout = kin
             else:
                 kout = self._label_keys[kin]
+
             if makecopy:
                 labels_out[kout] = self.labels_raw[kin].copy()
             else:
@@ -1543,9 +1639,30 @@ class PoseLabels:
                 else:
                     labels_out[kout] = labels_out[kout][..., ts, :]
 
-        labels_out['init'] = self.get_init_pose(makecopy=makecopy)
-        labels_out['scale'] = self.get_scale(makecopy=makecopy)
-        labels_out['categories'] = self.get_categories(makecopy=makecopy)
+        return labels_out
+        
+
+    def get_raw_labels(self, format='standard', ts=None, makecopy=True, needinit=True,
+                       needscale=True, needcategories=True):
+        """
+        get_raw_labels(format='standard', ts=None, makecopy=True)
+        Returns the raw labels as a dict. 
+        Optional parameters:
+        format: whether to return the labels in the standard format or the format used for training. Default is 'standard'.
+        ts: indices of the time points to return. Time points must be contiguous, limited checking done. ts should work if it is
+        an ndarray, a list, a scalar, a slice, or a range. If None, all time points are returned. Default is None.
+        makecopy: whether to return a copy of the data. Default is True.
+        """
+        labels_out = self.get_raw_labels_basic(format=format, ts=ts, makecopy=makecopy)
+
+        if needinit:
+            labels_out['init'] = self.get_init_pose(ts=ts,makecopy=makecopy)
+        
+        if needscale:
+            labels_out['scale'] = self.get_scale(makecopy=makecopy)
+        
+        if needcategories:
+            labels_out['categories'] = self.get_categories(makecopy=makecopy)
 
         return labels_out
 
@@ -1577,7 +1694,7 @@ class PoseLabels:
         """
         return np.max(self.d_multicontinuous, self._discretize_nbins)
 
-    def get_train_labels(self, added_noise=None, namingscheme='standard'):
+    def get_train_labels(self, added_noise=None, namingscheme='standard',ts=None, needinit=True):
         """
         get_train_labels(do_add_noise=False, namingscheme='standard')
         Returns the training labels as a dict. 
@@ -1608,7 +1725,7 @@ class PoseLabels:
         """
 
         # makes a copy
-        raw_labels = self.get_raw_labels_tensor_copy()
+        raw_labels = self.get_raw_labels_tensor_copy(ts=ts,needinit=needinit)
 
         # to do: add noise
         assert added_noise is None, 'not implemented'
@@ -1621,9 +1738,10 @@ class PoseLabels:
           rename_dict['discrete'] = 'labels_discrete'
           rename_dict['continuous'] = 'labels'
           rename_dict['todiscretize'] = 'labels_todiscretize'
-          rename_dict['continuous_init'] = 'labels_init'
-          rename_dict['discrete_init'] = 'labels_discrete_init'
-          rename_dict['todiscretize_init'] = 'labels_todiscretize_init'
+          if needinit:
+            rename_dict['continuous_init'] = 'labels_init'
+            rename_dict['discrete_init'] = 'labels_discrete_init'
+            rename_dict['todiscretize_init'] = 'labels_todiscretize_init'
 
         train_labels = {}
 
@@ -1631,13 +1749,15 @@ class PoseLabels:
         if self.is_discretized():
             train_labels[rename_dict['discrete']] = raw_labels['discrete'][..., self._starttoff:, :, :]
             train_labels[rename_dict['todiscretize']] = raw_labels['todiscretize'][..., self._starttoff:, :]
-            train_labels[rename_dict['discrete_init']] = raw_labels['discrete'][..., :self._starttoff, :, :]
-            train_labels[rename_dict['todiscretize_init']] = raw_labels['todiscretize'][..., :self._starttoff, :]
+            if needinit:
+                train_labels[rename_dict['discrete_init']] = raw_labels['discrete'][..., :self._starttoff, :, :]
+                train_labels[rename_dict['todiscretize_init']] = raw_labels['todiscretize'][..., :self._starttoff, :]
         else:
             train_labels[rename_dict['discrete']] = None
             train_labels[rename_dict['todiscretize']] = None
-            train_labels[rename_dict['discrete_init']] = None
-            train_labels[rename_dict['todiscretize_init']] = None
+            if needinit:
+                train_labels[rename_dict['discrete_init']] = None
+                train_labels[rename_dict['todiscretize_init']] = None
 
         # init_all has all frames of init
         train_labels['init_all'] = raw_labels['init']
@@ -1661,7 +1781,10 @@ class PoseLabels:
                 train_labels['mask'] = raw_labels['mask'][..., self._starttoff:]
         else:
             # flattened rep -- currently not debugged
-            contextl = self.ntimepoints
+            if ts is None:
+                contextl = self.ntimepoints
+            else:
+                contextl = len(ts)
             dtype = raw_labels['continuous'].dtype
             ntokens = self.get_ntokens()
             flatten_max_doutput = self.get_flatten_max_doutput()
@@ -1695,7 +1818,7 @@ class PoseLabels:
         """
         if not self.is_masked():
             return None
-        labels_raw = self.get_raw_labels(format='standard', ts=ts, makecopy=makecopy)
+        labels_raw = self.get_raw_labels_basic(ts=ts, makecopy=makecopy, ks=['mask'])
         return labels_raw['mask']
 
     def unzscore_multi(self, multi):
@@ -1728,6 +1851,37 @@ class PoseLabels:
         multi = zscore(multi_unz, self._zscore_params['mu_labels'], self._zscore_params['sig_labels'])
         return multi
 
+    def zscore_multi_continuous(self,multi_continuous):
+        """
+        zscore_multi_continuous(multi_continuous)
+        Zscores the input multi_continuous labels.
+        Parameter:
+        multi_continuous: ndarray of size (pre_sz x ) ntimepoints x d_multicontinuous with the continuous multi labels.
+        Output:
+        multi_continuous: ndarray of size (pre_sz x ) ntimepoints x d_multicontinuous with the zscored multi_continuous labels.
+        """
+        if not self.is_zscored():
+            return multi_continuous
+        multi_continuous = zscore(multi_continuous, self._zscore_params['mu_labels'][self._idx_multicontinuous_to_multi], 
+                                  self._zscore_params['sig_labels'][self._idx_multicontinuous_to_multi])
+        return multi_continuous
+
+    
+    def unzscore_multi_continuous(self,multi_continuous):
+        """
+        unzscore_multi_continuous(multi_continuous)
+        Unzscores the input multi_continuous labels.
+        Parameter:
+        multi_continuous: ndarray of size (pre_sz x ) ntimepoints x d_multicontinuous with the continuous multi labels.
+        Output:
+        multi_continuous: ndarray of size (pre_sz x ) ntimepoints x d_multicontinuous with the unzscored multi_continuous labels.
+        """
+        if not self.is_zscored():
+            return multi_continuous
+        multi_continuous = unzscore(multi_continuous, self._zscore_params['mu_labels'][self._idx_multicontinuous_to_multi], 
+                                    self._zscore_params['sig_labels'][self._idx_multicontinuous_to_multi])
+        return multi_continuous
+
     def labels_discrete_to_continuous(self, labels_discrete, epsilon=1e-3):
         """
         labels_discrete_to_continuous(labels_discrete, epsilon=1e-3)
@@ -1739,6 +1893,7 @@ class PoseLabels:
         continuous: ndarray of size (pre_sz x ) ntimepoints x d_discrete with the continuous version of the labels.
         """
         assert self.is_discretized()
+
         sz = labels_discrete.shape
         nbins = sz[-1]
         nfeat = sz[-2]
@@ -1746,11 +1901,16 @@ class PoseLabels:
         n = int(np.prod(np.array(szrest)))
         labels_discrete = labels_discrete.reshape((n, nfeat, nbins))
 
+        s = np.sum(labels_discrete, axis=-1)
+
+        # if the sum is not 1, including if nan, set to 1, but nan out results after
+        isbad = np.abs(1 - s) >= epsilon
+        s[isbad] = 1.
+
         # nfeat x nbins
         bin_centers = self._discretize_params['bin_medians']
-        s = np.sum(labels_discrete, axis=-1)
-        assert np.max(np.abs(1 - s)) < epsilon, 'discrete labels do not sum to 1'
         continuous = np.sum(bin_centers[None, ...] * labels_discrete, axis=-1) / s
+        continuous[isbad] = np.nan
         continuous = np.reshape(continuous, szrest + (nfeat,))
         return continuous
 
@@ -1771,15 +1931,29 @@ class PoseLabels:
         szrest = sz[:-2]
         n = int(np.prod(np.array(szrest)))
         labels_discrete = labels_discrete.reshape((n, nfeat, nbins))
+        
         bin_samples = self._discretize_params['bin_samples']
         nsamples_per_bin = bin_samples.shape[0]
         continuous = np.zeros((nsamples,) + szrest + (nfeat,), dtype=labels_discrete.dtype)
         for f in range(nfeat):
-            # to do make weighted_sample work with numpy directly
+            # to do make weighted_sample work with numpy directly            
             binnum = weighted_sample(torch.tensor(labels_discrete[:, f, :]), nsamples=nsamples).numpy()
-            sample = np.random.randint(low=0, high=nsamples_per_bin, size=(nsamples, n))
-            curr = bin_samples[sample, f, binnum].reshape((nsamples,) + szrest)
+            idxgood = binnum >= 0
+            ngood = np.count_nonzero(idxgood)
+            sample = np.random.randint(low=0, high=nsamples_per_bin, size=(ngood,))
+            curr = np.zeros(nsamples*n)
+            curr[:] = np.nan
+            curr[idxgood.flatten()] = bin_samples[sample, f, binnum[idxgood]]
+            curr = curr.reshape((nsamples,) + szrest)
             continuous[..., f] = curr
+
+            # old code that assumed that all weights were good
+            # binnum = weighted_sample(torch.tensor(labels_discrete[:, f, :]), nsamples=nsamples).numpy()
+            # idxgood = binnum >= 0
+            # sample = np.random.randint(low=0, high=nsamples_per_bin, size=(nsamples, n))
+            # curr = np.zeros((nsamples,n))
+            # curr = bin_samples[sample, f, binnum].reshape((nsamples,) + szrest)
+            # continuous[..., f] = curr
 
         return continuous
 
@@ -1853,7 +2027,7 @@ class PoseLabels:
         multi: ndarray of size (nsamples x ) (pre_sz x ) ntimepoints x d_multi with the multi representation of the labels.
         """
 
-        labels_raw = self.get_raw_labels(format='standard', ts=ts, makecopy=False)
+        labels_raw = self.get_raw_labels_basic(ts=ts, makecopy=False)
         multi = self.raw_labels_to_multi(labels_raw, use_todiscretize=use_todiscretize, nsamples=nsamples, 
                                          zscored=zscored, collapse_samples=collapse_samples)
 
@@ -1873,8 +2047,25 @@ class PoseLabels:
         if not self.is_discretized():
             nts = len_wrapper(ts, self.ntimepoints)
             return np.zeros((self.pre_sz + (nts, 0, 0)), dtype=self.dtype)
-        labels_raw = self.get_raw_labels(format='standard', ts=ts, makecopy=makecopy)
+        labels_raw = self.get_raw_labels_basic(ts=ts, makecopy=makecopy, ks=['discrete'])
         return labels_raw['discrete']
+
+    def get_multi_continuous(self, makecopy=True, ts=None, zscored=False):
+        """
+        get_multi_continuous(makecopy=True, ts=None)
+        Returns the continuous features of the labels.
+        Optional parameters:
+        makecopy: whether to return a copy of the data. Default is True.
+        ts: indices of the time points to return. Time points must be contiguous, limited checking done. ts should work if it is
+        an ndarray, a list, a scalar, a slice, or a range. If None, all time points are returned. Default is None.
+        Returns:
+        multi_continuous: ndarray of size (pre_sz x ) ntimepoints x d_continuous with the continuous features.
+        """
+        labels_raw = self.get_raw_labels_basic(ts=ts, makecopy=makecopy, ks=['continuous'])
+        multi_continuous = labels_raw['continuous']
+        if (zscored == False) and self.is_zscored():
+            return self.unzscore_multi_continuous(multi_continuous)
+        return multi_continuous
 
     def set_multi(self, multi, multi_discrete=None, zscored=False, ts=None):
         """
@@ -1897,26 +2088,23 @@ class PoseLabels:
         if self.is_zscored() and (zscored == False):
             multi = self.zscore_multi(multi)
 
-        # get current raw labels
-        labels_raw = self.get_raw_labels(format='standard', makecopy=False)
-
         if ts is None:
             ts = slice(None)
         elif np.isscalar(ts):
             ts = [ts,]
 
         # set continuous
-        labels_raw['continuous'][...,ts,:] = multi[...,self._idx_multicontinuous_to_multi]
+        self.labels_raw['continuous'][...,ts,:] = multi[...,self._idx_multicontinuous_to_multi]
 
         # set discrete
         if self.is_discretized():
-            labels_raw['todiscretize'][...,ts,:] = multi[..., self._idx_multidiscrete_to_multi]
+            self.labels_raw['todiscretize'][...,ts,:] = multi[..., self._idx_multidiscrete_to_multi]
             if multi_discrete is None:
-                labels_raw['discrete'][...,ts,:,:] = discretize_labels(labels_raw['todiscretize'][..., ts, :],
-                                                                    self._discretize_params['bin_edges'],
-                                                                    soften_to_ends=True)
+                self.labels_raw['discrete'][...,ts,:,:] = discretize_labels(self.labels_raw['todiscretize'][..., ts, :],
+                                                                            self._discretize_params['bin_edges'],
+                                                                            soften_to_ends=True)
             else:
-                labels_raw['discrete'][...,ts,:,:] = multi_discrete
+                self.labels_raw['discrete'][...,ts,:,:] = multi_discrete
 
         return
 
@@ -2097,14 +2285,17 @@ class PoseLabels:
         """
         return self._next_to_nextcossin(next)
 
-    def get_input_labels(self):
+    def get_input_labels(self,ts=None):
         """
         get_input_labels()
         Returns the labels that will be input from the previous frame to the model. 
         This will be an ndarray of size (pre_sz x ) ntimepoints x d_input_labels.
         """
-        assert self.is_todiscretize(), 'get_input_labels only works when todiscretize is set'
-        return self.get_nextcossin(zscored=self.is_zscored(), use_todiscretize=True)
+        assert (not self.is_discretized) or self.is_todiscretize(), 'get_input_labels only works when todiscretize is set'
+        # if ts is not None:
+        #     ts = np.atleast_1d(ts)
+        #     ts = np.r_[ts[0]-1,ts]
+        return self.get_nextcossin(zscored=self.is_zscored(), use_todiscretize=True, ts=ts)
 
     def get_next(self, **kwargs):
         """
@@ -2297,6 +2488,10 @@ class PoseLabels:
         self._init_pose = init_pose.T
         self.set_next(next, zscored=False, **kwargs)
 
+    @property
+    def n_keypoints(self):
+        return self._d_next//2
+
     def _nextpose_to_nextkeypoints(self, pose):
         """
         _nextpose_to_nextkeypoints(pose)
@@ -2461,6 +2656,17 @@ class PoseLabels:
             if ismulti:
                 multi_names[i] = nextcs_names[ft[i, 0]] + '_' + str(ft[i, 1])
         return multi_names
+    
+    def get_discrete_names(self):
+        """
+        get_discrete_names()
+        Returns the names of the discrete features.
+        Returns:
+        discrete_names: list of names of the discrete features.
+        """
+        multi_names = self.get_multi_names()
+        discrete_names = [multi_names[i] for i in self._idx_multidiscrete_to_multi]
+        return discrete_names
 
 class AgentExample:
     """
@@ -2557,7 +2763,7 @@ class AgentExample:
         # set parameters from extra arguments or dataset
         self.set_params(kwargs)
         if dataset is not None:
-            self.set_params(self.__class__.get_params_from_dataset(dataset), override=False)
+            self.set_params(self.get_params_from_dataset(dataset), override=False)
         default_params = self.get_default_params()
         self.set_params(default_params, override=False)
         if self._dct_m is not None and self._idct_m is None:
@@ -2775,6 +2981,12 @@ class AgentExample:
         Return value:
         new: a copy of the AgentExample object with the specified indices and time points
         """
+        
+        if ts is not None:
+            # convert ts to ndarray
+            if type(ts) is slice:
+                ts = range(*ts.indices(self.ntimepoints))
+            ts = np.atleast_1d(np.array(ts))
 
         # get a copy of the raw data
         example = self.get_raw_example(makecopy=True)
@@ -2792,20 +3004,13 @@ class AgentExample:
         # if ts is specified, subselect these time points
         if ts is not None:
 
-            # convert ts to ndarray
-            if type(ts) is slice:
-                ts = range(*ts.indices(self.ntimepoints))
-            ts = np.atleast_1d(np.array(ts))
-            
             # if ts[0] > 0 and needinit, compute the initial pose by integrating
+            if needinit:
+                init_pose = self.labels.get_init_pose(ts=ts)
+                example['init'] = init_pose
+            else:
+                example['init'][:] = np.nan # set to nans so that we know this is bad data
             toff = ts[0]
-            if toff > 0:
-                if needinit:
-                    next_pose = self.labels.get_next_pose(ts=np.arange(toff+1),use_todiscretize=self.labels.is_todiscretize())
-                    init_pose = next_pose[-2:]
-                    example['init'] = init_pose.T                    
-                else:
-                    example['init'][:] = np.nan # set to nans so that we know this is bad data
 
             # subselect from categories, padding is weird here. 
             # might need debugging, we don't use categories yet
@@ -2963,7 +3168,7 @@ class AgentExample:
         else:
             return self.metadata
 
-    def get_raw_example(self, format='standard', makecopy=True):
+    def get_raw_example(self, format='standard', makecopy=True, needinit=True, needscale=True, needcategories=True):
         """
         get_raw_example(format='standard', makecopy=True)
         Returns the raw example for the AgentExample object as a dict. 
@@ -2973,12 +3178,13 @@ class AgentExample:
         Default is 'standard'.
         makecopy: Whether to make a copy of the example. Default is True.
         """
-        example = self.labels.get_raw_labels(format=format, makecopy=makecopy)
+        example = self.labels.get_raw_labels(format=format, makecopy=makecopy, 
+                                             needinit=needinit, needscale=needscale, needcategories=needcategories)
         example['input'] = self.inputs.get_raw_inputs(makecopy=makecopy)
         example['metadata'] = self.get_metadata(makecopy=makecopy)
         return example
 
-    def get_input_labels(self):
+    def get_input_labels(self,**kwargs):
         """
         get_input_labels()
         Returns the input labels for the AgentExample object.
@@ -2986,7 +3192,7 @@ class AgentExample:
         if self._do_input_labels == False:
             return None
         else:
-            return self.labels.get_input_labels()
+            return self.labels.get_input_labels(**kwargs)
 
     def get_n_input_labels(self):
         """
@@ -2998,7 +3204,7 @@ class AgentExample:
         else:
             return 0
 
-    def get_train_example(self, do_add_noise=False):
+    def get_train_example(self, do_add_noise=False, ts=None, makecopy=True, needmetadata=True, needinput=True, needlabels=True, needinit=True):
         """
         get_train_example(do_add_noise=False)
         Returns the training example consisting of inputs and labels.
@@ -3028,30 +3234,56 @@ class AgentExample:
             'init_all': ndarray of size (pre_sz x ) starttoff x d_next with the initial pose of the agent
         """
 
+        res = {}
         # to do: add noise
-        metadata = self.get_train_metadata()
-        input_labels = self.get_input_labels()
+            
+        if needinput:
+            input_labels = self.get_input_labels(ts=ts)
 
-        train_inputs = self.inputs.get_train_inputs(input_labels=input_labels,
-                                                    labels=self.labels,
-                                                    do_add_noise=do_add_noise)
-        train_labels = self.labels.get_train_labels(added_noise=train_inputs['eta'])
+            train_inputs = self.inputs.get_train_inputs(input_labels=input_labels,
+                                                        labels=self.labels,
+                                                        do_add_noise=do_add_noise,
+                                                        makecopy=makecopy,
+                                                        ts=ts)
+            res['input'] = train_inputs['input']
+            if needinit:
+                res['input_init'] = train_inputs['input_init']
+                
+        if needlabels:
+            train_labels = self.labels.get_train_labels(added_noise=train_inputs['eta'],ts=ts)
+                        
+            flatten = self._flatten_labels or self._flatten_obs
+            assert flatten == False, 'flatten not implemented'
+            
+            if 'continuous' in train_labels:
+                res['labels'] = train_labels['continuous']
+            if 'discrete' in train_labels:
+                res['labels_discrete'] = train_labels['discrete']
+            if 'todiscretize' in train_labels:
+                res['labels_todiscretize'] = train_labels['todiscretize']
+            if needinit:
+                res['init'] = train_labels['init']
+                if 'continuous_init' in train_labels:
+                    res['labels_init'] = train_labels['continuous_init']
+                if 'discrete_init' in train_labels:
+                    res['labels_discrete_init'] = train_labels['discrete_init']
+                if 'todiscretize_init' in train_labels:
+                    res['labels_todiscretize_init'] = train_labels['todiscretize_init']
+                if 'init_all' in train_labels:
+                    res['init_all'] = train_labels['init_all']
+            if needmetadata:
+                if 'scale' in train_labels:
+                    res['scale'] = train_labels['scale']
+                if 'categories' in train_labels:
+                    res['categories'] = train_labels['categories']
 
-        flatten = self._flatten_labels or self._flatten_obs
-        assert flatten == False, 'flatten not implemented'
-        
-        res = {'input': train_inputs['input'], 'labels': train_labels['continuous'],
-               'labels_discrete': train_labels['discrete'],
-               'labels_todiscretize': train_labels['todiscretize'],
-               'init': train_labels['init'], 'scale': train_labels['scale'],
-               'metadata': metadata,
-               'input_init': train_inputs['input_init'],
-               'labels_init': train_labels['continuous_init'],
-               'labels_discrete_init': train_labels['discrete_init'],
-               'labels_todiscretize_init': train_labels['todiscretize_init'],
-               'init_all': train_labels['init_all'], }
-        if 'categories' in train_labels:
-            res['categories'] = train_labels['categories']
+        if needmetadata:
+            metadata = self.get_train_metadata()
+            if ts is not None:
+                ts = np.atleast_1d(ts)
+                metadata['t0'] += ts[0]
+                metadata['frame0'] += ts[0]
+            res['metadata'] = metadata
 
         return res
 
@@ -3061,10 +3293,9 @@ class AgentExample:
         Returns the metadata for the training example, offset by starttoff.
         """
         starttoff = self._starttoff
-        metadata = self.get_metadata()
+        metadata = self.get_metadata(makecopy=True)
         if metadata is None:
             return None
-        metadata = copy.deepcopy(metadata)
         metadata['t0'] += starttoff
         metadata['frame0'] += starttoff
         return metadata
@@ -3103,6 +3334,124 @@ class AgentExample:
             idx['labels'] = [0, d_input_labels]
             sz['labels'] = (d_input_labels,)
         return idx, sz
+    
+    def __str__(self):
+        """
+        __str__()
+        Returns a string representation of the AgentExample object. 
+        """
+        s = f'{self.__class__.__name__}:\n'
+        s += 'labels:\n'
+        s += str(self.labels)
+        s += 'inputs:\n'
+        s += str(self.inputs)
+        return s
+    
+    @staticmethod
+    def compute_error(true_example=None,pred_example=None,true_labels=None,pred_labels=None,nsamples=10):
+        """
+        compute_error(true_example=None,pred_example=None,true_labels=None,pred_labels=None,nsamples=10)
+        Computes the error between the true and predicted labels in various ways.
+        Parameters:
+        true_example: AgentExample object with the true labels. Used if true_labels is None. 
+        Default is None. 
+        pred_example: AgentExample object with the predicted labels. Used if pred_labels is None.
+        Default is None.
+        true_labels: PoseLabels object with the true labels. Default is None. Set by true_example.labels if None.
+        pred_labels: PoseLabels object with the predicted labels. Default is None. Set by pred_example.labels if None.
+        (one of true_labels or true_example should be input, and one of pred_labels or pred_example should be input)
+        nsamples: Number of samples to use when computing the error for discrete features. Default is 10.
+        Returns:
+        err: Dictionary with the error metrics.
+        'idxgood': ndarray of size ntimepoints with a mask for the time points that are not nan
+        'n': Number of time points that are not nan
+        'multi_names': list of the names of the multi features
+        'absdiff_multi': ndarray of size ntimepoints x d_multi with the absolute difference between the
+        true (from to_discretize) and a continuous version of the mean of predicted probability distributions. 
+        'l1_multi': ndarray of size d_multi with the mean L1 error computed from absdiff_multi.
+        'absdiff_multi_sample': ndarray of size nsamples x ntimepoints x d_multi_discrete with the absolute difference between
+        the true and predicted labels for nsamples drawn according to the predicted probabilities.
+        'l1_multi_samplemean': ndarray of size d_multi with the mean L1 error for each sample, computed from absdiff_multi_sample. 
+        'mse_multi_samplemean': ndarray of size d_multi with the mean squared error for the each sample, computed from absdiff_multi_sample.
+        'absdiff_multi_samplemean': ndarray of size ntimepoints x d_multi computed from the mean of absdiff_multi_sample
+        for each time point. 
+        'absdiff_multi_samplemin': ndarray of size ntimepoints x d_multi computed from the minimum of absdiff_multi_sample
+        for each time point. 
+        'l1_multi_samplemin': ndarray of size d_multi with the mean L1 error for the closest sample, computed from 
+        absdiff_multi_samplemin.
+        'mse_multi_samplemin': ndarray of size d_multi with the mean squared error for the closest sample, computed from 
+        absdiff_multi_samplemin.
+
+        If 'discrete' is in the labels, then the following keys are included:
+            'ce_discrete': ndarray of size ntimepoints x d_multi_discrete with the cross-entropy error for the discrete labels
+            'ce_discrete_mean': ndarray of size d_multi_discrete with the mean cross-entropy error for the discrete labels
+            'discrete_names': list of the names of the discrete features
+        """
+    
+        if true_labels is None:
+            true_labels = true_example.labels
+        if pred_labels is None:
+            pred_labels = pred_example.labels
+            
+        pred_labels_dict = pred_labels.get_train_labels()
+        true_labels_dict = true_labels.get_train_labels()
+        
+        starttoff = true_example._starttoff
+
+        err = {}
+        
+        idxgood = True
+        if 'continuous' in pred_labels_dict:
+            idxgood = idxgood & (torch.any(torch.isnan(true_labels_dict['continuous']),dim=-1)==False)
+            idxgood = idxgood & (torch.any(torch.isnan(pred_labels_dict['continuous']),dim=-1)==False)
+        if 'discrete' in pred_labels_dict:
+            idxgood = idxgood & (torch.any(torch.isnan(true_labels_dict['discrete']),dim=(-1,-2))==False)
+            idxgood = idxgood & (torch.any(torch.isnan(pred_labels_dict['discrete']),dim=(-1,-2))==False)
+            
+        err['idxgood'] = idxgood
+        err['n'] = idxgood.sum()
+
+        # multi representation - contains most things
+        err['multi_names'] = true_labels.get_multi_names()     
+
+        multi_label = true_labels.get_multi(use_todiscretize=True)
+        multi_label = multi_label[...,starttoff:,:]
+        multi_pred_weightedsum = pred_labels.get_multi(nsamples=0,collapse_samples=True)#,use_todiscretize=True)
+        multi_pred_weightedsum = multi_pred_weightedsum[...,starttoff:,:]
+        err['absdiff_multi'] = np.abs(multi_pred_weightedsum-multi_label)
+        assert np.all(np.isnan(err['absdiff_multi'][idxgood])==False), 'absdiff_multi has unexpected nans'
+
+        err['l1_multi'] = np.nanmean(err['absdiff_multi'],axis=0)
+        err['mse_multi'] = np.nanmean(np.square(err['absdiff_multi']),axis=0)
+
+        multi_pred_sample = pred_labels.get_multi(nsamples=nsamples,collapse_samples=False)
+        multi_pred_sample = multi_pred_sample[...,starttoff:,:]
+
+        # there are a few different ways to draw from the distributions, currently only for discrete features
+        err['absdiff_multi_sample'] = np.abs(multi_pred_sample-multi_label[None,...])
+        err['absdiff_multi_samplemean'] = np.nanmean(err['absdiff_multi_sample'],axis=0)
+        err['absdiff_multi_samplemin'] = np.nanmin(err['absdiff_multi_sample'],axis=0)
+        err['l1_multi_samplemean'] = np.nanmean(err['absdiff_multi_sample'],axis=(0,1))
+        err['l1_multi_samplemin'] = np.nanmean(err['absdiff_multi_samplemin'],axis=0)
+        err['mse_multi_samplemean'] = np.nanmean(np.square(err['absdiff_multi_sample']),axis=(0,1))
+        err['mse_multi_samplemin'] = np.nanmean(np.square(err['absdiff_multi_samplemin']),axis=0)
+
+        # cross-entropy error for discrete features
+        if 'discrete' in pred_labels_dict:
+            n = pred_labels_dict['discrete'].shape[0]
+            d = pred_labels_dict['discrete'].shape[1]
+            nbins = pred_labels_dict['discrete'].shape[-1]
+            
+            err['ce_discrete'] = torch.nn.functional.cross_entropy(pred_labels_dict['discrete'].reshape(-1,nbins),
+                                                                    true_labels_dict['discrete'].reshape(-1,nbins),reduction='none').reshape(n,d)
+            err['ce_discrete_mean'] = err['ce_discrete'].nanmean(dim=0)
+            
+            err['discrete_names'] = true_labels.get_discrete_names()
+            
+        true_kp = true_labels.get_next_keypoints()
+        pred_kp = pred_labels.get_next_keypoints()
+            
+        return err
 
 ObservationInputs._exampleClass = AgentExample
 PoseLabels._exampleClass = AgentExample

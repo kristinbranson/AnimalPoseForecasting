@@ -7,7 +7,7 @@ from apf.data import get_real_agents
 from flyllm.features import compute_pose_features, split_features
 from flyllm.config import ARENA_RADIUS_MM
 from flyllm.plotting import plot_flies, plot_arena
-from flyllm.pose import PoseLabels, FlyExample
+from flyllm.pose import FlyPoseLabels, FlyExample
 
 
 def get_pose_future(data, scales, tspred_global, ts=None, fliespred=None):
@@ -365,7 +365,7 @@ def animate_predict_open_loop(model, dataset, Xkp_init, fliespred, scales, tpred
     examples_pred = []
     for i, agentnum in enumerate(fliespred):
         scale = scales[i]
-        label_true = PoseLabels(Xkp=Xkp_true[..., agentnum], scale=scale, dataset=dataset)
+        label_true = FlyPoseLabels(Xkp=Xkp_true[..., agentnum], scale=scale, dataset=dataset)
         labels_true.append(label_true)
         # note that labels for > 1 frame into the future may be nan here if t+tspred > burnin
         # labels and pred should match up to t = burnin

@@ -42,7 +42,6 @@ class FlyMLMDataset(torch.utils.data.Dataset):
             dct_ms: tuple[np.ndarray | None, np.ndarray | None] | None = None,
             tspred_global: tuple[int, ...] = (1, ),
             compute_pose_vel: bool = True,
-            noclass: bool = False,
     ) -> None:
         """
         Args
@@ -186,18 +185,15 @@ class FlyMLMDataset(torch.utils.data.Dataset):
                                 flatten_do_separate_inputs=flatten_do_separate_inputs)
 
         # store examples in objects
-        if noclass:
-            self.data = data
-        else:
-            LOG.info('Creating FlyExample objects...')
-            self.data = []
-            for i in tqdm.trange(len(data)):
-                example_in = data[i]
-                self.data.append(FlyExample(example_in, dataset=self))
-                # if i > 1000:
-                #     LOG.warning('DEBUGGING: breaking after 100 examples')
-                #     break
-            LOG.info('Done.')
+        LOG.info('Creating FlyExample objects...')
+        self.data = []
+        for i in tqdm.trange(len(data)):
+            example_in = data[i]
+            self.data.append(FlyExample(example_in, dataset=self))
+            # if i > 1000:
+            #     LOG.warning('DEBUGGING: breaking after 100 examples')
+            #     break
+        LOG.info('Done.')
 
         self.set_train_mode()
 
@@ -549,10 +545,10 @@ class FlyMLMDataset(torch.utils.data.Dataset):
     def get_zscore_params(self):
 
         zscore_params = {
-            'mu_input': self.mu_input.copy(),
-            'sig_input': self.sig_input.copy(),
-            'mu_labels': self.mu_labels.copy(),
-            'sig_labels': self.sig_labels.copy(),
+            'mu_input': self.mu_input,
+            'sig_input': self.sig_input,
+            'mu_labels': self.mu_labels,
+            'sig_labels': self.sig_labels,
         }
         return zscore_params
 
@@ -677,10 +673,12 @@ class FlyMLMDataset(torch.utils.data.Dataset):
             relative pose features to keypoints.
             example['categories'] are the currently unused categories for this sequence.
             example['metadata'] is a dict of metadata about this sequence.
+            example['idx'] is the index of this example in the dataset.
 
         """
 
         res = self.data[idx].get_train_example()
+        res['idx'] = idx
         res['input'], mask, dropout_mask = self.mask_input(res['input'])
         if mask is not None:
             res['mask'] = mask
@@ -1031,7 +1029,8 @@ class FlyMLMDataset(torch.utils.data.Dataset):
     #     if self.d_output_continuous > 0:
     #         labels_continuous = labels_flattened[..., -1, :self.d_output_continuous]
     #     else:
-    #         labels_continuous = None
+    #         labels_continuous = Noneclass FlyTestDataset(F)
+
     #     if self.discretize:
     #         labels_discrete = labels_flattened[..., self.flatten_nobs_types:, :self.discretize_nbins]
     #         if self.continuous:
@@ -1072,3 +1071,75 @@ class FlyMLMDataset(torch.utils.data.Dataset):
     #         newinput[..., :, v[0]:v[1]] = input_flattened[..., i,
     #                                       self.flatten_input_type_to_range[i, 0]:self.flatten_input_type_to_range[i, 1]]
     #     return newinput
+
+class FlyTestDataset(FlyMLMDataset):
+    def __init__(self,data: list[dict[str, np.ndarray | dict[str, int]]],
+        contextl: int, allow_debugcheat: bool = False, **kwargs):
+
+        super().__init__(data,**kwargs)
+
+        self._contextl = contextl
+        self.n_examples_per_id = np.array([self.data[i].ntimepoints-self.contextl+1 for i in range(len(self.data))])
+        self.start_example_per_id = np.r_[0,np.cumsum(self.n_examples_per_id)]
+        self.allow_debugcheat = allow_debugcheat
+
+        self.set_eval_mode()
+
+        return
+
+    @property
+    def contextl(self):
+        return self._contextl
+
+    def __len__(self):
+        return self.start_example_per_id[-1]
+    
+    def get_example(self, idx: int, lastonly: bool = False):
+        """
+        example = self.get_example(idx)
+        Returns dataset example idx, FlyExample object
+        """
+        id = np.searchsorted(self.start_example_per_id,idx,side='right')-1
+        idx1 = idx-self.start_example_per_id[id]
+        if lastonly:
+            return self.data[id].copy_subindex(ts=[idx1+self.contextl-2,idx1+self.contextl-1])
+        else:
+            return self.data[id].copy_subindex(ts=np.arange(idx1,idx1+self.contextl))
+    
+    def __getitem__(self, idx: int):
+        id = np.searchsorted(self.start_example_per_id,idx,side='right')-1
+        idx1 = idx-self.start_example_per_id[id]
+        res = self.data[id].get_train_example(ts=np.arange(idx1,idx1+self.contextl),needinit=False,needlabels=self.allow_debugcheat,needmetadata=False,makecopy=False)
+        res['idx'] = idx
+        return res
+
+    def create_data_from_pred(self,all_pred,labelidx):
+        
+        if type(labelidx) is torch.Tensor:
+            labelidx = labelidx.cpu().numpy()
+            
+        labelids = np.searchsorted(self.start_example_per_id,labelidx,side='right')-1
+        labelts = labelidx - self.start_example_per_id[labelids] + self.contextl-1
+        unique_ids = np.unique(labelids)
+        pred_data = [None,]*(np.max(unique_ids)+1)
+        true_data = [None,]*(np.max(unique_ids)+1)
+
+        for id in unique_ids:
+            idxcurr = np.nonzero(labelids == id)[0]
+            tscurr = labelts[idxcurr]
+            mint = np.min(tscurr)
+            maxt = np.max(tscurr)
+
+            true_example = self.data[id].copy_subindex(ts=np.arange(mint,maxt+1))
+            true_data[id] = true_example
+            pred_example = true_example.copy()
+            pred_example.labels.erase_labels()
+            if isinstance(all_pred,dict):
+                curr_pred = {k:v[idxcurr] for k,v in all_pred.items()}
+            else:
+                curr_pred = all_pred[idxcurr]
+            pred_example.labels.set_prediction(curr_pred,ts=labelts[idxcurr]-mint)
+            pred_data[id] = pred_example
+
+        return pred_data, true_data
+        

@@ -23,6 +23,8 @@ def save_model(savefile, model, lr_optimizer=None, scheduler=None, loss=None, co
         tosave['config'] = config
     if sensory_params is not None:
         tosave['SENSORY_PARAMS'] = sensory_params
+    if hasattr(model, 'dataset_params'):
+        tosave['dataset_params'] = model.dataset_params
     torch.save(tosave, savefile)
     return
 
@@ -65,6 +67,9 @@ def load_config_from_model_file(loadmodelfile=None, config=None, state=None, no_
         sensory_params.update(state['SENSORY_PARAMS'])
     else:
         LOG.info(f'SENSORY_PARAMS not stored in model file {loadmodelfile}')
+    if (config is not None) and ('dataset_params' in state):
+        config['dataset_params'] = state['dataset_params']      
+
     return
 
 
@@ -193,6 +198,9 @@ def read_config(jsonfile, default_configfile=None, get_sensory_feature_idx=None,
                 raise ValueError(f'Unknown embedding type {et}')
             # end switch over embedding types
         # end if obs_embedding_types in config
+        
+        if ('test_batch_size' not in config) and ('batch_size' in config):
+            config['test_batch_size'] = config['batch_size']
 
     return config
 

@@ -41,8 +41,9 @@ from apf.models import (
     generate_square_full_mask,
     sanity_check_temporal_dep,
     criterion_wrapper,
+    update_loss_nepochs,
 )
-from apf.io import read_config, get_modeltype_str, load_and_filter_data, save_model, load_model
+from apf.io import read_config, get_modeltype_str, load_and_filter_data, save_model, load_model, parse_modelfile
 from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames, keypointnames
 from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx, compute_scale_perfly
 from flyllm.dataset import FlyMLMDataset
@@ -86,8 +87,8 @@ LOG.info('matplotlib backend: ' + mpl_backend)
 
 # %%
 # configuration parameters for this model
-loadmodelfile = None
 restartmodelfile = None
+restartmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flymulttimeglob_predposition_20240305_epoch130_20240825T122647.pth'
 configfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/config_fly_llm_multitimeglob_predictposition_20240305.json'
 # set to None if you want to use the full data
 quickdebugdatafile = None
@@ -262,6 +263,7 @@ train_dataset_params = {
 LOG.info('Creating training data set...')
 train_dataset = FlyMLMDataset(X,**train_dataset_params,**dataset_params)
 
+# profile memory usage
 # snapshot = tracemalloc.take_snapshot()
 # display_top(snapshot)
 # tracemalloc.stop()
@@ -304,6 +306,25 @@ if 'labels_discrete' in example:
     LOG.info(f'batch labels_discrete shape = {sz}')
 
 
+# %%
+# profile example creation
+import cProfile
+import pstats
+
+from flyllm.dataset import FlyMLMDataset
+
+def profile_test():
+    train_dataset_small = FlyMLMDataset(X[:min(len(X),100)],**train_dataset_params,**dataset_params)
+
+if False:
+
+    cProfile.run('profile_test()','profile_test.out')
+    p = pstats.Stats('profile_test.out')
+    p.strip_dirs().sort_stats('cumtime').print_stats(20)
+
+if False:
+    profile_test()
+
 # %% [markdown]
 # ### Set up model and training
 
@@ -338,18 +359,15 @@ if ('model_nickname' in config) and (config['model_nickname'] is not None):
 if restartmodelfile is not None:
     loss_epoch = load_model(restartmodelfile, model, device, lr_optimizer=optimizer, scheduler=lr_scheduler)
     update_loss_nepochs(loss_epoch, config['num_train_epochs'])
-    update_loss_plots(hloss, loss_epoch)
-    # loss_epoch = {k: v.cpu() for k,v in loss_epoch.items()}
     epoch = np.nonzero(np.isnan(loss_epoch['train'].cpu().numpy()))[0][0]
-    progress_bar.update(epoch * ntrain)
 else:
     epoch = 0
     # initialize structure to keep track of loss
     loss_epoch = initialize_loss(train_dataset, config)
 last_val_loss = None
 
-savetime = datetime.datetime.now()
-savetime = savetime.strftime('%Y%m%dT%H%M%S')
+#savetime = datetime.datetime.now()
+#savetime = savetime.strftime('%Y%m%dT%H%M%S')
 
 
 # %% [markdown]
@@ -376,7 +394,7 @@ valexample = next(iter(val_dataloader))
 
 # train loop
 for epoch in range(epoch, config['num_train_epochs']):
-      
+
     model.train()
     tr_loss = torch.tensor(0.0).to(device)
     if train_dataset.discretize:
@@ -388,8 +406,12 @@ for epoch in range(epoch, config['num_train_epochs']):
     
         pred = model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal)
         loss, loss_discrete, loss_continuous = criterion_wrapper(example, pred, criterion, train_dataset, config)
+        assert np.isnan(loss.item()) == False, f'loss is nan at step {step}, epoch {epoch}'
           
         loss.backward()
+        
+        for weights in model.parameters():
+            assert torch.isnan(weights.grad).any() == False, f'nan in gradients at step {step}, epoch {epoch}'
         
         # how many timepoints are in this batch for normalization
         if config['modeltype'] == 'mlm':

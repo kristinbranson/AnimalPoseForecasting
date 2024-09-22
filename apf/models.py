@@ -4,9 +4,14 @@ import typing
 import torch
 
 
-lossfcn_discrete = torch.nn.CrossEntropyLoss()
 lossfcn_continuous = torch.nn.L1Loss()
 
+def CrossEntropyLossEps(eps=1e-8,**kwargs):
+    ce = torch.nn.CrossEntropyLoss(**kwargs)
+    return lambda pred,target: ce((pred+eps)/(1+eps*pred.shape[1]),target)
+
+#lossfcn_discrete = CrossEntropyLossEps()
+lossfcn_discrete = torch.nn.CrossEntropyLoss()
 
 def unpack_input(input, featidx, sz, dim=-1):
     res = {}
@@ -23,7 +28,10 @@ def unpack_input(input, featidx, sz, dim=-1):
 
 
 def causal_criterion(tgt, pred):
+    assert torch.isnan(tgt).any() == False, 'tgt contains nans'
+    assert torch.isnan(pred).any() == False, 'pred contains nans'
     d = tgt.shape[-1]
+    assert d > 0, 'tgt has no dimensions'
     err = torch.sum(torch.abs(tgt - pred)) / d
     return err
 
@@ -36,8 +44,12 @@ def mixed_causal_criterion(tgt, pred, weight_discrete=.5, extraout=False):
         n = np.prod(tgt['labels'].shape[:-1])
     else:
         n = np.prod(tgt['labels_discrete'].shape[:-2])
+    assert n > 0, 'no examples in batch'
     if iscontinuous:
+        assert torch.isnan(tgt['labels']).any() == False, 'tgt labels contains nans'
+        assert torch.isnan(pred['continuous']).any() == False, 'pred continuous contains nans'
         err_continuous = lossfcn_continuous(pred['continuous'], tgt['labels'].to(device=pred['continuous'].device)) * n
+        assert torch.isnan(err_continuous).any() == False, 'continuous loss contains nans'
     else:
         err_continuous = torch.tensor(0., dtype=tgt['labels_discrete'].dtype, device=tgt['labels_discrete'].device)
     if isdiscrete:
@@ -46,6 +58,7 @@ def mixed_causal_criterion(tgt, pred, weight_discrete=.5, extraout=False):
         pd = pd.reshape(newsz)
         td = tgt['labels_discrete'].to(device=pd.device).reshape(newsz)
         err_discrete = lossfcn_discrete(pd, td) * n
+        assert torch.isnan(err_discrete).any() == False, 'discrete loss contains nans'
     else:
         err_discrete = torch.tensor(0., dtype=tgt['labels'].dtype, device=tgt['labels'].device)
     err = (1 - weight_discrete) * err_continuous + weight_discrete * err_discrete
@@ -53,7 +66,6 @@ def mixed_causal_criterion(tgt, pred, weight_discrete=.5, extraout=False):
         return err, err_discrete, err_continuous
     else:
         return err
-
 
 def dct_consistency(pred):
     return
@@ -125,7 +137,15 @@ def criterion_wrapper(example, pred, criterion, dataset, config):
         pred_discrete = pred['labels_discrete']
     else:
         pred_discrete = None
-    pred1 = {'continuous': pred_continuous, 'discrete': pred_discrete}        
+    pred1 = {'continuous': pred_continuous, 'discrete': pred_discrete}
+    if tgt['labels'] is not None:
+        assert torch.isnan(tgt['labels']).any() == False, 'tgt labels contains nans'
+    if pred1['continuous'] is not None:
+        assert torch.isnan(pred1['continuous']).any() == False, 'pred continuous contains nans'
+    if tgt['labels_discrete'] is not None:
+        assert torch.isnan(tgt['labels_discrete']).any() == False, 'tgt labels discrete contains nans'
+    if pred1['discrete'] is not None:
+        assert torch.isnan(pred1['discrete']).any() == False, 'pred discrete contains nans'
 
     if config['modeltype'] == 'mlm':
         if dataset.discretize:

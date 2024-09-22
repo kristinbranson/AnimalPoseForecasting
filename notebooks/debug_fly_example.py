@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 import os
 import pickle
 from apf.io import read_config, load_and_filter_data
-from apf.utils import get_dct_matrix, compute_npad
+from apf.utils import get_dct_matrix, compute_npad, compare_dicts
 from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames, featrelative
 from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx
 from apf.data import chunk_data, debug_less_data
@@ -134,10 +134,6 @@ print('Creating training data set...')
 train_dataset = FlyMLMDataset(X,**train_dataset_params,**dataset_params)
 
 # %%
-
-train_dataset = FlyMLMDataset(X,**train_dataset_params,**dataset_params)
-
-# %%
 ## compare flyexample initialized from FlyMLMDataset and from keypoints directly
 
 # flyexample from training dataset
@@ -178,44 +174,6 @@ def data_to_kp_from_metadata(data,metadata,ntimepoints):
   datakp = data['X'][:,:,t0:t0+ntimepoints+1,flynum].transpose(2,0,1)
   return datakp,id
 
-def compare_dicts(old_ex,new_ex,maxerr=None):
-  for k,v in old_ex.items():
-    if not k in new_ex:
-      print(f'Missing key {k}')
-      continue
-
-    v = v.cpu().numpy() if type(v) is torch.Tensor else v
-    newv = new_ex[k].cpu().numpy() if type(new_ex[k]) is torch.Tensor else new_ex[k]
-    
-    err = 0.
-    if type(v) is not type(newv):
-      print(f'Type mismatch for key {k}: {type(v)} vs {type(newv)}')
-    elif type(v) is np.ndarray:
-      if v.shape != newv.shape:
-        print(f'Shape mismatch for key {k}: {v.shape} vs {newv.shape}')
-        continue
-      if v.size == 0:
-        print(f'empty arrays for key {k}')
-      else:
-        err = np.nanmax(np.abs(v-newv))
-        print(f'max diff {k}: {err:e}')
-    elif type(v) is dict:
-      print(f'Comparing dict {k}')
-      compare_dicts(v,newv)
-    else:
-      try:
-        err = np.nanmax(np.abs(v-newv))
-        print(f'max diff {k}: {err:e}')
-      except:
-        print(f'not comparing {k}')
-    if maxerr is not None:
-      assert err < maxerr, f'Error too large for key {k}: {err} >= {maxerr}'
-      
-  missing_keys = [k for k in new_ex.keys() if not k in old_ex]
-  if len(missing_keys) > 0:
-    print(f'Missing keys: {missing_keys}')
-
-  return
 
 def compare_new_to_old_train_example(new_ex,old_ex,maxerr=1e-3):
   
@@ -305,8 +263,10 @@ assert err_example_data_feat < 1e-3
 examplekp = flyexample.labels.get_next_keypoints(use_todiscretize=True)
 err_mean_example_data_kp = np.mean(np.abs(datakp[:]-examplekp))
 print('mean diff between data and example keypoints: %e'%err_mean_example_data_kp)
+assert err_mean_example_data_kp < 1e0, f'mean diff between data and example keypoints: {err_mean_example_data_kp}'
 err_max_example_data_kp = np.max(np.abs(datakp[:]-examplekp))
 print('max diff between data and example keypoints: %e'%err_max_example_data_kp)
+assert err_max_example_data_kp < 1e0, f'max diff between data and example keypoints: {err_max_example_data_kp}'
 
 # plot
 _ = debug_plot_pose(flyexample,data=data)  
@@ -357,6 +317,18 @@ if flyexample.labels.ntspred_relative > 1:
     assert err_relative_future < 1e-3
 
 # %%
+## check copy functions
+flyexample_copy = flyexample.copy()
+train_example = flyexample.get_train_example()
+train_example_copy = flyexample_copy.get_train_example()
+compare_dicts(train_example,train_example_copy,maxerr=1e-6)
+
+poselabels_copy = flyexample.labels.copy()
+train_labels = flyexample.labels.get_train_labels()
+train_labels_copy = poselabels_copy.get_train_labels()
+compare_dicts(train_labels,train_labels_copy,maxerr=1e-6)
+
+# %%
 ## check get_train_example and constructor from train_example
 
 # get a training example
@@ -369,16 +341,24 @@ compare_dicts(trainexample,trainexample1,maxerr=1e-9)
 # check setting predictions from train example
 print('\nChecking set_predictions')
 ts = np.arange(20,flyexample1.ntimepoints)
-pred = {'continuous': trainexample1['labels'][ts-1,:].cpu().numpy().copy(), 
-        'discrete': trainexample1['labels_discrete'][ts-1,:].cpu().numpy().copy()}
+off = -1
+pred = {'continuous': trainexample1['labels'][ts+off,:].cpu().numpy().copy(), 
+        'discrete': trainexample1['labels_discrete'][ts+off,:].cpu().numpy().copy(),
+        'todiscretize': trainexample1['labels_todiscretize'][ts+off,:].cpu().numpy().copy()}
 raw_labels1 = flyexample1.labels.get_raw_labels()
 flyexample2 = flyexample1.copy()
-flyexample2.labels.set_prediction(pred,ts=ts,nsamples=1)
+flyexample2.labels.set_prediction(pred,ts=ts,nsamples=1,use_todiscretize=True)
 raw_labels2 = flyexample2.labels.get_raw_labels()
-err_todiscretize = np.max(np.abs(raw_labels1.pop('todiscretize')-raw_labels2.pop('todiscretize')))
+err_todiscretize = np.max(np.abs(raw_labels1['todiscretize']-raw_labels2['todiscretize']))
 print('error in todiscretize: %e'%err_todiscretize)
+assert err_todiscretize < 1e-6, f'error in todiscretize: {err_todiscretize}'
 
-compare_dicts(raw_labels1,raw_labels2,maxerr=1e-6)
+flyexample3 = flyexample1.copy()
+flyexample3.labels.set_prediction(pred,ts=ts,nsamples=1,use_todiscretize=False)
+raw_labels3 = flyexample3.labels.get_raw_labels()
+err_todiscretize3 = np.max(np.abs(raw_labels1.pop('todiscretize')-raw_labels3.pop('todiscretize')))
+print('error in todiscretize after setting predictions with samples (error can be high!): %e'%err_todiscretize3)
+compare_dicts(raw_labels1,raw_labels3,maxerr=1e-6)
 
 # %%
 ## check constructor from batch
@@ -512,6 +492,30 @@ print(str(relpose[keyfeatidx,:10]) + ' ...')
 print('inputs.pose.shape = ' + str(relpose.shape))
 assert np.allclose(relpose[:,relidx],pose_debug[keyfeatidx,:T0-1,0],atol=1e-3)
 
+
+# %%
+# check copying subindexes and getting training examples for ranges of frames
+
+tscopy = np.arange(20,30)
+copyexampleobj = debug_example.copy_subindex(ts=tscopy)
+print(f'copyexampleobj._init_pose = {copyexampleobj.labels._init_pose[keyfeatidx,:]}')
+copylabelsobj = debug_example.labels.copy_subindex(ts=tscopy)
+print(f'copylabelsobj._init_pose = {copylabelsobj._init_pose[keyfeatidx,:]}')
+labelsubindex2train = copylabelsobj.get_train_labels(namingscheme='train')
+examplesubindex2train = copyexampleobj.get_train_example()
+print('Comparing labels->copy_subindex->get_train_labels to example->copy_subindex->get_train_example')
+compare_dicts(labelsubindex2train,examplesubindex2train,maxerr=1e-6)
+assert np.allclose(copyexampleobj.labels.get_init_pose()[keyfeatidx,:],tscopy[:2],1e-3), f'example->copy_subindex->init_pose does not match frame numbers'
+assert np.allclose(copylabelsobj.get_init_pose()[keyfeatidx,:],tscopy[:2],1e-3), f'labels->copy_subindex->init_pose does not match frame numbers'
+
+exampletrain = debug_example.get_train_example(ts=tscopy)
+print('Comparing example->get_train_example(tscopy) to example->copy_subindex(tscopy)->get_train_example')
+compare_dicts(exampletrain,examplesubindex2train,maxerr=1e-6)
+labelstrain = debug_example.labels.get_train_labels(ts=tscopy,namingscheme='train')
+print('Comparing labels->get_train_labels(tscopy) to labels->copy_subindex(tscopy)->get_train_labels')
+compare_dicts(labelstrain,labelsubindex2train,maxerr=1e-6)
+assert np.allclose(exampletrain['init'][keyfeatidx],tscopy[1],1e-3), f'example->train init does not match frame numbers'
+assert np.allclose(labelstrain['init'][keyfeatidx],tscopy[1],1e-3), f'labels->train init does not match frame numbers'
 
 # %%
 from flyllm.features import split_features

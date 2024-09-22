@@ -3,6 +3,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib import cm, colors
 import torch
+import tqdm
 
 from apf.models import criterion_wrapper
 from apf.utils import npindex, zscore, unzscore
@@ -962,50 +963,46 @@ def debug_plot_histograms(dataset, alpha=1):
     return
 
 
-def debug_plot_global_histograms(all_pred, all_labels, train_dataset, nbins=50, subsample=1, compare='time'):
-    outnames_global = train_dataset.get_next_global_feature_names()
+def debug_plot_global_histograms(unz_gpredv, unz_glabelsv, dataset, nbins=50, subsample=1, compare='time'):
+    outnames_global = dataset.get_next_global_feature_names()
 
     # global labels, continuous representation, unzscored
-    # ntimepoints x tspred x nglobal
-    unz_glabelsv = np.concatenate(
-        [labels.get_future_global(zscored=False, use_todiscretize=True) for labels in all_labels], axis=0)
+    # nexamples x ntimepoints x tspred x nglobal
+    labelobj = dataset.get_example(0).labels
+    if dataset.discretize:
 
-    # global predictions, continuous representation, unzscored
-    # ntimepoints x tspred x nglobal
-    unz_gpredv = np.concatenate([pred.get_future_global(zscored=False) for pred in all_pred], axis=0)
-
-    if train_dataset.discretize:
-
-        bin_edges = train_dataset.get_bin_edges(zscored=False)
+        bin_edges = dataset.get_bin_edges(zscored=False)
         # TODO: better use of labels class
-        ftidx = all_labels[0]._idx_multi_to_multifeattpred[all_labels[0]._idx_multidiscrete_to_multi]
+        ftidx = labelobj._idx_multi_to_multifeattpred[labelobj._idx_multidiscrete_to_multi]
         bins = []
         for f in featglobal:
             j = np.nonzero(np.all(ftidx == np.array([f, 1])[None, ...], axis=1))[0][0]
             bins.append(bin_edges[j])
-        nbins = train_dataset.discretize_nbins
+        nbins = dataset.discretize_nbins
     else:
         lims = [[np.percentile(unz_glabelsv[::100, :, axi].flatten(), i).item() for i in [.1, 99.9]] for axi in
                 range(nglobal)]
         bins = [np.arange(l[0], l[1], nbins + 1) for l in lims]
 
-    ntspred = len(train_dataset.tspred_global)
+    ntspred = len(dataset.tspred_global)
     off0 = .1
 
     if compare == 'time':
-        colors = get_n_colors_from_colormap('jet', len(train_dataset.tspred_global))
+        colors = get_n_colors_from_colormap('jet', ntspred)
         colors[:, :-1] *= .8
 
         fig, ax = plt.subplots(2, nglobal, figsize=(30, 10), sharex='col')
         w = (1 - 2 * off0) / ntspred
         for axj, (datacurr, datatype) in enumerate(zip([unz_glabelsv, unz_gpredv], ['label ', 'pred '])):
+            # flatten over examples and timepoints
+            datacurr = datacurr.reshape((-1, ntspred, nglobal))
             for axi in range(nglobal):
                 ax[axj, axi].cla()
                 off = off0
-                for i in range(unz_glabelsv.shape[1]):
+                for i in range(ntspred):
                     density, _ = np.histogram(datacurr[::subsample, i, axi], bins=bins[axi], density=True)
                     ax[axj, axi].bar(np.arange(nbins) + off, density, width=w, color=colors[i], log=True,
-                                     align='edge', label=str(train_dataset.tspred_global[i]))
+                                     align='edge', label=str(dataset.tspred_global[i]))
                     off += w
                 ax[axj, axi].set_xticks(np.arange(nbins + 1))
                 ax[axj, axi].set_xticklabels(['%.2f' % x for x in bins[axi]], rotation=90)
@@ -1027,7 +1024,7 @@ def debug_plot_global_histograms(all_pred, all_labels, train_dataset, nbins=50, 
                     off += w
                 axcurr.set_xticks(np.arange(nbins + 1))
                 axcurr.set_xticklabels(['%.2f' % x for x in bins[fi]], rotation=90)
-                axcurr.set_title(f'{outnames_global[fi]} t = {train_dataset.tspred_global[ti]}')
+                axcurr.set_title(f'{outnames_global[fi]} t = {dataset.tspred_global[ti]}')
 
     ax[0, 0].legend()
     fig.tight_layout()
