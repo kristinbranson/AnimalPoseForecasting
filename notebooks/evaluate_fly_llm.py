@@ -41,6 +41,7 @@ from apf.io import read_config, get_modeltype_str, load_and_filter_data, save_mo
 from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames, keypointnames
 from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx, compute_scale_perfly
 from flyllm.dataset import FlyTestDataset
+from flyllm.pose import FlyExample, FlyPoseLabels, FlyObservationInputs
 from flyllm.plotting import (
     initialize_debug_plots, 
     initialize_loss_plots, 
@@ -178,15 +179,6 @@ LOG.info(f'{len(valX)} val ids, total of {sum([len(x) for x in valX])} time poin
 # ### Create Dataset, DataLoader objects
 
 # %%
-import flyllm
-import flyllm.pose
-import flyllm.dataset
-from importlib import reload
-reload(flyllm)
-reload(flyllm.pose)
-reload(flyllm.dataset)
-from flyllm.dataset import FlyTestDataset
-
 dataset_params = {
     'max_mask_length': config['max_mask_length'],
     'pmask': config['pmask'],
@@ -267,15 +259,6 @@ else:
 
 import cProfile
 import pstats
-import flyllm
-import flyllm.pose
-import flyllm.dataset
-from importlib import reload
-reload(flyllm)
-reload(flyllm.pose)
-reload(flyllm.dataset)
-reload(flyllm.prediction)
-from flyllm.prediction import predict_all
 
 doprofile = True
 dodebug = True
@@ -305,13 +288,8 @@ if (not doprofile) and dodebug:
 # ### Evaluate tau-frame predictions
 
 # %%
-import flyllm
-import flyllm.prediction
-reload(flyllm)
-reload(flyllm.prediction)
-from flyllm.prediction import predict_all
-
 debugcheat = False
+savepredfile = 'all_pred.npz'
 
 # compute predictions and labels for all validation data
 val_dataset = FlyTestDataset(valX,config['contextl'],**dataset_params,allow_debugcheat=debugcheat)
@@ -321,70 +299,68 @@ val_dataloader = torch.utils.data.DataLoader(val_dataset,
                                               pin_memory=True,
                                               )
 all_pred, labelidx = predict_all(val_dataloader, val_dataset, model, config, train_src_mask, keepall=False, debugcheat=debugcheat,earlystop=50)
+
 # save all_pred and labelidx to a numpy file
-#torch.savez('all_pred.npz',all_pred=all_pred,labelidx=labelidx)
+if savepredfile is not None:
+    np.savez('all_pred.npz',all_pred=all_pred,labelidx=labelidx)
 
 # %%
 # load all_pred and labelidx from all_pred.npz
-tmp = np.load('all_pred.npz',allow_pickle=True)
-all_pred = tmp['all_pred'].item()
-labelidx = tmp['labelidx']
+savepredfile = 'all_pred.npz'
+if savepredfile is not None and os.path.exists('all_pred.npz'):
+    tmp = np.load('all_pred.npz',allow_pickle=True)
+    all_pred = tmp['all_pred'].item()
+    labelidx = tmp['labelidx']
+else:
+    raise ValueError(f'{savepredfile} does not exist')
 
 # %%
-import apf
-reload(apf)
-import apf.data
-reload(apf.data)
-import apf.pose
-reload(apf.pose)
-import flyllm
-reload(flyllm)
-import flyllm.pose
-reload(flyllm.pose)
-import flyllm.dataset
-reload(flyllm.dataset)
-from flyllm.dataset import FlyTestDataset
-val_dataset = FlyTestDataset(valX,config['contextl'],**dataset_params)
+# compare predictions to labels
 
-# build AgentExample objects from all predictions and corresponding true labels
+# pred_data is a list of FlyExample objects
 pred_data,true_data = val_dataset.create_data_from_pred(all_pred, labelidx)
+
+# compute error in various ways
+err_example = []
+for pred_example,true_example in zip(pred_data,true_data):
+    errcurr = pred_example.compute_error(true_example=true_example,pred_example=pred_example)
+    err_example.append(errcurr)
+
+# combine errors
+err_total = FlyExample.combine_errors(err_example)
+
 
 # %%
-import apf
-reload(apf)
-import apf.data
-reload(apf.data)
-import apf.pose
-reload(apf.pose)
-import flyllm
-reload(flyllm)
-import flyllm.pose
-reload(flyllm.pose)
-import flyllm.dataset
-reload(flyllm.dataset)
-from flyllm.dataset import FlyTestDataset
-val_dataset = FlyTestDataset(valX,config['contextl'],**dataset_params)
-pred_data,true_data = val_dataset.create_data_from_pred(all_pred, labelidx)
+for k,v in err_total.items():
+    print(f'{k}: {type(v)}')
+    if type(v) is np.ndarray:
+        print(f'    {v.shape}')
 
+# %%
+np.stack([x[k] for x in err_example]).shape
+
+# %%
+for k,v in meanerr.items():
+    print(f'{k}: {v.shape}')
+pred_example.labels.is_zscored()
+
+# %%
+# plot errors
 
 i = 0
-
 pred_example = pred_data[i]
 true_example = true_data[i]
+err = err_example[i]
 
-err = pred_example.compute_error(true_example=true_example,pred_example=pred_example)
-
-for k,v in err.items():
-    print(f'{k}: {v}')
-
-# %%
 featnum = 0
+featnum = 58
+nsamples = 100
 #tsplot = np.arange(pred_example.ntimepoints-1)
-tsplot = np.arange(8600,8900)
+tsplot = np.arange(8700,8800)
 
 fig,ax = plt.subplots(2,1,sharex=True,figsize=(16,16))
 multi_pred = pred_example.labels.get_multi(nsamples=0,collapse_samples=True,use_todiscretize=False)
-multi_pred_sample = pred_example.labels.get_multi(nsamples=10,collapse_samples=True,use_todiscretize=False)
+multi_pred_sample = pred_example.labels.get_multi(nsamples=nsamples,collapse_samples=True,use_todiscretize=False)
 multi_pred_meansample = np.nanmean(multi_pred_sample,axis=0)
 multi_true = true_example.labels.get_multi(use_todiscretize=True)
 multi_isdiscrete = pred_example.labels.get_multi_isdiscrete()
@@ -399,10 +375,15 @@ colors['meansample'] = tabcolors[1]
 colors['minsample'] = tabcolors[2]
 colors['sample'] = tabcolors[3]
 
+miny = np.nanmin(multi_true[tsplot,featnum])
+maxy = np.nanmax(multi_true[tsplot,featnum])
+dy = maxy-miny
+ylim = (miny-.1*dy,maxy+.1*dy)
+
 if plotsamples:
     for i in range(multi_pred_sample.shape[0]):
         c = colors['sample'].copy()
-        c[-1] = .2
+        c[-1] = .05
         h, = ax[0].plot(multi_pred_sample[i,tsplot,featnum],'.',color=c)
         if i == 0:
             h.set_label('random sample')
@@ -411,6 +392,7 @@ if plotsamples:
 
 ax[0].plot(multi_pred[tsplot,featnum],'.-',label='expected value',color=colors['weightedsum'])
 ax[0].plot(multi_true[tsplot,featnum],'.-',label='true',color=colors['true'])
+ax[0].set_ylim(ylim)
 ax[0].legend()
 ax[0].set_ylabel(f'{err["multi_names"][featnum]}')
 

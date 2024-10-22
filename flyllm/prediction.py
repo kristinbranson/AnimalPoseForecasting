@@ -118,10 +118,30 @@ def get_global_predictions(all_pred,labelidx,dataset):
         
     return unz_gpredv,unz_glabelsv
 
-def compute_prediction_error(all_pred,labelidx,dataset,criterion_wrapper1):
-    for i,idx in tqdm.tqdm(enumerate(labelidx),total=len(labelidx)):
-        labelobj = dataset.get_example(idx).labels
-        train_labels = labelobj.get_train_labels()
+def compute_prediction_errors(all_pred,labelidx,dataset):
+    # compare predictions to labels
+
+    # pred_data is a list of FlyExample objects
+    pred_data,true_data = dataset.create_data_from_pred(all_pred, labelidx)
+
+    # compute error in various ways
+    err_example = []
+    for pred_example,true_example in zip(pred_data,true_data):
+        errcurr = pred_example.compute_error(true_example=true_example,pred_example=pred_example)
+        err_example.append(errcurr)
+        
+    keysmean = ['l1_multi','mse_multi','l1_multi_samplemean','l1_multi_samplemin',
+                'mse_multi_samplemean','mse_multi_samplemin','ce_discrete_mean',
+                'l2_err_kp_mean']
+    # compute mean
+    meanerr = {}
+    n = np.sum([errcurr['n'] for errcurr in err_example]).item()
+    for k in keysmean:
+        meanerr[k] = 0.
+        for errcurr in err_example:
+            meanerr[k] += errcurr[k]*errcurr['n']/n
+        
+    return meanerr,err_example
 
 
 def hist_predictions(all_pred,labelidx,dataset,binedges=None,nbins=50):

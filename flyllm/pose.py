@@ -444,6 +444,22 @@ class FlyPoseLabels(PoseLabels):
         return featangle
 
     @property
+    def is_cossinangle_next(self):
+        """
+        is_cossinangle_next
+        Returns a boolean array indicating which features in the next frame pose are angles represented as cos/sin pairs.
+        """
+        iscossinangle = np.zeros(self.d_next,dtype=bool)
+        if self._is_velocity:
+            return iscossinangle
+        else:
+            # get the cossin indices for each relative features
+            relcossinidx,_ = relfeatidx_to_cossinidx(self._idx_nextdiscrete_to_next)
+            # check if there is more than one
+            reliscossinangle = np.array([np.isscalar(x)==False for x in relcossinidx])
+            iscossinangle[featrelative] = reliscossinangle
+
+    @property
     def _idx_nextcossinglobal_to_nextcossin(self):
         """
         _idx_nextcossinglobal_to_nextcossin
@@ -497,6 +513,9 @@ class FlyPoseLabels(PoseLabels):
         # rewrote to speed up code
         # number of next relative features + number of relative features that are angles and not discretized
         nrelative = np.count_nonzero(featrelative)
+        if self._is_velocity:
+            # no cossin when relative
+            return nrelative
         iscossin = featangle & featrelative
         iscossin[self._idx_nextdiscrete_to_next] = False
         
