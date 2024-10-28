@@ -88,8 +88,8 @@ LOG.info('matplotlib backend: ' + mpl_backend)
 # %%
 # configuration parameters for this model
 restartmodelfile = None
-restartmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flymulttimeglob_predposition_20240305_epoch130_20240825T122647.pth'
-configfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/config_fly_llm_multitimeglob_predictposition_20240305.json'
+#restartmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flymulttimeglob_predposition_20240305_epoch130_20240825T122647.pth'
+configfile = 'flyllm/configs/config_fly_llm_predvel_20241022.json'
 # set to None if you want to use the full data
 quickdebugdatafile = None
 #configfile = "/groups/branson/home/eyjolfsdottire/code/MABe2022/config_fly_llm_multitimeglob_discrete_20230907.json"
@@ -307,6 +307,21 @@ if 'labels_discrete' in example:
 
 
 # %%
+exampleobj = train_dataset.get_example(0)
+print('Features:')
+multi_fnames = exampleobj.labels.get_multi_names()
+for i, fname in enumerate(multi_fnames):
+    print(f'{i}: {fname}')
+train_example = exampleobj.get_train_example()
+for k,v in train_example.items():
+    if hasattr(v, 'shape'):
+        print(f'{k}: {v.shape}')
+    else:
+        print(f'{k}: {type(v)}')
+example = next(iter(train_dataloader))
+
+
+# %%
 # profile example creation
 import cProfile
 import pstats
@@ -366,8 +381,8 @@ else:
     loss_epoch = initialize_loss(train_dataset, config)
 last_val_loss = None
 
-#savetime = datetime.datetime.now()
-#savetime = savetime.strftime('%Y%m%dT%H%M%S')
+savetime = datetime.datetime.now()
+savetime = savetime.strftime('%Y%m%dT%H%M%S')
 
 
 # %% [markdown]

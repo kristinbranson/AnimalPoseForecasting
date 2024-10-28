@@ -15,7 +15,7 @@ from flyllm.features import (
     feat2kp,
     kp2feat
 )
-from apf.pose import AgentExample, PoseLabels, ObservationInputs
+from apf.pose import AgentParams, AgentExample, PoseLabels, ObservationInputs
 
 if typing.TYPE_CHECKING:
     from flyllm.dataset import FlyLLMDataset
@@ -45,6 +45,72 @@ def remove_implicit_params(params):
         del params['isdct']
     return params
 
+
+
+class FlyParams(AgentParams):
+    
+    def __init__(self):
+        return
+    
+    @classmethod
+    def get_params_from_dataset(cls,dataset):
+        """
+        get_params_from_dataset(dataset)
+        Returns the parameters for the AgentExample object taken from a AgentMLMDataset object as a dict.
+        """
+        if type(dataset) is str:
+            return {'todo': dataset}
+        
+        params = {
+            'zscore_params': dataset.get_zscore_params(),
+            'do_input_labels': dataset.input_labels,
+            'starttoff': dataset.get_start_toff(),
+            'flatten_labels': dataset.flatten_labels,
+            'flatten_obs': dataset.flatten_obs,
+            'discreteidx': dataset.discretefeat,
+            'discrete_tspred': dataset.discrete_tspred, # todo make obsolete
+            'tspred': [1,], # todo: add this to dataset
+            'isdct': False, # todo: add this to dataset
+            'discretize_params': dataset.get_discretize_params(),
+            'flatten_obs_idx': dataset.flatten_obs_idx,
+            'dct_m': dataset.dct_m,
+            'idct_m': dataset.idct_m,
+        }
+        return params
+
+    @classmethod
+    def get_params_from_dataset(cls,dataset):
+        """
+        get_params_from_dataset(dataset)
+        Returns the parameters for the FlyExample object taken from a FlyMLMDataset object as a dict.
+        """
+        
+        params = super(cls,cls).get_params_from_dataset(dataset)
+        params = remove_implicit_params(params)
+        params['tspred_global'] = dataset.tspred_global
+        params['ntspred_relative'] = dataset.ntspred_relative
+        params['is_velocity'] = dataset.compute_pose_vel
+        params['simplify_out'] = dataset.simplify_out
+        params['simplify_in'] = dataset.simplify_in
+
+        return params
+    
+    @classmethod
+    def example_to_poselabels_params(cls,params):
+        """
+        flyexample_to_poselabels_params(params) (static)
+        Converts the parameters in the dict params from FlyExample parameters for the PoseLabels object.
+        Returns this dict of parameters for PoseLabels.
+        """
+        
+        super(cls,cls).example_to_poselabels_params(params)
+        params = remove_implicit_params(params)
+        toremove = ['simplify_in',]
+        for k in toremove:
+            if k in params:
+                del params[k]
+        return params
+
 class FlyObservationInputs(ObservationInputs):
     """
     FlyObservationInputs
@@ -70,6 +136,8 @@ class FlyObservationInputs(ObservationInputs):
     set_inputs(input, zscored=False, ts=None): Sets the inputs. 
     set_inputs_from_keypoints(Xkp, fly, scale=None, ts=None): Sets the inputs from keypoints.
     """
+    
+    _paramsClass = FlyParams
 
     def __init__(self, example_in=None, Xkp=None, agent=0, scale=None, dataset=None, dozscore=False, npad=None, **kwargs):
         """
@@ -260,6 +328,9 @@ class FlyPoseLabels(PoseLabels):
     set_prediction(): Sets labels for time points ts, usually an output of the forecasting model. 
     
     """
+    
+    _paramsClass = FlyParams
+    
     def __init__(self, example_in=None,
                  Xkp=None, scale=None, metadata=None,
                  dozscore=False, dodiscretize=False,
@@ -269,22 +340,6 @@ class FlyPoseLabels(PoseLabels):
                          dozscore=dozscore, dodiscretize=dodiscretize, dataset=dataset, **kwargs)
 
         return
-    
-    @classmethod
-    def agentexample_to_poselabels_params(cls,params):
-        """
-        flyexample_to_poselabels_params(params) (static)
-        Converts the parameters in the dict params from FlyExample parameters for the PoseLabels object.
-        Returns this dict of parameters for PoseLabels.
-        """
-        
-        super(cls,cls).agentexample_to_poselabels_params(params)
-        params = remove_implicit_params(params)
-        toremove = ['simplify_in',]
-        for k in toremove:
-            if k in params:
-                del params[k]
-        return params
 
     def get_params(self):
         """
@@ -1449,6 +1504,11 @@ class FlyPoseLabels(PoseLabels):
             next_names[inext] = next_names_relative[i]
         return next_names
 
+    @property
+    def is_multi(self):
+        ismulti = (np.max(self.tspred_global) > 1) or (self.ntspred_relative > 1)
+        return ismulti
+
     def get_multi_names(self):
         """
         get_multi_names()
@@ -1457,12 +1517,14 @@ class FlyPoseLabels(PoseLabels):
         multi_names: list of names of the multi features.
         """
         ft = self._idx_multi_to_multifeattpred
-        ismulti = (np.max(self.tspred_global) > 1) or (self.ntspred_relative > 1)
+        ismulti = self.is_multi
         multi_names = [None, ] * self.d_multi
         nextcs_names = self.get_nextcossin_names()
         for i in range(self.d_multi):
             if ismulti:
                 multi_names[i] = nextcs_names[ft[i, 0]] + '_' + str(ft[i, 1])
+            else:
+                multi_names[i] = nextcs_names[ft[i, 0]]
         return multi_names
 
     def select_featidx_plot(self, ntsplot=None, ntsplot_global=None, ntsplot_relative=None):
@@ -1572,6 +1634,7 @@ class FlyExample(AgentExample):
     
     _labelsClass = FlyPoseLabels
     _inputsClass = FlyObservationInputs
+    _paramsClass = FlyParams
     
     def __init__(self,example_in: typing.Optional[dict] = None,
                  dataset: typing.Optional['FlyLLMDataset'] = None,
@@ -1717,23 +1780,6 @@ class FlyExample(AgentExample):
         params['simplify_in'] = None
 
         return params
-
-    @classmethod
-    def get_params_from_dataset(cls,dataset):
-        """
-        get_params_from_dataset(dataset)
-        Returns the parameters for the FlyExample object taken from a FlyMLMDataset object as a dict.
-        """
-        
-        params = super(cls,cls).get_params_from_dataset(dataset)
-        params = remove_implicit_params(params)
-        params['tspred_global'] = dataset.tspred_global
-        params['ntspred_relative'] = dataset.ntspred_relative
-        params['is_velocity'] = dataset.compute_pose_vel
-        params['simplify_out'] = dataset.simplify_out
-        params['simplify_in'] = dataset.simplify_in
-
-        return params
         
     def get_train_input_shapes(self):
         idx,sz = self.inputs.get_input_shapes()
@@ -1746,6 +1792,3 @@ class FlyExample(AgentExample):
             idx['labels'] = [0, d_input_labels]
             sz['labels'] = (d_input_labels,)
         return idx, sz
-
-FlyPoseLabels._exampleClass = FlyExample
-FlyObservationInputs._exampleClass = FlyExample

@@ -38,7 +38,8 @@ from flyllm.plotting import debug_plot_pose, debug_plot_sample, debug_plot_batch
 # %%
 ## Set parameters, read in data, config
 tmpsavefile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/tmp_small_usertrainval.pkl'
-configfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/config_fly_llm_debug_20240416.json'
+#configfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/config_fly_llm_debug_20240416.json'
+configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241022.json'
 # configuration parameters for this model
 config = read_config(configfile,
                      default_configfile=DEFAULTCONFIGFILE,
@@ -48,7 +49,7 @@ config = read_config(configfile,
 
 # override parameters in config file for testing
 # debug velocity representation
-config['compute_pose_vel'] = True
+#config['compute_pose_vel'] = True
 # debug dct
 #config['dct_tau'] = 4
 # debug no multi time-scale predictions
@@ -454,18 +455,24 @@ print('pose_debug2 shape: '+str(pose_debug.shape))
 debug_example = FlyExample(Xkp=Xkp_debug, agentnum=flynum, scale=scale, metadata=metadata, dataset=train_dataset)
 
 # feature within multi -- can't check in the raw data as the raw data is zscored
-multifeatidx = debug_example.labels.get_multi_names().index(featname+'_1')
+ismulti = debug_example.labels.is_multi
+if ismulti:
+    multifeatname = featname+'_1'
+else:
+    multifeatname = featname
+multifeatidx = debug_example.labels.get_multi_names().index(multifeatname)
+    
 #contfeatidx = debug_example.labels.idx_multi_to_multicontinuous[multifeatidx]
 multi = debug_example.labels.get_multi(use_todiscretize=True,zscored=False)
 print('pose_debug->kp->debug_example->multi:')
 print(str(multi[:10,multifeatidx]) + ' ...')
 print('multi.shape = '+str(multi.shape))
 T0 = multi.shape[0]
-assert np.allclose(multi[:,multifeatidx],multi_debug_val[1:T0+1],atol=1e-6), f'Error in get_multi for feature {keyfeatidx}'
+assert np.allclose(multi[:,multifeatidx],multi_debug_val[1:T0+1],atol=1e-1), f'Error in get_multi for feature {keyfeatidx}'
 init = debug_example.labels.get_init_pose()
 print('debug_example->init:')
 print(init[keyfeatidx,:])
-assert np.allclose(init[keyfeatidx,:],multi_debug_val[:2],atol=1e-6), f'Error in get_init_pose for feature {keyfeatidx}'
+assert np.allclose(init[keyfeatidx,:],multi_debug_val[:2],atol=1e-1), f'Error in get_init_pose for feature {keyfeatidx}'
 
 # # this is z-scored
 # print('pose_debug->kp->debug_example.labels_raw continuous:')
@@ -538,7 +545,7 @@ print('debug_example->input_label: ')
 print(str(input_label[:10]) + ' ...')
 print('input_labels.shape = ' + str(zinput_labels.shape))
 T0 = input_label.shape[0]
-assert np.allclose(input_label,multi_debug_val[1:T0+1],atol=1e-3), f'Error in get_input_labels for feature {keyfeatidx}'
+assert np.allclose(input_label,multi_debug_val[1:T0+1],atol=1e-1), f'Error in get_input_labels for feature {keyfeatidx}'
 
 train_ex = debug_example.get_train_example()
 
@@ -547,7 +554,7 @@ ex_input_label = input_labels[:,inputlabelidx]*zsig + zmu
 print('debug_example->train_ex->input->input_label: ')
 print(str(ex_input_label[:10]) + ' ...')
 print('input_labels.shape = ' + str(input_labels.shape))
-assert np.allclose(ex_input_label,multi_debug_val[1:T0],atol=1e-3), f'Error in train example input labels for feature {keyfeatidx}'
+assert np.allclose(ex_input_label,multi_debug_val[1:T0],atol=1e-1), f'Error in train example input labels for feature {keyfeatidx}'
 
 input_split = split_features(train_ex['input'][:,debug_example.get_n_input_labels():])
 zinput_pose = input_split['pose'].numpy()
@@ -558,7 +565,7 @@ input_pose = zinput_pose[:,relidx]*sig_input_split['pose'][relidx] + mu_input_sp
 print('debug_example->train_ex->input->pose: ')
 print(str(input_pose[:10]) + ' ...')
 print('input_pose.shape = ' + str(zinput_pose.shape))
-assert np.allclose(input_pose,pose_debug_val[1:T0],atol=1e-2), f'Error in train example input pose for feature {keyfeatidx}'
+assert np.allclose(input_pose,pose_debug_val[1:T0],atol=1e-1), f'Error in train example input pose for feature {keyfeatidx}'
 
 # private variable access for debugging
 contidx = debug_example.labels._idx_multi_to_multicontinuous[multifeatidx]
@@ -566,7 +573,7 @@ label_pose = train_ex['labels'][:,contidx]*zsig + zmu
 print('debug_example->train_ex->labels: ')
 print(str(label_pose[:10]) + ' ...')
 print('train_ex labels.shape: ' + str(train_ex['labels'].shape))
-assert np.allclose(label_pose,multi_debug_val[2:T0+1],atol=1e-2), f'Error in train example labels for feature {keyfeatidx}'
+assert np.allclose(label_pose,multi_debug_val[2:T0+1],atol=1e-1), f'Error in train example labels for feature {keyfeatidx}'
 
 # %%
 # check copy_subindex

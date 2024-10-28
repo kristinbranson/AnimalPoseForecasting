@@ -9,6 +9,102 @@ import typing
 from apf.data import weighted_sample, discretize_labels
 from apf.utils import len_wrapper, dict_convert_torch_to_numpy, zscore, unzscore
 
+class AgentParams:
+    
+    def __init__(self):
+        return
+    
+    @classmethod
+    def get_params_from_dataset(cls,dataset):
+        """
+        get_params_from_dataset(dataset)
+        Returns the parameters for the AgentExample object taken from a AgentMLMDataset object as a dict.
+        """
+        if type(dataset) is str:
+            return {'todo': dataset}
+        
+        params = {
+            'zscore_params': dataset.get_zscore_params(),
+            'do_input_labels': dataset.input_labels,
+            'starttoff': dataset.get_start_toff(),
+            'flatten_labels': dataset.flatten_labels,
+            'flatten_obs': dataset.flatten_obs,
+            'discreteidx': dataset.discretefeat,
+            'discrete_tspred': dataset.discrete_tspred, # todo make obsolete
+            'tspred': [1,], # todo: add this to dataset
+            'isdct': False, # todo: add this to dataset
+            'discretize_params': dataset.get_discretize_params(),
+            'flatten_obs_idx': dataset.flatten_obs_idx,
+            'dct_m': dataset.dct_m,
+            'idct_m': dataset.idct_m,
+        }
+        return params
+    
+    @classmethod
+    def get_default_params(cls):
+        """
+        get_default_params()
+        Returns the default parameters for the AgentExample object as a dict.
+        """
+
+        params = {
+            'zscore_params': None,
+            'do_input_labels': True,
+            'starttoff': 1,
+            'flatten_labels': False,
+            'flatten_obs': False,
+            'discreteidx': [],
+            'tspred': [1,], # list of lists, each sublist is the frames into the future to predict for each feature
+            'isdct': False, # can be list-like, with an entry for each feature
+            'discrete_tspred': [1, ], # todo make obsolete
+            'discretize_params': None,
+            'flatten_obs_idx': None,
+            'dct_m': None,
+            'idct_m': None,
+        }
+        return params
+    
+    @classmethod
+    def split_zscore_params(cls,zscore_params):
+        """
+        split_zscore_params(zscore_params) (static)
+        Splits the zscore_params into input and labels zscore parameters.
+        """
+        if zscore_params is not None:
+            zscore_params_input = {'mu_input': zscore_params['mu_input'], 'sig_input': zscore_params['sig_input']}
+            zscore_params_labels = {'mu_labels': zscore_params['mu_labels'], 'sig_labels': zscore_params['sig_labels']}
+        else:
+            zscore_params_input = None
+            zscore_params_labels = None
+        return zscore_params_input, zscore_params_labels
+
+    @classmethod
+    def example_to_poselabels_params(cls,params):
+        """
+        example_to_poselabels_params(cls,params) (classmethod)
+        Converts the parameters in the dict params from AgentExample parameters for the PoseLabels object.
+        Returns this dict of parameters for PoseLabels.
+        """
+        if 'zscore_params' in params:
+            _, zscore_params_labels = cls.split_zscore_params(params['zscore_params'])
+            params['zscore_params'] = zscore_params_labels
+        toremove = ['do_input_labels', 'flatten_obs', 'simplify_in', 'flatten_obs_idx']
+        for k in toremove:
+            if k in params:
+                del params[k]
+        return params
+    
+    @classmethod
+    def example_to_observationinput_params(cls,params):
+        """
+        example_to_observationinput_params(cls,params) (class)
+        Converts parameters from AgentExample to ObservationInputs format.
+        """
+        kwinputs = params #copy.deepcopy(params)
+        zscore_params_input, _ = cls.split_zscore_params(params['zscore_params'])
+        kwinputs['zscore_params'] = zscore_params_input
+        return kwinputs
+
 class ObservationInputs:
     """
     ObservationInputs
@@ -35,7 +131,7 @@ class ObservationInputs:
     set_inputs_from_keypoints(Xkp, agent, scale=None, ts=None): Sets the inputs from keypoints.
     """
 
-    _exampleClass = 'AgentExample'
+    _paramsClass = AgentParams
 
     def __init__(self, example_in=None, Xkp=None, agent=0, scale=None, dataset=None, dozscore=False, npad=None, **kwargs):
         """
@@ -91,8 +187,8 @@ class ObservationInputs:
         # set parameters 
         self.set_params(kwargs)
         if dataset is not None:
-            self.set_params(self.__class__.get_params_from_dataset(dataset), override=False)
-        default_params = self._exampleClass.get_default_params()
+            self.set_params(self.get_params_from_dataset(dataset), override=False)
+        default_params = self.get_default_params()
         self.set_params(default_params, override=False)
 
         # indices for splitting observation features by type
@@ -163,25 +259,14 @@ class ObservationInputs:
             return self._input.shape[:-2]
 
     @classmethod
-    def agentexample_to_observationinput_params(cls,params):
-        """
-        agentexample_to_observationinput_params(cls,params) (class)
-        Converts parameters from AgentExample to ObservationInputs format.
-        """
-        kwinputs = params #copy.deepcopy(params)
-        zscore_params_input, _ = cls._exampleClass.split_zscore_params(params['zscore_params'])
-        kwinputs['zscore_params'] = zscore_params_input
-        return kwinputs
-
-    @classmethod
     def get_default_params(cls):
         """
         get_default_params() (class)
         Returns the default parameters for ObservationInputs. 
         These are set from AgentExample.get_default_params().
         """
-        params = cls._exampleClass.get_default_params()
-        params = cls.agentexample_to_observationinput_params(params)
+        params = cls._paramsClass.get_default_params()
+        params = cls._paramsClass.example_to_observationinput_params(params)
         return params
 
     def get_params(self):
@@ -214,8 +299,8 @@ class ObservationInputs:
         get_params_from_dataset(cls,dataset) (classmethod)
         Returns the dataset-related parameters for ObservationInputs computed from input dataset.
         """
-        params = cls._exampleClass.get_params_from_dataset(dataset)
-        params = cls.agentexample_to_observationinput_params(params)
+        params = cls._paramsClass.get_params_from_dataset(dataset)
+        params = cls._paramsClass.example_to_observationinput_params(params)
         return params
     
     def set_example(self, example_in, dozscore=False):
@@ -580,7 +665,7 @@ class PoseLabels:
     
     """
     
-    _exampleClass = 'AgentExample'
+    _paramsClass = AgentParams
     
     def __init__(self, example_in=None,
                  Xkp=None, scale=None, metadata=None,
@@ -588,11 +673,11 @@ class PoseLabels:
                  dataset=None, init_next=None, **kwargs):
 
         # set parameters
-        self.set_params(kwargs)
+        default_params = self.get_default_params()
+        self.set_params(default_params,updatesizes=False)
         if dataset is not None:
-            self.set_params(self.get_params_from_dataset(dataset), override=False, updatesizes=False)
-        default_params = self.__class__.get_default_params()
-        self.set_params(default_params, override=False, updatesizes=True)
+            self.set_params(self.get_params_from_dataset(dataset),updatesizes=False)
+        self.set_params(kwargs, updatesizes=True)
 
         # initialize
         self._label_keys = {}
@@ -991,29 +1076,13 @@ class PoseLabels:
         return
 
     @classmethod
-    def agentexample_to_poselabels_params(cls,params):
-        """
-        AgentExample_to_poselabels_params(cls,params) (classmethod)
-        Converts the parameters in the dict params from AgentExample parameters for the PoseLabels object.
-        Returns this dict of parameters for PoseLabels.
-        """
-        if 'zscore_params' in params:
-            _, zscore_params_labels = cls._exampleClass.split_zscore_params(params['zscore_params'])
-            params['zscore_params'] = zscore_params_labels
-        toremove = ['do_input_labels', 'flatten_obs', 'simplify_in', 'flatten_obs_idx']
-        for k in toremove:
-            if k in params:
-                del params[k]
-        return params
-
-    @classmethod
     def get_default_params(cls):
         """
         get_default_params(cls)
         Returns the default parameters for the PoseLabels object.
         """
-        params = cls._exampleClass.get_default_params()
-        params = cls.agentexample_to_poselabels_params(params)
+        params = cls._paramsClass.get_default_params()
+        params = cls._paramsClass.example_to_poselabels_params(params)
         return params
 
     def get_params_from_dataset(self, dataset):
@@ -1021,8 +1090,8 @@ class PoseLabels:
         get_params_from_dataset(dataset)
         Returns the parameters for the PoseLabels object from the AgentMLMDataset.
         """
-        params = self._exampleClass.get_params_from_dataset(dataset)
-        params = self.__class__.agentexample_to_poselabels_params(params)
+        params = self._paramsClass.get_params_from_dataset(dataset)
+        params = self._paramsClass.example_to_poselabels_params(params)
         return params
 
     def get_params(self):
@@ -2701,6 +2770,7 @@ class AgentExample:
     
     _labelsClass = PoseLabels
     _inputsClass = ObservationInputs
+    _paramsClass = AgentParams
     
     def __init__(self,example_in: typing.Optional[dict] = None,
                  dataset: typing.Any = None,
@@ -2775,7 +2845,7 @@ class AgentExample:
         # set parameters from extra arguments or dataset
         self.set_params(kwargs)
         if dataset is not None:
-            self.set_params(self.get_params_from_dataset(dataset), override=False)
+            self.set_params(self._paramsClass.get_params_from_dataset(dataset), override=False)
         default_params = self.get_default_params()
         self.set_params(default_params, override=False)
         if self._dct_m is not None and self._idct_m is None:
@@ -3116,39 +3186,13 @@ class AgentExample:
         params = {k: getattr(self, '_'+k) for k in default_params.keys()}
         return params
 
-    @classmethod
-    def get_params_from_dataset(cls,dataset):
-        """
-        get_params_from_dataset(dataset)
-        Returns the parameters for the AgentExample object taken from a AgentMLMDataset object as a dict.
-        """
-        if type(dataset) is str:
-            return {'todo': dataset}
-        
-        params = {
-            'zscore_params': dataset.get_zscore_params(),
-            'do_input_labels': dataset.input_labels,
-            'starttoff': dataset.get_start_toff(),
-            'flatten_labels': dataset.flatten_labels,
-            'flatten_obs': dataset.flatten_obs,
-            'discreteidx': dataset.discretefeat,
-            'discrete_tspred': dataset.discrete_tspred, # todo make obsolete
-            'tspred': [1,], # todo: add this to dataset
-            'isdct': False, # todo: add this to dataset
-            'discretize_params': dataset.get_discretize_params(),
-            'flatten_obs_idx': dataset.flatten_obs_idx,
-            'dct_m': dataset.dct_m,
-            'idct_m': dataset.idct_m,
-        }
-        return params
-
     def get_poselabel_params(self):
         """
         get_poselabel_params()
         Returns the parameters for the PoseLabels object as a dict.
         """
         params = self.get_params()
-        params = self._labelsClass.agentexample_to_poselabels_params(params)
+        params = self._paramsClass.example_to_poselabels_params(params)
 
         return params
 
@@ -3158,7 +3202,7 @@ class AgentExample:
         Returns the parameters for the ObservationInputs object as a dict.
         """
         params = self.get_params()
-        params = self._inputsClass.agentexample_to_observationinput_params(params)
+        params = self._paramsClass.example_to_observationinput_params(params)
         return params
 
     @property
@@ -3312,26 +3356,12 @@ class AgentExample:
         metadata['frame0'] += starttoff
         return metadata
 
-    @classmethod
-    def split_zscore_params(cls,zscore_params):
-        """
-        split_zscore_params(zscore_params) (static)
-        Splits the zscore_params into input and labels zscore parameters.
-        """
-        if zscore_params is not None:
-            zscore_params_input = {'mu_input': zscore_params['mu_input'], 'sig_input': zscore_params['sig_input']}
-            zscore_params_labels = {'mu_labels': zscore_params['mu_labels'], 'sig_labels': zscore_params['sig_labels']}
-        else:
-            zscore_params_input = None
-            zscore_params_labels = None
-        return zscore_params_input, zscore_params_labels
-
     def set_zscore_params(self, zscore_params):
         """
         set_zscore_params(zscore_params)
         Sets the zscore parameters for the AgentExample object.
         """
-        zscore_params_input, zscore_params_labels = self.__class__.split_zscore_params(zscore_params)
+        zscore_params_input, zscore_params_labels = self._paramsClass.split_zscore_params(zscore_params)
         self.inputs.set_zscore_params(zscore_params_input)
         self.labels.set_zscore_params(zscore_params_labels)
         
@@ -3561,6 +3591,3 @@ class AgentExample:
                 err_total[k] = v
 
         return err_total
-
-ObservationInputs._exampleClass = AgentExample
-PoseLabels._exampleClass = AgentExample
