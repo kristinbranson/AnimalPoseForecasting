@@ -386,7 +386,11 @@ def animate_predict_open_loop(model, dataset, Xkp_init, fliespred, scales, tpred
 
     model.eval()
 
-    Xkp_fill = Xkp[...,:-dataset.ntspred_max+1,:].copy()
+    if dataset.ntspred_max == 1:
+        endoff = None
+    else:
+        endoff = -dataset.ntspred_max+1
+    Xkp_fill = Xkp[...,:endoff,:].copy()        
 
     # capture all outputs of predict_open_loop in a tuple
     res = dataset.predict_open_loop(examples_pred, fliespred, scales, Xkp_fill, burnin, model, maxcontextl=dataset.contextl+1,
