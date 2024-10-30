@@ -1074,14 +1074,18 @@ class FlyMLMDataset(torch.utils.data.Dataset):
 
 class FlyTestDataset(FlyMLMDataset):
     def __init__(self,data: list[dict[str, np.ndarray | dict[str, int]]],
-        contextl: int, allow_debugcheat: bool = False, **kwargs):
+        contextl: int, need_labels: bool = False, need_metadata: bool = False, 
+        need_init: bool = False, make_copy: bool = False, **kwargs):
 
         super().__init__(data,**kwargs)
 
         self._contextl = contextl
         self.n_examples_per_id = np.array([self.data[i].ntimepoints-self.contextl+1 for i in range(len(self.data))])
         self.start_example_per_id = np.r_[0,np.cumsum(self.n_examples_per_id)]
-        self.allow_debugcheat = allow_debugcheat
+        self.need_labels = need_labels
+        self.need_metadata = need_metadata
+        self.make_copy = make_copy
+        self.need_init = need_init
 
         self.set_eval_mode()
 
@@ -1109,7 +1113,8 @@ class FlyTestDataset(FlyMLMDataset):
     def __getitem__(self, idx: int):
         id = np.searchsorted(self.start_example_per_id,idx,side='right')-1
         idx1 = idx-self.start_example_per_id[id]
-        res = self.data[id].get_train_example(ts=np.arange(idx1,idx1+self.contextl),needinit=False,needlabels=self.allow_debugcheat,needmetadata=False,makecopy=False)
+        res = self.data[id].get_train_example(ts=np.arange(idx1,idx1+self.contextl),needinit=self.need_init,
+                                              needlabels=self.need_labels,needmetadata=self.need_metadata,makecopy=self.make_copy)
         res['idx'] = idx
         return res
 

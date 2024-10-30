@@ -18,6 +18,9 @@
 # ### Imports
 
 # %%
+# %load_ext autoreload
+# %autoreload 2
+
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -82,9 +85,13 @@ LOG.info('matplotlib backend: ' + mpl_backend)
 
 # %%
 # configuration parameters for this model
+
 loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredvel_20241022_epoch200_20241023T140356.pth'
-#loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flymulttimeglob_predposition_20240305_epoch130_20240825T122647.pth'
 configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241022.json'
+
+# loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredpos_20241023_epoch200_20241028T165510.pth'
+# configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predpos_20241023.json'
+
 # set to None if you want to use the full data
 #quickdebugdatafile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/tmp_small_usertrainval.pkl'
 quickdebugdatafile = None
@@ -111,6 +118,10 @@ torch.manual_seed(config['torch_seed'])
 device = torch.device(config['device'])
 if device.type == 'cuda':
     assert torch.cuda.is_available(), 'CUDA is not available'
+
+# where to save predictions
+# remove extension from loadmodelfile
+savepredfile = loadmodelfile.split('.')[0] + '_all_pred.npz'
 
 # %% [markdown]
 # ### Load data
@@ -202,6 +213,7 @@ dataset_params = {
     'compute_pose_vel': config['compute_pose_vel'],
     
 }
+# zscore and discretize parameters
 for k in config['dataset_params']:
     dataset_params[k] = config['dataset_params'][k]
 
@@ -290,8 +302,8 @@ if (not doprofile) and dodebug:
 # ### Evaluate tau-frame predictions
 
 # %%
+
 debugcheat = False
-savepredfile = 'all_pred.npz'
 
 # compute predictions and labels for all validation data
 val_dataset = FlyTestDataset(valX,config['contextl'],**dataset_params,allow_debugcheat=debugcheat)
@@ -303,18 +315,18 @@ val_dataloader = torch.utils.data.DataLoader(val_dataset,
 all_pred, labelidx = predict_all(val_dataloader, val_dataset, model, config, train_src_mask, keepall=False, debugcheat=debugcheat,earlystop=50)
 
 # save all_pred and labelidx to a numpy file
-if savepredfile is not None:
-    np.savez('all_pred.npz',all_pred=all_pred,labelidx=labelidx)
+if (not debugcheat) and (savepredfile is not None):
+    print(f'Saving predictions to {savepredfile}')
+    np.savez(savepredfile,all_pred=all_pred,labelidx=labelidx)
 
 # %%
-# load all_pred and labelidx from all_pred.npz
-savepredfile = 'all_pred.npz'
-if savepredfile is not None and os.path.exists('all_pred.npz'):
-    tmp = np.load('all_pred.npz',allow_pickle=True)
+
+# load all_pred and labelidx from savepredfile
+if savepredfile is not None and os.path.exists(savepredfile):
+    print(f'Loading predictions from {savepredfile}')
+    tmp = np.load(savepredfile,allow_pickle=True)
     all_pred = tmp['all_pred'].item()
     labelidx = tmp['labelidx']
-else:
-    raise ValueError(f'{savepredfile} does not exist')
 
 # %%
 # compare predictions to labels
@@ -331,36 +343,23 @@ for pred_example,true_example in zip(pred_data,true_data):
 # combine errors
 err_total = FlyExample.combine_errors(err_example)
 
-
-# %%
 for k,v in err_total.items():
     print(f'{k}: {type(v)}')
     if type(v) is np.ndarray:
         print(f'    {v.shape}')
 
 # %%
-np.stack([x[k] for x in err_example]).shape
-
-# %%
-for k,v in meanerr.items():
-    print(f'{k}: {v.shape}')
-pred_example.labels.is_zscored()
-
-# %%
-# plot errors
+# plot multi errors
 
 i = 0
 pred_example = pred_data[i]
 true_example = true_data[i]
-err = err_example[i]
+multi_names = true_example.labels.get_multi_names()
 
-featnum = 0
-featnum = 58
 nsamples = 100
 #tsplot = np.arange(pred_example.ntimepoints-1)
 tsplot = np.arange(8700,8800)
 
-fig,ax = plt.subplots(2,1,sharex=True,figsize=(16,16))
 multi_pred = pred_example.labels.get_multi(nsamples=0,collapse_samples=True,use_todiscretize=False)
 multi_pred_sample = pred_example.labels.get_multi(nsamples=nsamples,collapse_samples=True,use_todiscretize=False)
 multi_pred_meansample = np.nanmean(multi_pred_sample,axis=0)
@@ -368,7 +367,6 @@ multi_true = true_example.labels.get_multi(use_todiscretize=True)
 multi_isdiscrete = pred_example.labels.get_multi_isdiscrete()
 bestsample = np.argmin(np.abs(multi_pred_sample-multi_true[None,...]),axis=0)
 
-plotsamples = multi_isdiscrete[featnum]
 tabcolors = plt.cm.tab10(np.arange(10))
 colors = {}
 colors['true'] = 'k'
@@ -377,32 +375,175 @@ colors['meansample'] = tabcolors[1]
 colors['minsample'] = tabcolors[2]
 colors['sample'] = tabcolors[3]
 
-miny = np.nanmin(multi_true[tsplot,featnum])
-maxy = np.nanmax(multi_true[tsplot,featnum])
-dy = maxy-miny
-ylim = (miny-.1*dy,maxy+.1*dy)
+fig,ax = plt.subplots(true_example.labels.d_multi,1,sharex=True,figsize=(16,4*true_example.labels.d_multi))
 
-if plotsamples:
-    for i in range(multi_pred_sample.shape[0]):
-        c = colors['sample'].copy()
-        c[-1] = .05
-        h, = ax[0].plot(multi_pred_sample[i,tsplot,featnum],'.',color=c)
-        if i == 0:
-            h.set_label('random sample')
-    ax[0].plot(multi_pred_meansample[tsplot,featnum],'.-',color=colors['meansample'],label='mean sample')
-    ax[0].plot(multi_pred_sample[bestsample[tsplot,featnum],tsplot,featnum],'.-',label='best sample',color=colors['minsample'])
+for featnum in range(true_example.labels.d_multi):
+    plotsamples = multi_isdiscrete[featnum]
 
-ax[0].plot(multi_pred[tsplot,featnum],'.-',label='expected value',color=colors['weightedsum'])
-ax[0].plot(multi_true[tsplot,featnum],'.-',label='true',color=colors['true'])
-ax[0].set_ylim(ylim)
-ax[0].legend()
-ax[0].set_ylabel(f'{err["multi_names"][featnum]}')
+    miny = np.nanmin(multi_true[tsplot,featnum])
+    maxy = np.nanmax(multi_true[tsplot,featnum])
+    dy = maxy-miny
+    ylim = (miny-.1*dy,maxy+.1*dy)
 
-ax[1].plot(err['absdiff_multi'][tsplot,featnum],'.-',label='expected value',color=colors['weightedsum'])
-if plotsamples:
-    ax[1].plot(err['absdiff_multi_samplemean'][tsplot,featnum],'.-',label='mean sample',color=colors['meansample'])
-    ax[1].plot(err['absdiff_multi_samplemin'][tsplot,featnum],'.-',label='best sample',color=colors['minsample'])
+    if plotsamples:
+        for i in range(multi_pred_sample.shape[0]):
+            c = colors['sample'].copy()
+            c[-1] = .05
+            h, = ax[featnum].plot(multi_pred_sample[i,tsplot,featnum],'.',color=c)
+            if i == 0:
+                h.set_label('random sample')
+        ax[featnum].plot(multi_pred_meansample[tsplot,featnum],'.-',color=colors['meansample'],label='mean sample')
+        ax[featnum].plot(multi_pred_sample[bestsample[tsplot,featnum],tsplot,featnum],'.-',label='best sample',color=colors['minsample'])
 
-ax[1].set_ylabel(f'abs error {err["multi_names"][featnum]}')
-ax[1].legend()
+    ax[featnum].plot(multi_pred[tsplot,featnum],'.-',label='expected value',color=colors['weightedsum'])
+    ax[featnum].plot(multi_true[tsplot,featnum],'.:',label='true',color=colors['true'])
+    ax[featnum].set_ylim(ylim)
+    if featnum == 0:
+        ax[featnum].legend()
+    ax[featnum].set_ylabel(f'{multi_names[featnum]}')
+
 fig.tight_layout()
+
+# %%
+
+# plot next pose errors
+# I think this doesn't make sense to plot -- it is integrating errors, but also
+# has access to previous frames correct velocities when predicting... 
+
+i = 0
+pred_example = pred_data[i]
+true_example = true_data[i]
+next_pose_names = true_example.labels.get_next_names()
+
+#featnum = 58
+nsamples = 100
+#tsplot = np.arange(pred_example.ntimepoints-1)
+tsplot = np.arange(0,100)
+
+next_pose_pred = pred_example.labels.get_next_pose(nsamples=0,use_todiscretize=False)
+next_pose_pred_sample = pred_example.labels.get_next_pose(nsamples=nsamples,use_todiscretize=False)
+next_pose_pred_meansample = np.nanmean(next_pose_pred_sample,axis=0)
+next_pose_true = true_example.labels.get_next_pose(use_todiscretize=True)
+next_pose_isdiscrete = np.nanmax((np.max(next_pose_pred_sample,axis=0)-np.min(next_pose_pred_sample,axis=0)),axis=0) > 1e-6
+bestsample = np.argmin(np.abs(next_pose_pred_sample-next_pose_true[None,...]),axis=0)
+
+tabcolors = plt.cm.tab10(np.arange(10))
+colors = {}
+colors['true'] = 'k'
+colors['weightedsum'] = tabcolors[0]
+colors['meansample'] = tabcolors[1]
+colors['minsample'] = tabcolors[2]
+colors['sample'] = tabcolors[3]
+
+fig,ax = plt.subplots(true_example.labels.d_next_pose,1,sharex=True,figsize=(16,4*true_example.labels.d_next_pose))
+
+for featnum in range(true_example.labels.d_next_pose):
+
+    miny = np.nanmin(next_pose_true[tsplot,featnum])
+    maxy = np.nanmax(next_pose_true[tsplot,featnum])
+    dy = maxy-miny
+    ylim = (miny-.1*dy,maxy+.1*dy)
+
+    if plotsamples:
+        for i in range(next_pose_pred_sample.shape[0]):
+            c = colors['sample'].copy()
+            c[-1] = .05
+            h, = ax[featnum].plot(next_pose_pred_sample[i,tsplot,featnum],'.',color=c)
+            if i == 0:
+                h.set_label('random sample')
+        ax[featnum].plot(next_pose_pred_meansample[tsplot,featnum],'.-',color=colors['meansample'],label='mean sample')
+        ax[featnum].plot(next_pose_pred_sample[bestsample[tsplot,featnum],tsplot,featnum],'.-',label='best sample',color=colors['minsample'])
+
+    ax[featnum].plot(next_pose_pred[tsplot,featnum],'.-',label='expected value',color=colors['weightedsum'])
+    ax[featnum].plot(next_pose_true[tsplot,featnum],'.:',label='true',color=colors['true'])
+    ax[featnum].set_ylim(ylim)
+    if featnum == 0:
+        ax[featnum].legend()
+    ax[featnum].set_ylabel(f'{next_pose_names[featnum]}')
+
+# %%
+
+# store the random state so we can reproduce the same results
+randstate_np = np.random.get_state()
+randstate_torch = torch.random.get_rng_state()
+
+# %%
+
+# reseed numpy random number generator with randstate_np
+np.random.set_state(randstate_np)
+# reseed torch random number generator with randstate_torch
+torch.random.set_rng_state(randstate_torch)
+
+# %%
+
+# choose data to initialive behavior modeling
+tpred = np.minimum(4000 + config['contextl'], valdata['isdata'].shape[0] // 2)
+
+# all frames must have real data
+burnin = config['contextl'] - 1
+contextlpad = burnin + train_dataset.ntspred_max
+allisdata = interval_all(valdata['isdata'], contextlpad)
+isnotsplit = interval_all(valdata['isstart'] == False, tpred)[1:, ...]
+canstart = np.logical_and(allisdata[:isnotsplit.shape[0], :], isnotsplit)
+flynum = 2  # 2
+t0 = np.nonzero(canstart[:, flynum])[0]
+idxstart = np.minimum(8700, len(t0) - 1)
+if len(t0) > idxstart:
+    t0 = t0[idxstart]
+else:
+    t0 = t0[0]
+fliespred = np.array([flynum, ])
+
+nsamplesfuture = 1 # 32
+
+isreal = np.any(np.isnan(valdata['X'][...,t0:t0+tpred,:]),axis=(0,1,2)) == False
+Xkp_init = valdata['X'][...,t0:t0+tpred+val_dataset.ntspred_max,isreal]
+scales_pred = []
+for flypred in fliespred:
+  id = valdata['ids'][t0, flypred]
+  scales_pred.append(val_scale_perfly[:,id])
+metadata = {'t0': t0, 'ids': fliespred, 'videoidx': valdata['videoidx'][t0], 'frame0': valdata['frames'][t0]}
+print(metadata)
+
+ani = animate_predict_open_loop(model, val_dataset, Xkp_init, fliespred, scales_pred, tpred, 
+                          debug=False, plotattnweights=False, plotfuture=train_dataset.ntspred_max > 1, 
+                          nsamplesfuture=nsamplesfuture, metadata=metadata)
+
+# %%
+# show the animation
+HTML(ani.to_html5_video())
+
+# %%
+
+vidtime = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
+flynumstr = '_'.join([str(x) for x in fliespred])
+savevidfile = os.path.join(config['savedir'], f"samplevideo_{modeltype_str}_{savetime}_{vidtime}_t0_{metadata['t0']}_flies{flynumstr}.gif")
+print('Saving animation to file %s...'%savevidfile)
+writer = animation.PillowWriter(fps=30)
+ani.save(savevidfile, writer=writer)
+print('Finished writing.')
+
+# %%
+max_tpred = 150
+multi_val_dataset = FlyTestDataset(valX,config['contextl']+max_tpred,**dataset_params,need_labels=True,need_metadata=True,need_init=True,make_copy=True)
+
+
+# %%
+rawdata = valdata
+dataset = multi_val_dataset
+tpred = max_tpred
+mask = train_src_mask
+keepall = False
+debugcheat = False
+nsamples = 0
+N = 100
+
+# %%
+from apf.pose import PoseLabels, ObservationInputs, AgentExample
+from flyllm.pose import FlyPoseLabels, FlyObservationInputs, FlyExample
+from flyllm.prediction import predict_multiple_timesteps_all
+
+all_pred_multi, labelidx_multi = predict_multiple_timesteps_all(valdata,multi_val_dataset,model,max_tpred,N=10,keepall=False)
+
+# %%
+all_pred_multi['continuous'].shape

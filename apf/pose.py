@@ -334,6 +334,12 @@ class ObservationInputs:
             self._metadata = example_in['metadata']
         else:
             self._metadata = None
+            
+    def expand_allocate(self,newT):
+        Tpad = newT - self.ntimepoints
+        pad = np.zeros( self._input.shape[:-2] + (Tpad,self._input.shape[-1]), dtype=self._input.dtype)
+        self._input = np.concatenate((self._input,pad),axis=-2)
+        return
     
     def get_compute_features_params(self):
         """
@@ -1061,18 +1067,20 @@ class PoseLabels:
         new = self.__class__(example_in=labels, **self.get_params())
         return new
 
-    def erase_labels(self):
+    def erase_labels(self,ts=None):
         """
         erase_labels()
         Sets all labels to nan.
         """
+        if ts is None:
+            ts = slice(self._starttoff,None)
         if self.is_continuous() and 'continuous' in self.labels_raw:
-            self.labels_raw['continuous'][..., self._starttoff:, :] = np.nan
+            self.labels_raw['continuous'][..., ts, :] = np.nan
         if self.is_discretized():
             if 'discrete' in self.labels_raw:
-                self.labels_raw['discrete'][..., self._starttoff:, :, :] = np.nan
+                self.labels_raw['discrete'][..., ts, :, :] = np.nan
             if 'todiscretize' in self.labels_raw:
-                self.labels_raw['todiscretize'][..., self._starttoff:, :] = np.nan
+                self.labels_raw['todiscretize'][..., ts, :] = np.nan
         return
 
     @classmethod
@@ -2177,6 +2185,21 @@ class PoseLabels:
                 self.labels_raw['discrete'][...,ts,:,:] = multi_discrete
 
         return
+    
+    def expand_allocate(self,newT):
+        Tpad = newT - self.ntimepoints
+        if 'continuous' in self.labels_raw:
+            pad = np.zeros( self.labels_raw['continuous'].shape[:-2] + (Tpad,self.labels_raw.shape[-1]), dtype=self.labels_raw['continuous'].dtype)
+            self.labels_raw['continuous'] = np.concatenate((self.labels_raw['continuous'],pad),axis=-2)
+            
+        if 'discrete' in self.labels_raw:
+            pad = np.zeros( self.labels_raw['discrete'].shape[:-3] + (Tpad,) + self.labels_raw['discrete'].shape[-2:], dtype=self.labels_raw['discrete'].dtype)
+            self.labels_raw['discrete'] = np.concatenate((self.labels_raw['discrete'],pad),axis=-3)
+        if 'todiscretize' in self.labels_raw:
+            pad = np.zeros( self.labels_raw['todiscretize'].shape[:-2] + (Tpad,self.labels_raw.shape[-1]), dtype=self.labels_raw['todiscretize'].dtype)
+            self.labels_raw['todiscretize'] = np.concatenate((self.labels_raw['todiscretize'],pad),axis=-2)
+            
+        return
 
     def _multi_to_multiidct1(self, multi):
         """
@@ -2949,6 +2972,10 @@ class AgentExample:
         
         return
     
+    def expand_allocate(self,newT):
+        self._labels.expand_allocate(newT)
+        self._inputs.expand_allocate(newT)
+    
     @property
     def d_input(self):
         """
@@ -3591,3 +3618,45 @@ class AgentExample:
                 err_total[k] = v
 
         return err_total
+
+    @staticmethod
+    def expand_allocate_raw_example(raw_example,newT):
+        
+        if 'input' in raw_example:
+            oldT = raw_example['input'].shape[-2]
+        elif 'labels' in raw_example:
+            oldT = raw_example['labels'].shape[-2]
+        elif 'continuous' in raw_example:
+            oldT = raw_example['continuous'].shape[-2]
+        elif 'labels_discrete' in raw_example:
+            oldT = raw_example['labels_discrete'].shape[-2]
+        elif 'discrete' in raw_example:
+            oldT = raw_example['discrete'].shape[-2]
+        
+        Tpad = newT - oldT
+        if 'labels' in raw_example:
+            pad = np.zeros( raw_example['labels'].shape[:-2] + (Tpad,raw_example['labels'].shape[-1]), dtype=raw_example['labels'].dtype)
+            raw_example['labels'] = np.concatenate((raw_example['labels'],pad),axis=-2)
+        elif 'continuous' in raw_example:
+            pad = np.zeros( raw_example['continuous'].shape[:-2] + (Tpad,raw_example['continuous'].shape[-1]), dtype=raw_example['continuous'].dtype)
+            raw_example['continuous'] = np.concatenate((raw_example['continuous'],pad),axis=-2)
+        
+        if 'labels_discrete' in raw_example:
+            pad = np.zeros( raw_example['labels_discrete'].shape[:-3] + (Tpad,) + raw_example['labels_discrete'].shape[-2:], dtype=raw_example['labels_discrete'].dtype)
+            raw_example['labels_discrete'] = np.concatenate((raw_example['labels_discrete'],pad),axis=-3)
+        elif 'discrete' in raw_example:
+            pad = np.zeros( raw_example['discrete'].shape[:-3] + (Tpad,) + raw_example['discrete'].shape[-2:], dtype=raw_example['discrete'].dtype)
+            raw_example['discrete'] = np.concatenate((raw_example['discrete'],pad),axis=-3)
+        
+        if 'todiscretize' in raw_example:
+            pad = np.zeros( raw_example['todiscretize'].shape[:-2] + (Tpad,raw_example['todiscretize'].shape[-1]), dtype=raw_example['todiscretize'].dtype)
+            raw_example['todiscretize'] = np.concatenate((raw_example['todiscretize'],pad),axis=-2)
+        elif 'labels_todiscretize' in raw_example:
+            pad = np.zeros( raw_example['labels_todiscretize'].shape[:-2] + (Tpad,raw_example['labels_todiscretize'].shape[-1]), dtype=raw_example['labels_todiscretize'].dtype)
+            raw_example['labels_todiscretize'] = np.concatenate((raw_example['labels_todiscretize'],pad),axis=-2)
+
+        if 'input' in raw_example:
+            pad = np.zeros( raw_example['input'].shape[:-2] + (Tpad,raw_example['input'].shape[-1]), dtype=raw_example['input'].dtype)
+            raw_example['input'] = np.concatenate((raw_example['input'],pad),axis=-2)
+
+        return

@@ -89,7 +89,10 @@ LOG.info('matplotlib backend: ' + mpl_backend)
 # configuration parameters for this model
 restartmodelfile = None
 #restartmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flymulttimeglob_predposition_20240305_epoch130_20240825T122647.pth'
-configfile = 'flyllm/configs/config_fly_llm_predvel_20241022.json'
+
+configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predpos_20241023.json'
+assert os.path.exists(configfile), f'config file {configfile} does not exist'
+
 # set to None if you want to use the full data
 quickdebugdatafile = None
 #configfile = "/groups/branson/home/eyjolfsdottire/code/MABe2022/config_fly_llm_multitimeglob_discrete_20230907.json"

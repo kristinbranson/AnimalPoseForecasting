@@ -1,10 +1,13 @@
 import numpy as np
 import torch
 
-from flyllm.pose import FlyExample
 import tqdm
 from apf.utils import set_batch_concat, allocate_batch_concat, clip_batch_concat
-
+from apf.models import ( 
+    get_output_and_attention_weights,
+    pred_apply_fun
+)
+from flyllm.pose import FlyExample
 
 def predict_all(dataloader, dataset, model, config, mask, keepall=True, earlystop=None, debugcheat=False):
     is_causal = dataset.ismasked() == False
@@ -97,26 +100,279 @@ def predict_all(dataloader, dataset, model, config, mask, keepall=True, earlysto
 
     return all_pred, labelidx  # ,all_mask,all_pred_discrete,all_labels_discrete
 
-def get_global_predictions(all_pred,labelidx,dataset):
 
-    for i,idx in tqdm.tqdm(enumerate(labelidx),total=len(labelidx)):
-        labelobj = dataset.get_example(idx).labels
-        unz_global_label = labelobj.get_future_global(zscored=False, use_todiscretize=True)
-        if i == 0:
-            unz_glabelsv = np.zeros((len(labelidx),) + unz_global_label.shape, dtype=unz_global_label.dtype)
-            unz_gpredv = np.zeros((len(labelidx),) + unz_global_label.shape, dtype=unz_global_label.dtype)
-        unz_glabelsv[i] = unz_global_label
-        predobj = labelobj.copy()
-        predobj.erase_labels()
-        if type(all_pred) is dict:
-            predcurr = {k: v[i] for k,v in all_pred.items()}
-        else:
-            predcurr = all_pred[i]
-        predobj.set_prediction(predcurr)
-        unz_global_pred = predobj.get_future_global(zscored=False, use_todiscretize=False)
-        unz_gpredv[i] = unz_global_pred
+def predict_multiple_timesteps(examples_pred, fliespred, scales, Xkp_fill, burnin, model, dataset, maxcontextl=np.inf, debug=False,
+                               need_weights=False, nsamples=0, labels_true=None):
+
+    """
+    predict_multiple_timesteps(examples_pred,fliespred,scales,Xkp_fill,burnin,model,dataset,
+                               maxcontextl=np.inf,debug=False,need_weights=False,nsamples=0,
+                               labels_true=None)
+
+    Args:
+        examples_pred: list of FlyExample objects to be predicted in open loop. labels can be nan 
+        for frames/flies to be predicted. Will be overwritten
+        fliespred (ndarray, nfliespred): indices of flies to predict
+        scales (ndarray, nscale x nfliespred): scale parameters for the flies to be predicted
+        Xkp_fill (ndarray, nkpts x 2 x tpred x nflies): keypoints for all flies for all frames.
+        Can be nan for frames/flies to be predicted. Will be overwritten.
+        burnin (int): number of frames to use for initialization
+        model (nn.Module): model to use for prediction.
+        dataset (FlyDataset): dataset object used for prediction
+        maxcontextl (int, optional): maximum number of frames to use for context. Default np.inf
+        need_weights (bool, optional): whether to return attention weights. Default False
+        nsamples (int, optional): number of samples to predict. If 0, only one sample is predicted
+        and samples are collapsed. Default 0.
+        labels_true (list of FlyPoseLabels objects, optional): true labels for debugging. Default None
+    """
+    
+    model.eval()
+
+    with torch.no_grad():
+        w = next(iter(model.parameters()))
+        dtype = w.cpu().numpy().dtype
+        device = w.device
+
+    if nsamples == 0:
+        nsamples1 = 1
+    else:
+        nsamples1 = nsamples
+
+    tpred = examples_pred[0].ntimepoints
+    nfliespred = len(examples_pred)
+    if need_weights:
+        attn_weights = [None, ] * tpred
+
+    if dataset.ismasked():
+        # to do: figure this out for flattened models
+        masktype = 'last'
+        dummy = np.zeros((1, dataset.d_output))
+        dummy[:] = np.nan
+    else:
+        masktype = None
+
+    # start predicting motion from frame burnin-1 to burnin = t
+    masksizeprev = None
+    
+    # global position of each fly in the previous frame, so that we don't have to integrate to compute position
+    pose_prev = []
+    for i in range(nfliespred):
+        pose_curr = examples_pred[i].labels.get_next_pose(ts=np.arange(burnin),use_todiscretize=True)[-1]
+        pose_prev.append(pose_curr)
+    
+    for t in tqdm.trange(burnin, tpred): 
+        t0 = int(np.maximum(t - maxcontextl, 0))
+
+        for i,fly in enumerate(fliespred):
+            # copy frames up to t
+            # don't use the init_pose
+            # get_next_pose[:,-1] will be nan
+            example_pred = examples_pred[i].copy_subindex(ts=np.arange(t0, t+1),needinit=False)
+            # inputs will go from t0 through t
+            # labels (unused) will go from t0+example_pred.starttoff through t+example_pred.starttoff
+            test_example = example_pred.get_train_example()
+            xcurr = test_example['input']
+            assert not torch.any(torch.isnan(xcurr))
+            xcurr, _, _ = dataset.mask_input(xcurr, masktype)
+
+            if debug:
+                label_pred = labels_true[i].copy_subindex(ts=np.arange(t0, t+1))
+                pred = label_pred.get_train_labels()
+                pred = {k: v.reshape((1,) + v.shape) if type(v) is torch.Tensor else v for k, v in pred.items()}
+                #zmovementout = np.tile(self.zscore_labels(movement_true[t - 1, :, i]).astype(dtype)[None],
+                #                       (nsamples1, 1))
+            else:
+
+                if dataset.flatten:
+                    raise NotImplementedError("Flattening not yet implemented")
+                    # not implemented yet
+                    # to do: not sure if multiple samples here works
+
+                    zmovementout = np.zeros((nsamples1, dataset.d_output), dtype=dtype)
+                    zmovementout_flattened = np.zeros((dataset.noutput_tokens_per_timepoint, dataset.flatten_max_doutput),
+                                                        dtype=dtype)
+
+                    for token in range(dataset.noutput_tokens_per_timepoint):
+
+                        lastidx = xcurr.shape[0] - dataset.noutput_tokens_per_timepoint
+                        masksize = lastidx + token
+                        net_mask, is_causal = dataset.get_predict_mask(masksize=masksize, device=device)
+
+                        with torch.no_grad():
+                            predtoken = model(xcurr[None, :lastidx + token, ...].to(device), mask=net_mask,
+                                                is_causal=is_causal)
+                        # to-do: integrate with labels object
+                        if token < len(dataset.discreteidx):
+                            # sample
+                            sampleprob = torch.softmax(predtoken[0, -1, :dataset.discretize_nbins], dim=-1)
+                            binnum = int(weighted_sample(sampleprob, nsamples=nsamples1))
+
+                            # store in input
+                            xcurr[lastidx + token, binnum[0]] = 1.
+                            zmovementout_flattened[token, binnum[0]] = 1.
+
+                            # convert to continuous
+                            nsamples_per_bin = dataset.discretize_bin_samples.shape[0]
+                            sample = int(torch.randint(low=0, high=nsamples_per_bin, size=(nsamples,)))
+                            zmovementcurr = dataset.discretize_bin_samples[sample, token, binnum]
+
+                            # store in output
+                            zmovementout[:, dataset.discreteidx[token]] = zmovementcurr
+                        else:  # else token < len(self.discreteidx)
+                            # continuous
+                            zmovementout[:, dataset.continuous_idx] = predtoken[0, -1, :len(dataset.continuous_idx)].cpu()
+                            zmovementout_flattened[token, :len(dataset.continuous_idx)] = zmovementout[
+                                dataset.continuous_idx, 0]
+
+                else:  # else flatten
+
+                    masksize = t - t0
+                    if masksize != masksizeprev:
+                        net_mask, is_causal = dataset.get_predict_mask(masksize=masksize, device=device)
+                        masksizeprev = masksize
+
+                    if need_weights:
+                        with torch.no_grad():
+                            pred, attn_weights_curr = get_output_and_attention_weights(model,
+                                                                                        xcurr[None, ...].to(device),
+                                                                                        net_mask)
+                        # dimensions correspond to layer, output frame, input frame
+                        attn_weights_curr = torch.cat(attn_weights_curr, dim=0).cpu().numpy()
+                        if i == 0:
+                            attn_weights[t] = np.tile(attn_weights_curr[..., None], (1, 1, 1, nfliespred))
+                            attn_weights[t][..., 1:] = np.nan
+                        else:
+                            attn_weights[t][..., i] = attn_weights_curr
+                    else:
+                        with torch.no_grad():
+                            # predict for all frames
+                            # masked: movement from 0->1, ..., t->t+1
+                            # causal: movement from 1->2, ..., t->t+1
+                            # last prediction: t->t+1
+                            pred = model.output(xcurr[None, ...].to(device), mask=net_mask, is_causal=is_causal)
+                    # to-do: this is not incorportated into sampling, probably should be
+                    if model.model_type == 'TransformerBestState' or model.model_type == 'TransformerState':
+                        pred = model.randpred(pred)
+                    # z-scored movement from t to t+1
+
+                # end else flatten
+            # end else debug
+                    
+            pred = pred_apply_fun(pred, lambda x: x[0, -1, ...].cpu().numpy() if type(x) is torch.Tensor else x)
+            # set the label for frame t, but not the inputs yet
+            examples_pred[i].labels.set_prediction(pred,ts=t)                
+            
+            # store keypoints predicted for this frame
+            Xkpcurr = examples_pred[i].labels.get_next_keypoints(ts=[t,],init_pose=pose_prev[i])
+            Xkp_fill[:,:,t+1,fly] = Xkpcurr[-1]
+
+
+            #globapos_curr = examples_pred[i].labels.get_next_pose_global(ts=[t,],globalpos0=globalpos_prev[i])
+            pose_curr = examples_pred[i].labels.get_next_pose(ts=[t,],init_pose=pose_prev[i])
+            pose_prev[i] = pose_curr[-1]
+            #globalpos_prev[i] = globapos_curr
+                
+        # end loop over flies
         
-    return unz_gpredv,unz_glabelsv
+        if t < tpred-1:
+            # update observations for the next frame
+            for i,fly in enumerate(fliespred):
+                # this is just one frame of inputs, so don't crop the end
+                examples_pred[i].inputs.set_inputs_from_keypoints(Xkp_fill[:,:,[t+1,],:],fly,scale=scales[i],ts=[t+1,],npad=0)
+
+    if need_weights:
+        return examples_pred, attn_weights
+    else:
+        return examples_pred
+
+
+def predict_multiple_timesteps_all(rawdata, dataset, model, tpred, N=None, keepall=True, debugcheat=False, nsamples=0):
+
+    # total number of frames we will crop out for each example
+    ttotal = dataset.contextl
+    burnin = ttotal - tpred
+
+    #example_params = dataset.get_flyexample_params()
+    model.eval()
+    dataset.set_eval_mode()
+
+    # compute predictions and labels for all validation data using default masking
+    all_pred = None
+    labelidx = None
+    #all_mask = []
+    # all_pred_discrete = []
+    # all_labels_discrete = []
+    
+    if N is not None and N < len(dataset):
+        idxsample = np.random.choice(len(dataset),N,replace=False)
+    else:
+        idxsample = np.array(range(len(dataset)))
+        N = len(dataset)
+            
+    for i,examplei in tqdm.tqdm(enumerate(idxsample),total=N):
+
+        example = dataset[examplei]
+        exampleobj = FlyExample(example_in=example,dataset=dataset)
+
+        if debugcheat:
+            example_pred = exampleobj.labels.get_train_labels()
+        else:
+            exampleobj.labels.erase_labels(ts=slice(burnin+1,None))
+
+            metadata = exampleobj.get_metadata()
+            scale = exampleobj.labels.get_scale()
+            agentnum = metadata['flynum']
+            t0 = metadata['t0']
+
+            # get positions of all agents
+            Xkp_true = rawdata['X'][...,t0:t0+ttotal+1,:].copy()
+            # nan out the fly we are predicting
+            Xkp_fill = Xkp_true.copy()
+            Xkp_fill[...,burnin+1:,agentnum] = np.nan
+
+            exampleobjs_pred = predict_multiple_timesteps([exampleobj,], [agentnum,], [scale,], Xkp_fill, burnin, model, dataset, maxcontextl=burnin,
+                                                        debug=False, need_weights=False, nsamples=nsamples)
+
+            exampleobj_pred = exampleobjs_pred[0]
+            example_pred = exampleobj_pred.labels.get_train_labels()
+            
+        if not keepall:
+            for k in ['continuous', 'discrete', 'todiscretize']:
+                if k in example_pred:
+                    example_pred[k] = example_pred[k][...,burnin:,:]
+            
+        if all_pred is None:
+            all_pred = {}
+            for k in example_pred.keys():
+                # replicate N times
+                all_pred[k] = torch.zeros((N,) + example_pred[k].shape, dtype=example_pred[k].dtype)
+            labelidx = torch.zeros(N, dtype=torch.int64)
+        for k in example_pred.keys():
+            all_pred[k][i] = example_pred[k]
+        labelidx[i] = examplei
+
+    return all_pred, labelidx  # ,all_mask,all_pred_discrete,all_labels_discrete
+
+# def get_global_predictions(all_pred,labelidx,dataset):
+
+#     for i,idx in tqdm.tqdm(enumerate(labelidx),total=len(labelidx)):
+#         labelobj = dataset.get_example(idx).labels
+#         unz_global_label = labelobj.get_future_global(zscored=False, use_todiscretize=True)
+#         if i == 0:
+#             unz_glabelsv = np.zeros((len(labelidx),) + unz_global_label.shape, dtype=unz_global_label.dtype)
+#             unz_gpredv = np.zeros((len(labelidx),) + unz_global_label.shape, dtype=unz_global_label.dtype)
+#         unz_glabelsv[i] = unz_global_label
+#         predobj = labelobj.copy()
+#         predobj.erase_labels()
+#         if type(all_pred) is dict:
+#             predcurr = {k: v[i] for k,v in all_pred.items()}
+#         else:
+#             predcurr = all_pred[i]
+#         predobj.set_prediction(predcurr)
+#         unz_global_pred = predobj.get_future_global(zscored=False, use_todiscretize=False)
+#         unz_gpredv[i] = unz_global_pred
+        
+#     return unz_gpredv,unz_glabelsv
 
 def compute_prediction_errors(all_pred,labelidx,dataset):
     # compare predictions to labels
@@ -140,6 +396,10 @@ def compute_prediction_errors(all_pred,labelidx,dataset):
         meanerr[k] = 0.
         for errcurr in err_example:
             meanerr[k] += errcurr[k]*errcurr['n']/n
+            
+    true_labels = pred_example[0].labels
+    idx_multiglobal_to_multi = true_labels._idx_multiglobal_to_multi
+    errcurr['l1_multi'][idx_multiglobal_to_multi]
         
     return meanerr,err_example
 

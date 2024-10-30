@@ -1123,6 +1123,12 @@ class FlyPoseLabels(PoseLabels):
             init_pose = self._init_pose[...,starttoff]
             
         globalpos0 = init_pose[..., self._idx_nextglobal_to_next]
+
+        pre_sz_vel = globalvel.shape[:-2]
+        pre_sz_pos = globalpos0.shape[:-1]
+        if np.prod(pre_sz_pos) == 1:
+            globalpos0 = np.tile(globalpos0, pre_sz_vel + (1,))        
+
         xorigin0 = globalpos0[..., :2]
         xtheta0 = globalpos0[..., 2]
 
@@ -1158,6 +1164,11 @@ class FlyPoseLabels(PoseLabels):
         if init_pose is None:
             init_pose = self._init_pose[..., starttoff]
         relpose0 = init_pose[..., self._idx_nextrelative_to_next]
+
+        pre_sz_relrep = relrep.shape[:-2]
+        pre_sz_init = relpose0.shape[:-1]
+        if np.prod(pre_sz_init) == 1:
+            relpose0 = np.tile(relpose0, pre_sz_relrep + (1,))
 
         if self._is_velocity:
             relpose = np.cumsum(np.concatenate((relpose0.reshape((n, 1, -1)), relrep), axis=-2), axis=-2)
