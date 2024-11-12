@@ -1412,6 +1412,61 @@ def explore_representation(configfile):
         compute_noise_params=compute_noise_params,
         keypointnames=keypointnames
     )
+
+def plot_multi_pred_iter_vs_true(pred_example,true_example,color_true='k',samplecolors=None,ylim_nstd=None,tsplot=None,fig=None,ylims=None,samplealpha=None):
+    
+    # plot multi errors
+
+    true_pre_sz = true_example.pre_sz
+    assert np.prod(true_pre_sz) == 1
+    pred_pre_sz = pred_example.pre_sz
+    assert len(pred_pre_sz) == 1
+    nsamples = pred_pre_sz[0]
+
+    multi_names = true_example.labels.get_multi_names()
+
+    if tsplot is None:
+        tsplot = np.arange(pred_example.ntimepoints-1)
+
+    multi_pred = pred_example.labels.get_multi(collapse_samples=True,use_todiscretize=True)
+    multi_true = true_example.labels.get_multi(use_todiscretize=True)
+
+    if fig is None:
+        fig,ax = plt.subplots(true_example.labels.d_multi,1,sharex=True,figsize=(16,4*true_example.labels.d_multi))
+    else:
+        ax = fig.get_axes()
+
+    if samplealpha is None:
+        samplealpha = 1/nsamples*4
+
+    if samplecolors is None:
+        samplecolors = plt.cm.hsv(np.arange(nsamples)/nsamples)
+        samplecolors[:,-1] = samplealpha
+
+    if ylims is None:
+        if ylim_nstd is not None:
+            zscore_params = true_example.labels.zscore_params
+            zscore_params.keys()
+            ylims = zscore_params['mu_labels'] + ylim_nstd*np.array([-1,1])[:,None]*zscore_params['sig_labels'][None,:]
+
+    for featnum in range(true_example.labels.d_multi):
+
+        for i in range(nsamples):
+            c = samplecolors[i]
+            h, = ax[featnum].plot(multi_pred[i,tsplot,featnum],'.-',color=c)
+            if i == 0:
+                h.set_label('Predicted')
+        ax[featnum].plot(multi_true[tsplot,featnum],'.-',label='True',color=color_true)
+
+        if ylims is not None:
+            ylim = ylims[:,featnum]
+            ax[featnum].set_ylim(ylim)
+        ax[featnum].legend()
+        ax[featnum].set_ylabel(f'{multi_names[featnum]}')
+
+    fig.tight_layout()
+    
+    return fig
     
 def plot_multi_pred_vs_true(pred_example,true_example,color_true='k',featcolors=None,ylim_nstd=None,nsamples=100,tsplot=None,fig=None,ylims=None):
     
