@@ -8,7 +8,7 @@ from flyllm.features import compute_pose_features, split_features
 from flyllm.config import ARENA_RADIUS_MM
 from flyllm.plotting import plot_flies, plot_arena
 from flyllm.pose import FlyPoseLabels, FlyExample
-from flyllm.prediction import predict_multiple_timesteps
+from flyllm.prediction import predict_iterative
 
 
 def get_pose_future(data, scales, tspred_global, ts=None, fliespred=None):
@@ -394,7 +394,7 @@ def animate_predict_open_loop(model, dataset, Xkp_init, fliespred, scales, tpred
     Xkp_fill = Xkp[...,:endoff,:].copy()        
 
     # capture all outputs of predict_open_loop in a tuple
-    res = predict_multiple_timesteps(examples_pred, fliespred, scales, Xkp_fill, burnin, model, dataset, maxcontextl=dataset.contextl+1,
+    res = predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model, dataset, maxcontextl=dataset.contextl+1,
                                     debug=debug, need_weights=plotattnweights, nsamples=nsamplesfuture, 
                                     labels_true=labels_true)
     if plotattnweights:

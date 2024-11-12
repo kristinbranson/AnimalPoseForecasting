@@ -271,3 +271,33 @@ def cov2ell(S,nsig=2):
     theta = np.arctan2(vec[...,1,0],vec[...,0,0])
     theta = np.mod(theta+np.pi/2,np.pi)-np.pi/2
     return a,b,theta
+
+def pre_tile_array(array, drest, newpre_sz):
+    """
+    pre_tile_array(array, drest, newpre_sz)
+    Tile the input array so that it is of size
+    newpre_sz + array.shape[-drest:]
+    """
+    
+    if drest == 0:
+        oldpre_sz = ()
+    else:
+        oldpre_sz = array.shape[:-drest]
+    d_pre_new = len(newpre_sz)
+    d_pre_old = len(oldpre_sz)
+    d_add = d_pre_new - d_pre_old
+    for i in range(d_pre_old):
+        assert newpre_sz[-i-1] == oldpre_sz[-i-1], 'pre_sz mismatch'
+    array = np.tile(array, newpre_sz[:d_add] + (1,) * (d_pre_old+drest))
+    return array
+
+def pad_axis_array(array, npad, ax, **kwargs):
+    """
+    pad_axis_array(array, npad, ax)
+    Pad the input array along the specified axis
+    """
+    if npad == 0:
+        return array
+    if ax < 0:
+        ax = array.ndim + ax
+    return np.pad(array, ((0,)*ax + (0, npad),), **kwargs)

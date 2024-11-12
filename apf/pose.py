@@ -7,7 +7,7 @@ import typing
 #     from apf.dataset import AgentLLMDataset
 
 from apf.data import weighted_sample, discretize_labels
-from apf.utils import len_wrapper, dict_convert_torch_to_numpy, zscore, unzscore
+from apf.utils import len_wrapper, dict_convert_torch_to_numpy, zscore, unzscore, pre_tile_array, pad_axis_array
 
 class AgentParams:
     
@@ -335,10 +335,47 @@ class ObservationInputs:
         else:
             self._metadata = None
             
-    def expand_allocate(self,newT):
-        Tpad = newT - self.ntimepoints
-        pad = np.zeros( self._input.shape[:-2] + (Tpad,self._input.shape[-1]), dtype=self._input.dtype)
-        self._input = np.concatenate((self._input,pad),axis=-2)
+    def pre_tile(self,reps, tile_metadata=True):
+        """
+        pre_tile(reps)
+        Tile the observations along the pre_sz dimension(s) by rep. 
+        Parameters:
+        rep: The number of repetitions along each axis.
+        tile_metadata: whether to tile the metadata, default is True
+        """
+        reps = np.atleast_1d(reps)
+        
+        nextra = len(reps) - len(self.pre_sz)
+        if nextra > 0:
+            # add nextra dimensions to the start of each array
+            newdims = tuple(range(nextra))
+            self._input = np.expand_dims(self._input,newdims)
+
+        ndims = self._input.ndim
+        reps1 = np.ones(ndims,dtype=int)
+        reps1[:len(reps)] = reps
+        self._input = np.tile(self._input, reps1)
+        
+        if tile_metadata:
+            if self._metadata is not None:
+                metadata_pre_sz = np.array(self._metadata['t0']).shape
+                if metadata_pre_sz != self.pre_sz:
+                    if nextra > 0:
+                        for k in self._metadata.keys():
+                            self._metadata[k] = np.expand_dims(self._metadata[k],newdims)
+                    for k in self._metadata.keys():
+                        self._metadata[k] = np.tile(self._metadata[k], reps)
+        
+        return
+
+            
+    def expand_allocate(self,newT=None,newpre_sz=None):
+        if newT is not None:
+            Tpad = newT - self.ntimepoints
+            self._input = pad_axis_array(self._input, -2, Tpad)
+        if newpre_sz is not None:
+            self._input = pre_tile_array(self._input, 2, newpre_sz)
+                        
         return
     
     def get_compute_features_params(self):
@@ -1066,6 +1103,49 @@ class PoseLabels:
         # create new PoseLabels object
         new = self.__class__(example_in=labels, **self.get_params())
         return new
+
+    def pre_tile(self,reps, tile_metadata=True):
+        """
+        pre_tile(reps   )
+        Tile the labels along the pre_sz dimension(s) by rep. 
+        Parameters:
+        rep: The number of repetitions along each axis.
+        tile_metadata: Whether to tile the metadata. Default is True.
+        """
+        
+        reps = np.atleast_1d(reps)
+        
+        labels = self.get_raw_labels(makecopy=True,needinit=False)
+        if tile_metadata:
+            labels['metadata'] = self.get_metadata(makecopy=True)
+        ks = ['continuous', 'discrete', 'todiscretize', 'init', 'scale', 'categories', 'mask']
+        
+        nextra = len(reps) - len(self.pre_sz)
+        if nextra > 0:
+            # add nextra dimensions to the start of each array
+            newdims = tuple(range(nextra))
+            for k in ks:
+                if k in labels:
+                    labels[k] = np.expand_dims(labels[k],newdims)
+        
+        for k in ks:
+            if k in labels:
+                ndims = labels[k].ndim
+                reps1 = np.ones(ndims,dtype=int)
+                reps1[:len(reps)] = reps
+                labels[k] = np.tile(labels[k], reps1)
+
+        if tile_metadata and labels['metadata'] is not None:
+            if nextra > 0:
+                for k in labels['metadata'].keys():
+                    labels['metadata'][k] = np.expand_dims(labels['metadata'][k],newdims)
+            for k in labels['metadata'].keys():
+                labels['metadata'][k] = np.tile(labels['metadata'][k], reps)
+                
+        # will update pre_sz
+        self.set_raw_example(labels)
+        
+        return
 
     def erase_labels(self,ts=None):
         """
@@ -2186,19 +2266,26 @@ class PoseLabels:
 
         return
     
-    def expand_allocate(self,newT):
-        Tpad = newT - self.ntimepoints
-        if 'continuous' in self.labels_raw:
-            pad = np.zeros( self.labels_raw['continuous'].shape[:-2] + (Tpad,self.labels_raw.shape[-1]), dtype=self.labels_raw['continuous'].dtype)
-            self.labels_raw['continuous'] = np.concatenate((self.labels_raw['continuous'],pad),axis=-2)
-            
-        if 'discrete' in self.labels_raw:
-            pad = np.zeros( self.labels_raw['discrete'].shape[:-3] + (Tpad,) + self.labels_raw['discrete'].shape[-2:], dtype=self.labels_raw['discrete'].dtype)
-            self.labels_raw['discrete'] = np.concatenate((self.labels_raw['discrete'],pad),axis=-3)
-        if 'todiscretize' in self.labels_raw:
-            pad = np.zeros( self.labels_raw['todiscretize'].shape[:-2] + (Tpad,self.labels_raw.shape[-1]), dtype=self.labels_raw['todiscretize'].dtype)
-            self.labels_raw['todiscretize'] = np.concatenate((self.labels_raw['todiscretize'],pad),axis=-2)
-            
+    def expand_allocate(self,newT=None,newpre_sz=None):
+        if newT is not None:
+            Tpad = newT - self.ntimepoints
+            if 'continuous' in self.labels_raw:
+                self.labels_raw['continuous'] = pad_axis_array(self.labels_raw['continuous'], -2, Tpad, constant_values=np.nan)                
+            if 'discrete' in self.labels_raw:
+                self.labels_raw['discrete'] = pad_axis_array(self.labels_raw['discrete'], -3, Tpad, constant_values=np.nan)
+            if 'todiscretize' in self.labels_raw:
+                self.labels_raw['todiscretize'] = pad_axis_array(self.labels_raw['todiscretize'], -2, Tpad, constant_values=np.nan)
+        if newpre_sz is not None:
+            if 'continuous' in self.labels_raw:
+                self.labels_raw['continuous'] = pre_tile_array(self.labels_raw['continuous'],2,newpre_sz)
+            if 'discrete' in self.labels_raw:
+                self.labels_raw['discrete'] = pre_tile_array(self.labels_raw['discrete'],3,newpre_sz)
+            if 'todiscretize' in self.labels_raw:
+                self.labels_raw['todiscretize'] = pre_tile_array(self.labels_raw['discretize'],2,newpre_sz)
+            metadata = self.get_metadata()
+            if metadata is not None:
+                for k in metadata.keys():
+                    metadata[k] = pre_tile_array(metadata[k],1,newpre_sz)
         return
 
     def _multi_to_multiidct1(self, multi):
@@ -2771,6 +2858,294 @@ class PoseLabels:
         multi_names = self.get_multi_names()
         continuous_names = [multi_names[i] for i in self._idx_multicontinuous_to_multi]
         return continuous_names
+    
+    def compute_error(true_labels,pred_labels,nsamples=10,collapsetime=True):
+        """
+        compute_error(true_labels,pred_labels,nsamples=10,collapsetime=True)
+        Computes the error between the true and predicted labels in various ways.
+        Parameters:
+        true_labels: (self) PoseLabels object with the true labels. 
+        pred_labels: PoseLabels object with the predicted labels. 
+        nsamples: Number of samples to use when computing the error for discrete features. Default is 10.
+        collapsetime: whether to average over the time dimension when computing errors. Default is True.
+        Returns:
+        Keys are named with this vocabulary:
+        'l1': Mean of L1 error over time points
+        'mse': Mean of squared error over time points
+        'total': Average over features
+        'samplemean': Average of nsamples samples drawn
+        'samplemin': Closest of nsamples samples drawn
+        'zscored': Features are z-scored -- unit is standard deviations
+        
+        err: Dictionary with the error metrics.
+        'idxgood': ndarray of size ntimepoints with a mask for the time points that are not nan
+        'n': Number of time points that are not nan
+        'multi_names': list of the names of the multi features
+        'l1_multi': ndarray of size d_multi with the L1 error for each multi feature averaged over all time points. 
+        For discrete predictions, the weighted sum of bin centers is used. 
+        'mse_multi' ndarray of size d_multi with the squared error for each multi feature averaged over all time points. 
+        For discrete predictions, the weighted sum of bin centers is used. 
+        'l1_multi_samplemean': ndarray of size d_multi with the L1 error for each multi feature from the mean of the 
+        nsamples samples drawn, averaged over all time points. 
+        'mse_multi_samplemean': ndarray of size d_multi with the squared error for each multi feature from the mean of the
+        nsamples samples drawn, averaged over all time points.
+        'absdiff_multi_samplemean': ndarray of size ntimepoints x d_multi computed from the mean of absdiff_multi_sample
+        for each time point. 
+        'absdiff_multi_samplemin': ndarray of size ntimepoints x d_multi computed from the minimum of absdiff_multi_sample
+        for each time point. 
+        'l1_multi_samplemin': ndarray of size d_multi with the mean L1 error for the closest sample, computed from 
+        absdiff_multi_samplemin.
+        'mse_multi_samplemin': ndarray of size d_multi with the mean squared error for the closest sample, computed from 
+        absdiff_multi_samplemin.
+        If 'discrete' is in the labels, then the following keys are included:
+            'ce_discrete_mean': ndarray of size d_multi_discrete with the cross-entropy error for the discrete labels,
+            averaged over all time points
+            'total_ce_discrete_mean': Average of ce_discrete_mean over features
+            'discrete_names': list of the names of the discrete features
+        If 'continuous' is in labels, then the following are included:
+            'l1_continuous_raw': ndarray of size d_multi_continuous with the L1 error for each continuous feature averaged
+            over time points
+            'mse_continuous_raw': ndarray of size d_multi_continuous with the squared error for each continuous feature averaged
+            over time points
+            'total_l1_continuous_raw': Average of l1_continuous_raw over features
+            'total_mse_continuous_raw': Average of mse_continuous_raw over features
+            'continuous_names': list of the names of the continuous features
+        'l2_nextkp_mean': ndarray of size d_next with the mean L2 error (Euclidean distance) for the next keypoints, averaged 
+        over all time points
+        """
+                
+        pred_labels_dict = pred_labels.get_train_labels()
+        true_labels_dict = true_labels.get_train_labels()
+        
+        starttoff = true_labels._starttoff
+
+        err = {}
+        
+        idxgood = True
+        if 'continuous' in pred_labels_dict:
+            idxgood = idxgood & (torch.any(torch.isnan(true_labels_dict['continuous']),dim=-1)==False)
+            idxgood = idxgood & (torch.any(torch.isnan(pred_labels_dict['continuous']),dim=-1)==False)
+        if 'discrete' in pred_labels_dict:
+            idxgood = idxgood & (torch.any(torch.isnan(true_labels_dict['discrete']),dim=(-1,-2))==False)
+            idxgood = idxgood & (torch.any(torch.isnan(pred_labels_dict['discrete']),dim=(-1,-2))==False)
+            
+        err['idxgood'] = idxgood.cpu().numpy()
+        err['n'] = np.sum(err['idxgood']).item()
+
+        # multi representation - contains most things
+        err['multi_names'] = true_labels.get_multi_names()     
+
+        ksmeta = ['idxgood','multi_names','discrete_names','continuous_names','n']
+
+        multi_label = true_labels.get_multi(use_todiscretize=True)
+        multi_label = multi_label[...,starttoff:,:]
+        multi_pred_weightedsum = pred_labels.get_multi(nsamples=0,collapse_samples=True)#,use_todiscretize=True)
+        multi_pred_weightedsum = multi_pred_weightedsum[...,starttoff:,:]
+        absdiff_multi = np.abs(multi_pred_weightedsum-multi_label)
+        assert np.all(np.isnan(absdiff_multi[idxgood])==False), 'absdiff_multi has unexpected nans'
+
+        err['l1_multi'] = absdiff_multi
+        err['mse_multi'] = np.square(absdiff_multi)
+
+        multi_pred_sample = pred_labels.get_multi(nsamples=nsamples,collapse_samples=False)
+        multi_pred_sample = multi_pred_sample[...,starttoff:,:]
+
+        # there are a few different ways to draw from the distributions, currently only for discrete features
+        if self.is_discretized():
+            absdiff_multi_sample = np.abs(multi_pred_sample-multi_label[None,...])
+            absdiff_multi_samplemean = np.nanmean(absdiff_multi_sample,axis=0)
+            absdiff_multi_samplemin = np.nanmin(absdiff_multi_sample,axis=0)
+            err['l1_multi_samplemean'] = absdiff_multi_samplemean
+            err['l1_multi_samplemin'] = absdiff_multi_samplemin
+            err['mse_multi_samplemean'] = np.square(absdiff_multi_samplemean)
+            err['mse_multi_samplemin'] = np.square(absdiff_multi_samplemin)
+
+            # cross-entropy error for discrete features
+            n = pred_labels_dict['discrete'].shape[0]
+            d = pred_labels_dict['discrete'].shape[1]
+            nbins = pred_labels_dict['discrete'].shape[-1]
+            
+            ce_discrete = torch.nn.functional.cross_entropy(pred_labels_dict['discrete'].reshape(-1,nbins),
+                                                            true_labels_dict['discrete'].reshape(-1,nbins),reduction='none').reshape(n,d)
+            ce_discrete = ce_discrete.cpu().numpy()
+            err['ce_discrete_mean'] = ce_discrete            
+            err['discrete_names'] = true_labels.get_discrete_names()
+        
+        # # this doesn't make sense -- will integrate over time
+        # true_kp = true_labels.get_next_keypoints()
+        # pred_kp = pred_labels.get_next_keypoints()
+
+        # l2_err_kp = np.sqrt(np.sum(np.square(true_kp-pred_kp),axis=-1))
+        # err['l2_nextkp_mean'] = l2_err_kp
+
+        # raw error
+        if 'continuous' in true_labels_dict:
+            err['l1_continuous_raw'] = np.abs(true_labels_dict['continuous']-pred_labels_dict['continuous'])
+            err['mse_continuous_raw'] = np.square(true_labels_dict['continuous']-pred_labels_dict['continuous'])
+            err['continuous_names'] = true_labels.get_continuous_names()
+
+        # can combine z-scored errors across features
+        if true_labels.is_zscored():
+            
+            # T x dmulti
+            multi_label_z = true_labels.get_multi(use_todiscretize=True,zscored=True)
+            multi_label_z = multi_label_z[...,starttoff:,:]
+            # T x dmulti
+            multi_pred_weightedsum_z = pred_labels.get_multi(nsamples=0,collapse_samples=True,zscored=True)
+            multi_pred_weightedsum_z = multi_pred_weightedsum_z[...,starttoff:,:]
+            # T x dmulti
+            absdiff_multi_z = np.abs(multi_pred_weightedsum_z-multi_label_z)
+
+            # dmulti
+            err['l1_multi_zscored'] = absdiff_multi_z
+            err['mse_multi_zscored'] = np.square(absdiff_multi_z)
+
+            if self.is_discretized():
+
+                # nsamples x T x dmulti
+                multi_pred_sample_z = pred_labels.get_multi(nsamples=nsamples,collapse_samples=False,zscored=True)
+                multi_pred_sample_z = multi_pred_sample_z[...,starttoff:,:]
+
+                # nsamples x T x dmulti
+                absdiff_multi_sample_z = np.abs(multi_pred_sample_z-multi_label_z[None,...])
+                absdiff_multi_samplemean_z = np.nanmean(absdiff_multi_sample_z,axis=0)
+                absdiff_multi_samplemin_z = np.nanmin(absdiff_multi_sample_z,axis=0)
+                # dmulti
+                err['l1_multi_samplemean_zscored'] = absdiff_multi_samplemean_z
+                err['mse_multi_samplemean_zscored'] = np.square(absdiff_multi_samplemean_z)
+                        
+                # dmulti
+                err['l1_multi_samplemin_zscored'] = absdiff_multi_samplemin_z
+                err['mse_multi_samplemin_zscored'] = np.square(absdiff_multi_samplemin_z)
+
+        # return as np arrays
+        for k,v in err.items():
+            if type(v) is torch.Tensor:
+                err[k] = v.cpu().numpy()
+
+        if collapsetime:
+            for k in err.keys():
+                if k in ksmeta:
+                    continue
+                err[k] = np.nanmean(err[k],axis=-2)
+        
+        ks_collapse_features = ['ce_discrete_mean','l1_continuous_raw','mse_continuous_raw','l1_multi_zscored','mse_multi_zscored',
+                                'l1_multi_samplemean_zscored','mse_multi_samplemean_zscored','l1_multi_samplemin_zscored',
+                                'mse_multi_samplemin_zscored']
+        for k in ks_collapse_features:
+            if k in err:
+                err['total_'+k] = np.nanmean(err[k],axis=-1)
+                    
+        return err
+        
+    def get_next_pose_closest_sample(true_labels,pred_labels,nsamples=10,uselasttimepoint=False,usesum=False):
+        true_next_pose = true_labels.get_next_pose(use_todiscretize=True)
+        pred_next_pose_samples = pred_labels.get_next_pose(nsamples=nsamples)
+
+        if uselasttimepoint:
+            ts = -1
+        else:
+            ts = range(true_next_pose.shape[-2])
+        if not usesum:
+            fs = range(true_next_pose.shape[-1])
+            
+        l1err = np.abs(true_next_pose[None,...,ts,:]-pred_next_pose_samples[:,...,ts,:])
+        if usesum:
+            l1err = np.sum(l1err,axis=-1)
+
+        sampleidx = np.argmin(l1err,axis=0)
+
+        if usesum:
+            if uselasttimepoint:
+                return pred_next_pose_samples[sampleidx,...]
+            else:
+                return pred_next_pose_samples[sampleidx,...,ts,:]
+        else:
+            if uselasttimepoint:
+                return pred_next_pose_samples[sampleidx,...,fs]
+            else:
+                tidx,fidx = np.meshgrid(ts,range(true_next_pose.shape[-1]))
+    
+    def compute_error_iter(true_labels,pred_labels,nsamples=10):
+        """
+        compute_error_iter(true_labels, pred_labels, nsamples=10)
+        Computes the error between the true and predicted labels in various ways. This is an iterator version
+        of compute_error. 
+        Parameters:
+        true_labels: (self) PoseLabels object with the true labels. 
+        """
+        
+        err = {}
+        
+        # if predicting velocities, this will integrate from the beginning of the time sequence
+        # (pre_sz x) T x d_next_pose
+        true_next_pose = true_labels.get_next_pose(use_todiscretize=True)
+
+        pred_next_pose_expected = pred_labels.get_next_pose(nsamples=0)
+        err['l1_next_pose_expected'] = np.abs(true_next_pose-pred_next_pose_expected)
+        
+        # (pre_sz x) T x d_next_pose
+        if true_labels.is_discretized():
+            pred_next_pose_closest_sample = true_labels.get_next_pose_closest_sample(pred_labels,nsamples=nsamples)
+            err['l1_next_pose_samplemin'] = np.abs(true_next_pose-pred_next_pose_closest_sample)
+            
+        
+        return err
+        
+        
+            
+    @staticmethod
+    def combine_errors(err_example):
+        err_total = {}
+        for k,v in err_example[0].items():
+            if k == 'n':
+                err_total[k] = sum([x[k] for x in err_example])
+            elif k == 'idxgood':
+                err_total[k] = np.concatenate([x[k] for x in err_example])
+            elif type(v) == np.ndarray or np.isscalar(v):
+                err_total[k] = np.average(np.stack([x[k] for x in err_example]),
+                                        weights=np.stack([x['n'] for x in err_example]),
+                                        axis=0)
+            else:
+                err_total[k] = v
+
+        return err_total
+
+    
+    
+    @classmethod
+    def label_dict_to_pre_sz(cls, label_dict):
+        """
+        label_dict_to_pre_sz(label_dict)
+        Returns the pre_sz of the input dict. 
+        """
+        if 'continuous' in label_dict:
+            return label_dict['continuous'].shape[:-2]
+        elif 'labels' in label_dict:
+            return label_dict['labels'].shape[:-2]
+        elif 'discrete' in label_dict:
+            return label_dict['discrete'].shape[:-3]
+        elif 'labels_discrete' in label_dict:
+            return label_dict['labels_discrete'].shape[:-3]
+        else:
+            raise ValueError('label_dict must have continuous, labels, discrete, or labels_discrete')
+
+    @classmethod 
+    def label_dict_to_ntimepoints(cls,label_dict):
+        """
+        label_dict_to_ntimepoints(label_dict)
+        Returns the ntimepoints of the input dict. 
+        """
+        if 'continuous' in label_dict:
+            return label_dict['continuous'].shape[-2]
+        elif 'labels' in label_dict:
+            return label_dict['labels'].shape[-2]
+        elif 'discrete' in label_dict:
+            return label_dict['discrete'].shape[-3]
+        elif 'labels_discrete' in label_dict:
+            return label_dict['labels_discrete'].shape[-3]
+        else:
+            raise ValueError('label_dict must have continuous, labels, discrete, or labels_discrete')        
 
 class AgentExample:
     """
@@ -2972,9 +3347,21 @@ class AgentExample:
         
         return
     
-    def expand_allocate(self,newT):
-        self._labels.expand_allocate(newT)
-        self._inputs.expand_allocate(newT)
+    def pre_tile(self,reps):
+        """
+        pre_tile(reps   )
+        Tile the example along the pre_sz dimension(s) by rep. 
+        Parameters:
+        rep: The number of repetitions of A along each axis.
+        """
+        reps = np.atleast_1d(reps)
+        self._labels.pre_tile(reps,tile_metadata=True)
+        self._inputs.pre_tile(reps,tile_metadata=False)
+        return
+    
+    def expand_allocate(self,newT=None,newpre_sz=None):
+        self._labels.expand_allocate(newT=newT,newpre_sz=newpre_sz)
+        self._inputs.expand_allocate(newT=newT,newpre_sz=newpre_sz)
     
     @property
     def d_input(self):
@@ -3417,210 +3804,7 @@ class AgentExample:
         return s
     
     @staticmethod
-    def compute_error(true_example=None,pred_example=None,true_labels=None,pred_labels=None,nsamples=10):
-        """
-        compute_error(true_example=None,pred_example=None,true_labels=None,pred_labels=None,nsamples=10)
-        Computes the error between the true and predicted labels in various ways.
-        Parameters:
-        true_example: AgentExample object with the true labels. Used if true_labels is None. 
-        Default is None. 
-        pred_example: AgentExample object with the predicted labels. Used if pred_labels is None.
-        Default is None.
-        true_labels: PoseLabels object with the true labels. Default is None. Set by true_example.labels if None.
-        pred_labels: PoseLabels object with the predicted labels. Default is None. Set by pred_example.labels if None.
-        (one of true_labels or true_example should be input, and one of pred_labels or pred_example should be input)
-        nsamples: Number of samples to use when computing the error for discrete features. Default is 10.
-        Returns:
-        Keys are named with this vocabulary:
-        'l1': Mean of L1 error over time points
-        'mse': Mean of squared error over time points
-        'total': Average over features
-        'samplemean': Average of nsamples samples drawn
-        'samplemin': Closest of nsamples samples drawn
-        'zscored': Features are z-scored -- unit is standard deviations
-        
-        err: Dictionary with the error metrics.
-        'idxgood': ndarray of size ntimepoints with a mask for the time points that are not nan
-        'n': Number of time points that are not nan
-        'multi_names': list of the names of the multi features
-        'l1_multi': ndarray of size d_multi with the L1 error for each multi feature averaged over all time points. 
-        For discrete predictions, the weighted sum of bin centers is used. 
-        'mse_multi' ndarray of size d_multi with the squared error for each multi feature averaged over all time points. 
-        For discrete predictions, the weighted sum of bin centers is used. 
-        'l1_multi_samplemean': ndarray of size d_multi with the L1 error for each multi feature from the mean of the 
-        nsamples samples drawn, averaged over all time points. 
-        'mse_multi_samplemean': ndarray of size d_multi with the squared error for each multi feature from the mean of the
-        nsamples samples drawn, averaged over all time points.
-        'absdiff_multi_samplemean': ndarray of size ntimepoints x d_multi computed from the mean of absdiff_multi_sample
-        for each time point. 
-        'absdiff_multi_samplemin': ndarray of size ntimepoints x d_multi computed from the minimum of absdiff_multi_sample
-        for each time point. 
-        'l1_multi_samplemin': ndarray of size d_multi with the mean L1 error for the closest sample, computed from 
-        absdiff_multi_samplemin.
-        'mse_multi_samplemin': ndarray of size d_multi with the mean squared error for the closest sample, computed from 
-        absdiff_multi_samplemin.
-        If 'discrete' is in the labels, then the following keys are included:
-            'ce_discrete_mean': ndarray of size d_multi_discrete with the cross-entropy error for the discrete labels,
-            averaged over all time points
-            'total_ce_discrete_mean': Average of ce_discrete_mean over features
-            'discrete_names': list of the names of the discrete features
-        If 'continuous' is in labels, then the following are included:
-            'l1_continuous_raw': ndarray of size d_multi_continuous with the L1 error for each continuous feature averaged
-            over time points
-            'mse_continuous_raw': ndarray of size d_multi_continuous with the squared error for each continuous feature averaged
-            over time points
-            'total_l1_continuous_raw': Average of l1_continuous_raw over features
-            'total_mse_continuous_raw': Average of mse_continuous_raw over features
-            'continuous_names': list of the names of the continuous features
-        'l2_nextkp_mean': ndarray of size d_next with the mean L2 error (Euclidean distance) for the next keypoints, averaged 
-        over all time points
-        """
-    
-        if true_labels is None:
-            true_labels = true_example.labels
-        if pred_labels is None:
-            pred_labels = pred_example.labels
-            
-        pred_labels_dict = pred_labels.get_train_labels()
-        true_labels_dict = true_labels.get_train_labels()
-        
-        starttoff = true_example._starttoff
-
-        err = {}
-        
-        idxgood = True
-        if 'continuous' in pred_labels_dict:
-            idxgood = idxgood & (torch.any(torch.isnan(true_labels_dict['continuous']),dim=-1)==False)
-            idxgood = idxgood & (torch.any(torch.isnan(pred_labels_dict['continuous']),dim=-1)==False)
-        if 'discrete' in pred_labels_dict:
-            idxgood = idxgood & (torch.any(torch.isnan(true_labels_dict['discrete']),dim=(-1,-2))==False)
-            idxgood = idxgood & (torch.any(torch.isnan(pred_labels_dict['discrete']),dim=(-1,-2))==False)
-            
-        err['idxgood'] = idxgood.cpu().numpy()
-        err['n'] = idxgood.sum().item()
-
-        # multi representation - contains most things
-        err['multi_names'] = true_labels.get_multi_names()     
-
-        multi_label = true_labels.get_multi(use_todiscretize=True)
-        multi_label = multi_label[...,starttoff:,:]
-        multi_pred_weightedsum = pred_labels.get_multi(nsamples=0,collapse_samples=True)#,use_todiscretize=True)
-        multi_pred_weightedsum = multi_pred_weightedsum[...,starttoff:,:]
-        absdiff_multi = np.abs(multi_pred_weightedsum-multi_label)
-        assert np.all(np.isnan(absdiff_multi[idxgood])==False), 'absdiff_multi has unexpected nans'
-
-        err['l1_multi'] = np.nanmean(absdiff_multi,axis=0)
-        err['mse_multi'] = np.nanmean(np.square(absdiff_multi),axis=0)
-
-        multi_pred_sample = pred_labels.get_multi(nsamples=nsamples,collapse_samples=False)
-        multi_pred_sample = multi_pred_sample[...,starttoff:,:]
-
-        # there are a few different ways to draw from the distributions, currently only for discrete features
-        absdiff_multi_sample = np.abs(multi_pred_sample-multi_label[None,...])
-        absdiff_multi_samplemean = np.nanmean(absdiff_multi_sample,axis=0)
-        absdiff_multi_samplemin = np.nanmin(absdiff_multi_sample,axis=0)
-        err['l1_multi_samplemean'] = np.nanmean(absdiff_multi_samplemean,axis=0)
-        err['l1_multi_samplemin'] = np.nanmean(absdiff_multi_samplemin,axis=0)
-        err['mse_multi_samplemean'] = np.nanmean(np.square(absdiff_multi_samplemean),axis=0)
-        err['mse_multi_samplemin'] = np.nanmean(np.square(absdiff_multi_samplemin),axis=0)
-
-        # cross-entropy error for discrete features
-        if 'discrete' in pred_labels_dict:
-            n = pred_labels_dict['discrete'].shape[0]
-            d = pred_labels_dict['discrete'].shape[1]
-            nbins = pred_labels_dict['discrete'].shape[-1]
-            
-            ce_discrete = torch.nn.functional.cross_entropy(pred_labels_dict['discrete'].reshape(-1,nbins),
-                                                            true_labels_dict['discrete'].reshape(-1,nbins),reduction='none').reshape(n,d)
-            ce_discrete = ce_discrete.cpu().numpy()
-            err['ce_discrete_mean'] = np.nanmean(ce_discrete,axis=0)
-            err['total_ce_discrete_mean'] = np.mean(err['ce_discrete_mean'],axis=0)
-            
-            err['discrete_names'] = true_labels.get_discrete_names()
-        
-        true_kp = true_labels.get_next_keypoints()
-        pred_kp = pred_labels.get_next_keypoints()
-
-        l2_err_kp = np.sqrt(np.sum(np.square(true_kp-pred_kp),axis=-1))
-        l2_err_kp_mean = np.nanmean(l2_err_kp,axis=0)
-        err['l2_nextkp_mean'] = l2_err_kp_mean
-
-        # raw error
-        if 'continuous' in true_labels_dict:
-            err['l1_continuous_raw'] = np.nanmean(np.abs(true_labels_dict['continuous']-pred_labels_dict['continuous']),axis=0)
-            err['mse_continuous_raw'] = np.nanmean(np.square(true_labels_dict['continuous']-pred_labels_dict['continuous']),axis=0)
-            err['total_l1_continuous_raw'] = np.nanmean(err['l1_continuous_raw'])
-            err['total_mse_continuous_raw'] = np.nanmean(err['mse_continuous_raw'])
-            err['continuous_names'] = true_labels.get_continuous_names()
-
-        # can combine z-scored errors across features
-        if true_example.labels.is_zscored():
-            
-            # T x dmulti
-            multi_label_z = true_labels.get_multi(use_todiscretize=True,zscored=True)
-            multi_label_z = multi_label_z[...,starttoff:,:]
-            # T x dmulti
-            multi_pred_weightedsum_z = pred_labels.get_multi(nsamples=0,collapse_samples=True,zscored=True)
-            multi_pred_weightedsum_z = multi_pred_weightedsum_z[...,starttoff:,:]
-            # T x dmulti
-            absdiff_multi_z = np.abs(multi_pred_weightedsum_z-multi_label_z)
-
-            # dmulti
-            err['l1_multi_zscored'] = np.nanmean(absdiff_multi_z,axis=0)
-            err['mse_multi_zscored'] = np.nanmean(np.square(absdiff_multi_z),axis=0)
-            # scalar
-            err['total_l1_multi_zscored'] = np.nanmean(err['l1_multi_zscored'])
-            err['total_mse_multi_zscored'] = np.nanmean(err['mse_multi_zscored'])
-
-            # nsamples x T x dmulti
-            multi_pred_sample_z = pred_labels.get_multi(nsamples=nsamples,collapse_samples=False,zscored=True)
-            multi_pred_sample_z = multi_pred_sample_z[...,starttoff:,:]
-
-            # nsamples x T x dmulti
-            absdiff_multi_sample_z = np.abs(multi_pred_sample_z-multi_label_z[None,...])
-            absdiff_multi_samplemean_z = np.nanmean(absdiff_multi_sample_z,axis=0)
-            absdiff_multi_samplemin_z = np.nanmin(absdiff_multi_sample_z,axis=0)
-            # dmulti
-            err['l1_multi_samplemean_zscored'] = np.nanmean(absdiff_multi_samplemean_z,axis=0)
-            err['mse_multi_samplemean_zscored'] = np.nanmean(np.square(absdiff_multi_samplemean_z),axis=0)
-            # scalar
-            err['total_l1_multi_samplemean_zscored'] = np.nanmean(err['l1_multi_samplemean_zscored'])
-            err['total_mse_multi_samplemean_zscored'] = np.nanmean(err['mse_multi_samplemean_zscored'])
-                      
-            # dmulti
-            err['l1_multi_samplemin_zscored'] = np.nanmean(absdiff_multi_samplemin_z,axis=0)
-            err['mse_multi_samplemin_zscored'] = np.nanmean(np.square(absdiff_multi_samplemin_z),axis=0)
-
-            # scalar
-            err['total_l1_multi_samplemin_zscored'] = np.nanmean(err['l1_multi_samplemin_zscored'])
-            err['total_mse_multi_samplemin_zscored'] = np.nanmean(err['mse_multi_samplemin_zscored'])
-
-        # return as np arrays
-        for k,v in err.items():
-            if type(v) is torch.Tensor:
-                err[k] = v.cpu().numpy()
-            
-        return err
-    
-    @staticmethod
-    def combine_errors(err_example):
-        err_total = {}
-        for k,v in err_example[0].items():
-            if k == 'n':
-                err_total[k] = sum([x[k] for x in err_example])
-            elif k == 'idxgood':
-                err_total[k] = np.concatenate([x[k] for x in err_example])
-            elif type(v) == np.ndarray or np.isscalar(v):
-                err_total[k] = np.average(np.stack([x[k] for x in err_example]),
-                                        weights=np.stack([x['n'] for x in err_example]),
-                                        axis=0)
-            else:
-                err_total[k] = v
-
-        return err_total
-
-    @staticmethod
-    def expand_allocate_raw_example(raw_example,newT):
+    def expand_allocate_raw_example(raw_example,newT=None,newpre_sz=None):
         
         if 'input' in raw_example:
             oldT = raw_example['input'].shape[-2]
@@ -3632,31 +3816,15 @@ class AgentExample:
             oldT = raw_example['labels_discrete'].shape[-2]
         elif 'discrete' in raw_example:
             oldT = raw_example['discrete'].shape[-2]
-        
-        Tpad = newT - oldT
-        if 'labels' in raw_example:
-            pad = np.zeros( raw_example['labels'].shape[:-2] + (Tpad,raw_example['labels'].shape[-1]), dtype=raw_example['labels'].dtype)
-            raw_example['labels'] = np.concatenate((raw_example['labels'],pad),axis=-2)
-        elif 'continuous' in raw_example:
-            pad = np.zeros( raw_example['continuous'].shape[:-2] + (Tpad,raw_example['continuous'].shape[-1]), dtype=raw_example['continuous'].dtype)
-            raw_example['continuous'] = np.concatenate((raw_example['continuous'],pad),axis=-2)
-        
-        if 'labels_discrete' in raw_example:
-            pad = np.zeros( raw_example['labels_discrete'].shape[:-3] + (Tpad,) + raw_example['labels_discrete'].shape[-2:], dtype=raw_example['labels_discrete'].dtype)
-            raw_example['labels_discrete'] = np.concatenate((raw_example['labels_discrete'],pad),axis=-3)
-        elif 'discrete' in raw_example:
-            pad = np.zeros( raw_example['discrete'].shape[:-3] + (Tpad,) + raw_example['discrete'].shape[-2:], dtype=raw_example['discrete'].dtype)
-            raw_example['discrete'] = np.concatenate((raw_example['discrete'],pad),axis=-3)
-        
-        if 'todiscretize' in raw_example:
-            pad = np.zeros( raw_example['todiscretize'].shape[:-2] + (Tpad,raw_example['todiscretize'].shape[-1]), dtype=raw_example['todiscretize'].dtype)
-            raw_example['todiscretize'] = np.concatenate((raw_example['todiscretize'],pad),axis=-2)
-        elif 'labels_todiscretize' in raw_example:
-            pad = np.zeros( raw_example['labels_todiscretize'].shape[:-2] + (Tpad,raw_example['labels_todiscretize'].shape[-1]), dtype=raw_example['labels_todiscretize'].dtype)
-            raw_example['labels_todiscretize'] = np.concatenate((raw_example['labels_todiscretize'],pad),axis=-2)
-
-        if 'input' in raw_example:
-            pad = np.zeros( raw_example['input'].shape[:-2] + (Tpad,raw_example['input'].shape[-1]), dtype=raw_example['input'].dtype)
-            raw_example['input'] = np.concatenate((raw_example['input'],pad),axis=-2)
+            
+        keys2dim = {'input':2,'labels':2,'continuous':2,'labels_discrete':3,'discrete':3,'todiscretize':2,'labels_todiscretize':2}
+        for k,d in keys2dim.items():
+            if k in raw_example:
+                if newT is not None:
+                    oldT = raw_example[k].shape[-d]
+                    Tpad = newT - oldT
+                    raw_example[k] = pad_axis_array(raw_example[k],d,Tpad,constant_values=np.nan)
+                if newpre_sz is not None:
+                    raw_example[k] = pre_tile_array(raw_example[k],d,newpre_sz)
 
         return

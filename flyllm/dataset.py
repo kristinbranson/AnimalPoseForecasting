@@ -1119,15 +1119,25 @@ class FlyTestDataset(FlyMLMDataset):
         return res
 
     def create_data_from_pred(self,all_pred,labelidx):
-        
+        """
+        pred_data, true_data = self.create_data_from_pred(all_pred,labelidx)
+        Inputs:
+        all_pred: predictions. If a dict, then each key is a prediction type and each value is a numpy array of predictions of
+        size (pre_sz x) npred x doutput. If a numpy array, then it is of size npred x doutput.
+        labelidx: ndarray indices of the labels corresponding to predictions, of size npred.
+        Returns:
+        pred_data: list of FlyExample objects with the predictions, one example per id
+        true_data: list of FlyExample objects with the true labels, one example per id
+        """
         if type(labelidx) is torch.Tensor:
             labelidx = labelidx.cpu().numpy()
-            
+
         labelids = np.searchsorted(self.start_example_per_id,labelidx,side='right')-1
         labelts = labelidx - self.start_example_per_id[labelids] + self.contextl-1
         unique_ids = np.unique(labelids)
         pred_data = [None,]*(np.max(unique_ids)+1)
         true_data = [None,]*(np.max(unique_ids)+1)
+
 
         for id in unique_ids:
             idxcurr = np.nonzero(labelids == id)[0]
@@ -1138,6 +1148,7 @@ class FlyTestDataset(FlyMLMDataset):
             true_example = self.data[id].copy_subindex(ts=np.arange(mint,maxt+1))
             true_data[id] = true_example
             pred_example = true_example.copy()
+            
             pred_example.labels.erase_labels()
             if isinstance(all_pred,dict):
                 curr_pred = {k:v[idxcurr] for k,v in all_pred.items()}
@@ -1147,4 +1158,3 @@ class FlyTestDataset(FlyMLMDataset):
             pred_data[id] = pred_example
 
         return pred_data, true_data
-        

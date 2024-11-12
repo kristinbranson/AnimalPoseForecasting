@@ -286,9 +286,10 @@ def kp2feat(
         [scale_perfly]: n_scales x n_flies
         [flyid]: n_flies
     """
-    # Reshape Xkp to be of size n_keypoints x 2 x T x n_flies
+    # Reshape Xkp to be of size n_keypoints x 2 x T x n_flies (x post_sz)
     Xkp = atleast_4d(Xkp)
-    _, _, T, n_flies = Xkp.shape
+    T = Xkp.shape[2]
+    n_flies = Xkp.shape[3]
 
     # Ensure that if scale_perfly is given, so is flyid
     assert (flyid is None) or scale_perfly is not None, f"{flyid} --> {scale_perfly} is False"
@@ -1069,6 +1070,8 @@ def split_features(X, simplify=None, axis=-1):
     return res
 
 def feat2kp(Xfeat, scale_perfly, flyid=None):
+    # Xfeat is npose x T x nflies
+    # scale_perfly is nscale x nflies
     ndim = np.ndim(Xfeat)
     if ndim >= 2:
         T = Xfeat.shape[1]

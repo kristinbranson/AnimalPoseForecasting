@@ -4,7 +4,7 @@ import copy
 import typing
 
 from flyllm.config import featglobal, featrelative, featangle, posenames, keypointnames
-from apf.utils import modrange, rotate_2d_points
+from apf.utils import modrange, rotate_2d_points, pre_tile_array
 from flyllm.features import (
     compute_features,
     split_features,
@@ -259,8 +259,29 @@ class FlyObservationInputs(ObservationInputs):
         ts: Time points to set the inputs. If None, the inputs are set for all time points.
         npad: Number of frames to crop from the end of the sequence when computing features.        
         """
-        example = compute_features(Xkp, flynum=fly, scale_perfly=scale, **self.get_compute_features_params(), npad=npad, compute_labels=False)
-        input = example['input']
+        
+        pre_sz = Xkp.shape[:-4]
+        n = int(np.prod(pre_sz))
+        Xkp = Xkp.reshape((n,)+Xkp.shape[-4:])
+        isonefly = np.array(fly).size == 1
+        if not isonefly:
+            scale = np.reshape(scale,(n,-1))
+            fly = np.reshape(fly,(n,))
+        params = self.get_compute_features_params()
+        for i in range(n):
+            Xkpcurr = Xkp[i]
+            if isonefly:
+                scalecurr = scale
+                flycurr = fly
+            else:
+                scalecurr = scale[i]
+                flycurr = fly[i]
+            example = compute_features(Xkpcurr, flynum=flycurr, scale_perfly=scalecurr, **params, npad=npad, compute_labels=False)
+            inputcurr = example['input']
+            if i == 0:
+                input = np.zeros((n,)+inputcurr.shape,dtype=inputcurr.dtype)
+            input[i] = inputcurr
+        input = input.reshape(pre_sz+input.shape[1:])
         self.set_inputs(input, zscored=False, ts=ts)
         return
 
@@ -1191,11 +1212,18 @@ class FlyPoseLabels(PoseLabels):
         pose: ndarray of size (pre_sz x ) ntimepoints x d_next with the next pose representation of the labels.
         """
 
-        szrest = next.shape[:-2]
-        n = int(np.prod(szrest))
         starttoff = 0
-        T = next.shape[-2]
-        next = next.reshape((n, T, self.d_next))
+        if init_pose is None:
+            init_pose = self._init_pose[...,starttoff]
+
+        next_presz = next.shape[:-2]
+        n = int(np.prod(next_presz))
+        init_presz = init_pose.shape[:-2]
+        if n > np.prod(init_presz):
+            init_pose = pre_tile_array(init_pose, 1, next_presz)
+        next = next.reshape((n,)+next.shape[-2:])
+        init_pose = init_pose.reshape((n,init_pose.shape[-1]))
+
         globalvel = next[..., self._idx_nextglobal_to_next]
         globalpos = self._globalvel_to_globalpos(globalvel, starttoff=starttoff, init_pose=init_pose)
 
@@ -1205,7 +1233,7 @@ class FlyPoseLabels(PoseLabels):
         pose = np.concatenate((globalpos, relpose), axis=-1)
         pose[..., self.is_angle_next] = modrange(pose[..., self.is_angle_next], -np.pi, np.pi)
 
-        pose = pose.reshape(szrest + (pose.shape[-2], self.d_next))
+        pose = pose.reshape(next_presz + (pose.shape[-2], self.d_next))
 
         return pose
 
@@ -1396,7 +1424,8 @@ class FlyPoseLabels(PoseLabels):
             T = pose.shape[-2]
             n = int(np.prod(szrest))
             assert n == nflies
-            pose = pose.reshape((n, T, self.d_next)).transpose((1, 2, 0))
+            # Xfeat is supposed to be npose x T x nflies
+            pose = pose.reshape((n, T, self.d_next)).transpose((2, 1, 0))
             scale = self._scale.reshape((nflies, -1)).T
         kp = feat2kp(pose, scale)
         if nflies == 1:

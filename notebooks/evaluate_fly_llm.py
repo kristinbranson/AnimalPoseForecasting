@@ -18,8 +18,8 @@
 # ### Imports
 
 # %%
-%load_ext autoreload
-%autoreload 2
+# %load_ext autoreload
+# %autoreload 2
 
 import numpy as np
 import torch
@@ -337,11 +337,11 @@ pred_data,true_data = val_dataset.create_data_from_pred(all_pred, labelidx)
 # compute error in various ways
 err_example = []
 for pred_example,true_example in zip(pred_data,true_data):
-    errcurr = pred_example.compute_error(true_example=true_example,pred_example=pred_example)
+    errcurr = true_example.labels.compute_error(pred_example.labels)
     err_example.append(errcurr)
 
 # combine errors
-err_total = FlyExample.combine_errors(err_example)
+err_total = FlyPoseLabels.combine_errors(err_example)
 
 for k,v in err_total.items():
     print(f'{k}: {type(v)}')
@@ -525,25 +525,49 @@ print('Finished writing.')
 
 # %%
 max_tpred = 150
-multi_val_dataset = FlyTestDataset(valX,config['contextl']+max_tpred,**dataset_params,need_labels=True,need_metadata=True,need_init=True,make_copy=True)
+iter_val_dataset = FlyTestDataset(valX,config['contextl']+max_tpred+1,**dataset_params,need_labels=True,need_metadata=True,need_init=True,make_copy=True)
 
-
-# %%
-rawdata = valdata
-dataset = multi_val_dataset
-tpred = max_tpred
-mask = train_src_mask
-keepall = False
-debugcheat = False
-nsamples = 0
-N = 100
 
 # %%
 from apf.pose import PoseLabels, ObservationInputs, AgentExample
 from flyllm.pose import FlyPoseLabels, FlyObservationInputs, FlyExample
-from flyllm.prediction import predict_multiple_timesteps_all
+from flyllm.prediction import predict_iterative_all
 
-all_pred_multi, labelidx_multi = predict_multiple_timesteps_all(valdata,multi_val_dataset,model,max_tpred,N=10,keepall=False)
+all_pred_iter, labelidx_iter = predict_iterative_all(valdata,iter_val_dataset,model,max_tpred,N=10,keepall=False)
 
 # %%
-all_pred_multi['continuous'].shape
+# compute error in various ways
+# change this to computing error in pose
+err_example_iter = []
+for i,examplei in enumerate(labelidx_iter):
+    pred_exampleobj = all_pred_iter[i]
+    true_example = iter_val_dataset[examplei]
+    true_exampleobj = FlyExample(example_in=true_example,dataset=iter_val_dataset)
+    errcurr = true_exampleobj.labels.compute_error_iter(pred_exampleobj.labels)
+    err_example_iter.append(errcurr)
+
+# combine errors
+err_total_iter = FlyExample.combine_errors(err_example_iter)
+
+for k,v in err_total_iter.items():
+    if type(v) is np.ndarray:
+        print(f'{k}: ndarray {v.shape}')
+    else:
+        print(f'{k}: {type(v)}')
+
+# %%
+# plot multi errors
+
+d_multi = len(err_total_iter['multi_names'])
+fig,ax = plt.subplots(d_multi,1,sharex=True,figsize=(16,2*d_multi))
+
+for featnum in range(d_multi):
+    miny = 0
+    maxy = np.max(err_total_iter['l1_multi'][burnin:,featnum])
+    dy = maxy-miny
+    ylim = (miny-.1*dy,maxy+.1*dy)
+    ax[featnum].plot(err_total_iter['l1_multi'][burnin:,featnum],'.-',label='l1')
+    ax[featnum].set_ylim(ylim)
+    ax[featnum].set_ylabel(err_total_iter['multi_names'][featnum])
+
+fig.tight_layout()

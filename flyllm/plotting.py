@@ -1412,3 +1412,60 @@ def explore_representation(configfile):
         compute_noise_params=compute_noise_params,
         keypointnames=keypointnames
     )
+    
+def plot_multi_pred_vs_true(pred_example,true_example,color_true='k',featcolors=None,ylim_nstd=None,nsamples=100,tsplot=None,fig=None,ylims=None):
+    
+    # plot multi errors
+
+    multi_names = true_example.labels.get_multi_names()
+
+    if tsplot is None:
+        tsplot = np.arange(pred_example.ntimepoints-1)
+
+    multi_pred = pred_example.labels.get_multi(nsamples=0,collapse_samples=True,use_todiscretize=False)
+    multi_pred_sample = pred_example.labels.get_multi(nsamples=nsamples,collapse_samples=True,use_todiscretize=False)
+    #multi_pred_meansample = np.nanmean(multi_pred_sample,axis=0)
+    multi_true = true_example.labels.get_multi(use_todiscretize=True)
+    multi_isdiscrete = pred_example.labels.get_multi_isdiscrete()
+    #bestsample = np.argmin(np.abs(multi_pred_sample-multi_true[None,...]),axis=0)
+
+    if fig is None:
+        fig,ax = plt.subplots(true_example.labels.d_multi,1,sharex=True,figsize=(16,4*true_example.labels.d_multi))
+    else:
+        ax = fig.get_axes()
+
+    if featcolors is None:
+        nfeatcolors = 10
+        featcolors = plt.cm.tab10(np.arange(nfeatcolors))
+
+    if ylims is None:
+        if ylim_nstd is not None:
+            zscore_params = true_example.labels.zscore_params
+            zscore_params.keys()
+            ylims = zscore_params['mu_labels'] + ylim_nstd*np.array([-1,1])[:,None]*zscore_params['sig_labels'][None,:]
+
+    for featnum in range(true_example.labels.d_multi):
+        plotsamples = multi_isdiscrete[featnum]
+
+        color = featcolors[featnum%nfeatcolors]
+
+        if plotsamples:
+            c = color.copy()
+            c[-1] = .05
+            for i in range(multi_pred_sample.shape[0]):
+                h, = ax[featnum].plot(multi_pred_sample[i,tsplot,featnum],'.',color=c)
+                if i == 0:
+                    h.set_label('Predicted')
+        else:
+            ax[featnum].plot(multi_pred[tsplot,featnum],'.-',label='Predicted',color=color)
+        ax[featnum].plot(multi_true[tsplot,featnum],'.-',label='True',color=color_true)
+
+        if ylims is not None:
+            ylim = ylims[:,featnum]
+            ax[featnum].set_ylim(ylim)
+        ax[featnum].legend()
+        ax[featnum].set_ylabel(f'{multi_names[featnum]}')
+
+    fig.tight_layout()
+    
+    return fig
