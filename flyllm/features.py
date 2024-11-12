@@ -286,10 +286,9 @@ def kp2feat(
         [scale_perfly]: n_scales x n_flies
         [flyid]: n_flies
     """
-    # Reshape Xkp to be of size n_keypoints x 2 x T x n_flies (x post_sz)
+    # Reshape Xkp to be of size n_keypoints x 2 x T x n_flies
     Xkp = atleast_4d(Xkp)
-    T = Xkp.shape[2]
-    n_flies = Xkp.shape[3]
+    _, _, T, n_flies = Xkp.shape
 
     # Ensure that if scale_perfly is given, so is flyid
     assert (flyid is None) or scale_perfly is not None, f"{flyid} --> {scale_perfly} is False"
