@@ -91,8 +91,14 @@ def chunk_data(data, contextl, reparamfun, npad=1):
 
     return X
 
-def process_test_data(data,reparamfun,npad=1):
+def process_test_data(data,reparamfun,npad=1,minnframes=None):
 
+    if minnframes is None:
+        if npad is None:
+            minnframes = 5
+        else:
+            minnframes = npad + 1
+    
     X = []
     nids = np.max(data['ids'])
     for id in tqdm.trange(nids):
@@ -102,6 +108,9 @@ def process_test_data(data,reparamfun,npad=1):
         agent_num = agent_num[0]
         t0 = np.nonzero(idxcurr[:,agent_num])[0][0]
         t1 = np.nonzero(idxcurr[:,agent_num])[0][-1]
+        nframes = t1 - t0
+        if nframes < minnframes:
+            continue
         #LOG.info(f'id: {id}, agent_num: {agent_num}, t0: {t0}, t1: {t1}')
         # data['X'] is nkeypoints x 2 x T x n_agents
         xcurr = reparamfun(data['X'][..., t0:t1+1, :], id, agent_num, npad=npad)

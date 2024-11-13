@@ -97,6 +97,9 @@ outfigdir = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForec
 #quickdebugdatafile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/tmp_small_usertrainval.pkl'
 quickdebugdatafile = None
 
+# whether to create training data
+needtraindata = False
+
 #configfile = "/groups/branson/home/eyjolfsdottire/code/MABe2022/config_fly_llm_multitimeglob_discrete_20230907.json"
 config = read_config(configfile,
                      default_configfile=DEFAULTCONFIGFILE,
@@ -130,8 +133,9 @@ savepredfile = loadmodelfile.split('.')[0] + '_all_pred.npz'
 # %%
 # load raw data
 if quickdebugdatafile is None:
-    data, scale_perfly = load_and_filter_data(config['intrainfile'], config, compute_scale_perfly,
-                                              keypointnames=keypointnames)
+    if needtraindata:
+        data, scale_perfly = load_and_filter_data(config['intrainfile'], config, compute_scale_perfly,
+                                                keypointnames=keypointnames)
     valdata, val_scale_perfly = load_and_filter_data(config['invalfile'], config, compute_scale_perfly,
                                                      keypointnames=keypointnames)
     #LOG.warning('DEBUGGING!!!')
@@ -166,7 +170,7 @@ else:
 
 # how much to pad outputs by -- depends on how many frames into the future we will predict
 npad = compute_npad(config['tspred_global'], dct_m)
-chunk_data_params = {'npad': npad}
+chunk_data_params = {'npad': npad, 'minnframes': config['contextl']+1}
 
 compute_feature_params = {
     "simplify_out": config['simplify_out'],
@@ -185,9 +189,11 @@ val_reparamfun = lambda x, id, flynum, **kwargs: compute_features(
     x, id, flynum, val_scale_perfly, outtype=np.float32, **compute_feature_params, **kwargs)
 
 # process the data
-LOG.info('Processing training data...')
-X = process_test_data(data, reparamfun, **chunk_data_params)
-LOG.info(f'{len(X)} training ids, total of {sum([len(x) for x in X])} time points')
+
+if needtraindata:
+    LOG.info('Processing training data...')
+    X = process_test_data(data, reparamfun, **chunk_data_params)
+    LOG.info(f'{len(X)} training ids, total of {sum([len(x) for x in X])} time points')
 LOG.info('Processing val data...')
 valX = process_test_data(valdata, val_reparamfun, **chunk_data_params)
 LOG.info(f'{len(valX)} val ids, total of {sum([len(x) for x in valX])} time points')
@@ -221,22 +227,23 @@ dataset_params = {
 for k in config['dataset_params']:
     dataset_params[k] = config['dataset_params'][k]
 
+if needtraindata:
+    LOG.info('Creating training data set...')
+    train_dataset = FlyTestDataset(X,config['contextl'],**dataset_params)
+    LOG.info(f'Train dataset size: {len(train_dataset)}')
+
+    train_dataloader = torch.utils.data.DataLoader(train_dataset,
+                                                    batch_size=config['test_batch_size'],
+                                                    shuffle=False,
+                                                    pin_memory=True,
+                                                    )
+    ntrain_batches = len(train_dataloader)
+    LOG.info(f'Number of training batches: {ntrain_batches}')
+
 LOG.info('Creating validation data set...')
 val_dataset = FlyTestDataset(valX,config['contextl'],**dataset_params)
 print(f'Validation dataset size: {len(val_dataset)}')
     
-LOG.info('Creating training data set...')
-train_dataset = FlyTestDataset(X,config['contextl'],**dataset_params)
-LOG.info(f'Train dataset size: {len(train_dataset)}')
-
-train_dataloader = torch.utils.data.DataLoader(train_dataset,
-                                                batch_size=config['test_batch_size'],
-                                                shuffle=False,
-                                                pin_memory=True,
-                                                )
-ntrain_batches = len(train_dataloader)
-LOG.info(f'Number of training batches: {ntrain_batches}')
-
 val_dataloader = torch.utils.data.DataLoader(val_dataset,
                                               batch_size=config['test_batch_size'],
                                               shuffle=False,
@@ -248,6 +255,8 @@ example = next(iter(train_dataloader))
 LOG.info(f'batch keys: {example.keys()}')
 sz = example['input'].shape
 LOG.info(f'batch input shape = {sz}')
+
+# %%
 
 # %% [markdown]
 # ### Load the model
