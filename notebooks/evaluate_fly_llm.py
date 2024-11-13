@@ -88,6 +88,7 @@ LOG.info('matplotlib backend: ' + mpl_backend)
 
 loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredvel_20241022_epoch200_20241023T140356.pth'
 configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241022.json'
+outfigdir = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/figs'
 
 # loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredpos_20241023_epoch200_20241028T165510.pth'
 # configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predpos_20241023.json'
@@ -137,6 +138,7 @@ if quickdebugdatafile is None:
     #debug_less_data(data, 10000000)
     #debug_less_data(valdata, 10000)
 else:
+    print("Loading data from quick debug data file ", quickdebugdatafile)
     with open(quickdebugdatafile,'rb') as f:
         tmp = pickle.load(f)
         data = tmp['data']
@@ -149,6 +151,8 @@ else:
 # Compute the pose representation and chunk data into sequences for training
 
 # %%
+# process data
+
 # if using discrete cosine transform, create dct matrix
 # this didn't seem to work well, so probably won't use in the future
 if config['dct_tau'] is not None and config['dct_tau'] > 0:
@@ -350,125 +354,81 @@ for k,v in err_total.items():
 
 # %%
 # plot multi errors
+from flyllm.plotting import plot_multi_pred_vs_true
 
 i = 0
 pred_example = pred_data[i]
 true_example = true_data[i]
-multi_names = true_example.labels.get_multi_names()
+tsplot = np.arange(8775,8925)
 
-nsamples = 100
-#tsplot = np.arange(pred_example.ntimepoints-1)
-tsplot = np.arange(8700,8800)
+fig = plot_multi_pred_vs_true(pred_example,true_example,ylim_nstd=5,nsamples=100,tsplot=tsplot)
 
-multi_pred = pred_example.labels.get_multi(nsamples=0,collapse_samples=True,use_todiscretize=False)
-multi_pred_sample = pred_example.labels.get_multi(nsamples=nsamples,collapse_samples=True,use_todiscretize=False)
-multi_pred_meansample = np.nanmean(multi_pred_sample,axis=0)
-multi_true = true_example.labels.get_multi(use_todiscretize=True)
-multi_isdiscrete = pred_example.labels.get_multi_isdiscrete()
-bestsample = np.argmin(np.abs(multi_pred_sample-multi_true[None,...]),axis=0)
-
-tabcolors = plt.cm.tab10(np.arange(10))
-colors = {}
-colors['true'] = 'k'
-colors['weightedsum'] = tabcolors[0]
-colors['meansample'] = tabcolors[1]
-colors['minsample'] = tabcolors[2]
-colors['sample'] = tabcolors[3]
-
-fig,ax = plt.subplots(true_example.labels.d_multi,1,sharex=True,figsize=(16,4*true_example.labels.d_multi))
-
-for featnum in range(true_example.labels.d_multi):
-    plotsamples = multi_isdiscrete[featnum]
-
-    miny = np.nanmin(multi_true[tsplot,featnum])
-    maxy = np.nanmax(multi_true[tsplot,featnum])
-    dy = maxy-miny
-    ylim = (miny-.1*dy,maxy+.1*dy)
-
-    if plotsamples:
-        for i in range(multi_pred_sample.shape[0]):
-            c = colors['sample'].copy()
-            c[-1] = .05
-            h, = ax[featnum].plot(multi_pred_sample[i,tsplot,featnum],'.',color=c)
-            if i == 0:
-                h.set_label('random sample')
-        ax[featnum].plot(multi_pred_meansample[tsplot,featnum],'.-',color=colors['meansample'],label='mean sample')
-        ax[featnum].plot(multi_pred_sample[bestsample[tsplot,featnum],tsplot,featnum],'.-',label='best sample',color=colors['minsample'])
-
-    ax[featnum].plot(multi_pred[tsplot,featnum],'.-',label='expected value',color=colors['weightedsum'])
-    ax[featnum].plot(multi_true[tsplot,featnum],'.:',label='true',color=colors['true'])
-    ax[featnum].set_ylim(ylim)
-    if featnum == 0:
-        ax[featnum].legend()
-    ax[featnum].set_ylabel(f'{multi_names[featnum]}')
-
-fig.tight_layout()
+# save this figure as a pdf
+fig.savefig(os.path.join(outfigdir,f'multi_pred_vs_true_{config["model_nickname"]}_{tsplot[0]}_to_{tsplot[-1]}.pdf'))
 
 # %%
 
-# plot next pose errors
-# I think this doesn't make sense to plot -- it is integrating errors, but also
-# has access to previous frames correct velocities when predicting... 
+# # plot next pose errors
+# # I think this doesn't make sense to plot -- it is integrating errors, but also
+# # has access to previous frames correct velocities when predicting... 
 
-i = 0
-pred_example = pred_data[i]
-true_example = true_data[i]
-next_pose_names = true_example.labels.get_next_names()
+# i = 0
+# pred_example = pred_data[i]
+# true_example = true_data[i]
+# next_pose_names = true_example.labels.get_next_names()
 
-#featnum = 58
-nsamples = 100
-#tsplot = np.arange(pred_example.ntimepoints-1)
-tsplot = np.arange(0,100)
+# #featnum = 58
+# nsamples = 100
+# #tsplot = np.arange(pred_example.ntimepoints-1)
+# tsplot = np.arange(0,100)
 
-next_pose_pred = pred_example.labels.get_next_pose(nsamples=0,use_todiscretize=False)
-next_pose_pred_sample = pred_example.labels.get_next_pose(nsamples=nsamples,use_todiscretize=False)
-next_pose_pred_meansample = np.nanmean(next_pose_pred_sample,axis=0)
-next_pose_true = true_example.labels.get_next_pose(use_todiscretize=True)
-next_pose_isdiscrete = np.nanmax((np.max(next_pose_pred_sample,axis=0)-np.min(next_pose_pred_sample,axis=0)),axis=0) > 1e-6
-bestsample = np.argmin(np.abs(next_pose_pred_sample-next_pose_true[None,...]),axis=0)
+# next_pose_pred = pred_example.labels.get_next_pose(nsamples=0,use_todiscretize=False)
+# next_pose_pred_sample = pred_example.labels.get_next_pose(nsamples=nsamples,use_todiscretize=False)
+# next_pose_pred_meansample = np.nanmean(next_pose_pred_sample,axis=0)
+# next_pose_true = true_example.labels.get_next_pose(use_todiscretize=True)
+# next_pose_isdiscrete = np.nanmax((np.max(next_pose_pred_sample,axis=0)-np.min(next_pose_pred_sample,axis=0)),axis=0) > 1e-6
+# bestsample = np.argmin(np.abs(next_pose_pred_sample-next_pose_true[None,...]),axis=0)
 
-tabcolors = plt.cm.tab10(np.arange(10))
-colors = {}
-colors['true'] = 'k'
-colors['weightedsum'] = tabcolors[0]
-colors['meansample'] = tabcolors[1]
-colors['minsample'] = tabcolors[2]
-colors['sample'] = tabcolors[3]
+# tabcolors = plt.cm.tab10(np.arange(10))
+# colors = {}
+# colors['true'] = 'k'
+# colors['weightedsum'] = tabcolors[0]
+# colors['meansample'] = tabcolors[1]
+# colors['minsample'] = tabcolors[2]
+# colors['sample'] = tabcolors[3]
 
-fig,ax = plt.subplots(true_example.labels.d_next_pose,1,sharex=True,figsize=(16,4*true_example.labels.d_next_pose))
+# fig,ax = plt.subplots(true_example.labels.d_next_pose,1,sharex=True,figsize=(16,4*true_example.labels.d_next_pose))
 
-for featnum in range(true_example.labels.d_next_pose):
+# for featnum in range(true_example.labels.d_next_pose):
 
-    miny = np.nanmin(next_pose_true[tsplot,featnum])
-    maxy = np.nanmax(next_pose_true[tsplot,featnum])
-    dy = maxy-miny
-    ylim = (miny-.1*dy,maxy+.1*dy)
+#     miny = np.nanmin(next_pose_true[tsplot,featnum])
+#     maxy = np.nanmax(next_pose_true[tsplot,featnum])
+#     dy = maxy-miny
+#     ylim = (miny-.1*dy,maxy+.1*dy)
 
-    if plotsamples:
-        for i in range(next_pose_pred_sample.shape[0]):
-            c = colors['sample'].copy()
-            c[-1] = .05
-            h, = ax[featnum].plot(next_pose_pred_sample[i,tsplot,featnum],'.',color=c)
-            if i == 0:
-                h.set_label('random sample')
-        ax[featnum].plot(next_pose_pred_meansample[tsplot,featnum],'.-',color=colors['meansample'],label='mean sample')
-        ax[featnum].plot(next_pose_pred_sample[bestsample[tsplot,featnum],tsplot,featnum],'.-',label='best sample',color=colors['minsample'])
+#     if plotsamples:
+#         for i in range(next_pose_pred_sample.shape[0]):
+#             c = colors['sample'].copy()
+#             c[-1] = .05
+#             h, = ax[featnum].plot(next_pose_pred_sample[i,tsplot,featnum],'.',color=c)
+#             if i == 0:
+#                 h.set_label('random sample')
+#         ax[featnum].plot(next_pose_pred_meansample[tsplot,featnum],'.-',color=colors['meansample'],label='mean sample')
+#         ax[featnum].plot(next_pose_pred_sample[bestsample[tsplot,featnum],tsplot,featnum],'.-',label='best sample',color=colors['minsample'])
 
-    ax[featnum].plot(next_pose_pred[tsplot,featnum],'.-',label='expected value',color=colors['weightedsum'])
-    ax[featnum].plot(next_pose_true[tsplot,featnum],'.:',label='true',color=colors['true'])
-    ax[featnum].set_ylim(ylim)
-    if featnum == 0:
-        ax[featnum].legend()
-    ax[featnum].set_ylabel(f'{next_pose_names[featnum]}')
+#     ax[featnum].plot(next_pose_pred[tsplot,featnum],'.-',label='expected value',color=colors['weightedsum'])
+#     ax[featnum].plot(next_pose_true[tsplot,featnum],'.:',label='true',color=colors['true'])
+#     ax[featnum].set_ylim(ylim)
+#     if featnum == 0:
+#         ax[featnum].legend()
+#     ax[featnum].set_ylabel(f'{next_pose_names[featnum]}')
 
 # %%
-
 # store the random state so we can reproduce the same results
 randstate_np = np.random.get_state()
 randstate_torch = torch.random.get_rng_state()
 
 # %%
-
 # reseed numpy random number generator with randstate_np
 np.random.set_state(randstate_np)
 # reseed torch random number generator with randstate_torch
@@ -514,6 +474,7 @@ ani = animate_predict_open_loop(model, val_dataset, Xkp_init, fliespred, scales_
 HTML(ani.to_html5_video())
 
 # %%
+# write the video to file 
 
 vidtime = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
 flynumstr = '_'.join([str(x) for x in fliespred])
@@ -529,11 +490,62 @@ iter_val_dataset = FlyTestDataset(valX,config['contextl']+max_tpred+1,**dataset_
 
 
 # %%
+
+# %%
 from apf.pose import PoseLabels, ObservationInputs, AgentExample
 from flyllm.pose import FlyPoseLabels, FlyObservationInputs, FlyExample
 from flyllm.prediction import predict_iterative_all
 
-all_pred_iter, labelidx_iter = predict_iterative_all(valdata,iter_val_dataset,model,max_tpred,N=10,keepall=False)
+# all_pred_iter is a list of length N of FlyExample objects
+# labelidx_iter is an ndarray of which test example each FlyExample corresponds to
+all_pred_iter, labelidx_iter = predict_iterative_all(valdata,iter_val_dataset,model,max_tpred,N=10,keepall=False,nsamples=100)
+
+# %%
+# plot multi predictions vs true
+from flyllm.plotting import plot_multi_pred_iter_vs_true
+
+toff0 = 50
+maxsamplesplot = 10
+for i in range(len(all_pred_iter)):
+    pred_example = all_pred_iter[i]
+    examplei = labelidx_iter[i]
+    true_example_dict = iter_val_dataset[examplei]
+    true_example_obj = FlyExample(example_in=true_example_dict,dataset=iter_val_dataset)
+    tsplot = config['contextl']+np.arange(-toff0,max_tpred+1)
+    fig = plot_multi_pred_iter_vs_true(pred_example,true_example_obj,ylim_nstd=5,tsplot=tsplot,maxsamplesplot=maxsamplesplot)
+    metadata = true_example_obj.metadata
+
+    axs = fig.get_axes()
+    for ax in axs:
+        ylimcurr = ax.get_ylim()
+        ax.plot([toff0+1,toff0+1],ylimcurr,'k--')
+
+    fig.savefig(os.path.join(outfigdir,f'multi_pred_iter_vs_true_{config["model_nickname"]}_t0_{metadata["t0"]}_fly_{metadata["flynum"]}.pdf'))
+
+# %%
+# plot pose predictions vs true
+# %autoreload 2
+
+plot_pose_pred_iter_vs_true = None
+import flyllm.plotting
+from flyllm.plotting import plot_pose_pred_iter_vs_true
+
+i = 0
+pred_example = all_pred_iter[i]
+examplei = labelidx_iter[i]
+true_example_dict = iter_val_dataset[examplei]
+true_example_obj = FlyExample(example_in=true_example_dict,dataset=iter_val_dataset)
+toff0 = 50
+tsplot = config['contextl']+np.arange(-toff0,max_tpred+1)
+fig = plot_pose_pred_iter_vs_true(pred_example,true_example_obj,tsplot=tsplot,maxsamplesplot=10)
+metadata = true_example_obj.metadata
+
+axs = fig.get_axes()
+for ax in axs:
+    ylim_curr = ax.get_ylim()
+    ax.plot([toff0+2,toff0+2],ylim_curr,'k--')
+
+#fig.savefig(os.path.join(outfigdir,f'pose_pred_iter_vs_true_{config["model_nickname"]}_t0_{metadata["t0"]}_fly_{metadata["flynum"]}.pdf'))
 
 # %%
 # compute error in various ways
@@ -541,9 +553,9 @@ all_pred_iter, labelidx_iter = predict_iterative_all(valdata,iter_val_dataset,mo
 err_example_iter = []
 for i,examplei in enumerate(labelidx_iter):
     pred_exampleobj = all_pred_iter[i]
-    true_example = iter_val_dataset[examplei]
-    true_exampleobj = FlyExample(example_in=true_example,dataset=iter_val_dataset)
-    errcurr = true_exampleobj.labels.compute_error_iter(pred_exampleobj.labels)
+    true_example_dict = iter_val_dataset[examplei]
+    true_example_obj = FlyExample(example_in=true_example,dataset=iter_val_dataset)
+    errcurr = true_example_obj.labels.compute_error_iter(pred_exampleobj.labels)
     err_example_iter.append(errcurr)
 
 # combine errors
@@ -554,6 +566,9 @@ for k,v in err_total_iter.items():
         print(f'{k}: ndarray {v.shape}')
     else:
         print(f'{k}: {type(v)}')
+
+# %%
+FlyExample(example_in=next(iter(iter_val_dataloader)),dataset=iter_val_dataset).labels.get_next_pose(nsamples=10).shape[slice(None)]
 
 # %%
 # plot multi errors

@@ -1518,6 +1518,15 @@ class FlyPoseLabels(PoseLabels):
         """
         return ['forward', 'sideways', 'orientation']
 
+    def get_nextposeglobal_names(self):
+        """
+        get_nextposeglobal_names()
+        Returns the names of the global pose features.
+        Returns:
+        names of the global pose features.
+        """
+        return ['x', 'y', 'theta']
+
     def get_nextrelative_names(self):
         """
         get_nextrelative_names()
@@ -1543,6 +1552,22 @@ class FlyPoseLabels(PoseLabels):
         for i, inext in enumerate(self._idx_nextrelative_to_next):
             next_names[inext] = next_names_relative[i]
         return next_names
+
+    def get_next_pose_names(self):
+        """
+        get_next_pose_names()
+        Returns the names of the next pose features.
+        Returns:
+        next_pose_names: list of names of the next pose features.
+        """
+        next_pose_names = [None, ] * self.d_next_pose
+        next_pose_names_global = self.get_nextposeglobal_names()
+        next_pose_names_relative = self.get_nextrelative_names()
+        for i, inext in enumerate(self._idx_nextglobal_to_next):
+            next_pose_names[inext] = next_pose_names_global[i]
+        for i, inext in enumerate(self._idx_nextrelative_to_next):
+            next_pose_names[inext] = next_pose_names_relative[i]
+        return next_pose_names
 
     @property
     def is_multi(self):

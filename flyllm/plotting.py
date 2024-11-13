@@ -1413,15 +1413,76 @@ def explore_representation(configfile):
         keypointnames=keypointnames
     )
 
-def plot_multi_pred_iter_vs_true(pred_example,true_example,color_true='k',samplecolors=None,ylim_nstd=None,tsplot=None,fig=None,ylims=None,samplealpha=None):
+def plot_pose_pred_iter_vs_true(pred_example,true_example,color_true='k',samplecolors=None,ylim_pad=.05,tsplot=None,fig=None,ylims=None,
+                                samplealpha=None,figwidth=16,axheight=4,maxsamplesplot=None):
     
-    # plot multi errors
+    # plot pose
 
     true_pre_sz = true_example.pre_sz
     assert np.prod(true_pre_sz) == 1
     pred_pre_sz = pred_example.pre_sz
     assert len(pred_pre_sz) == 1
     nsamples = pred_pre_sz[0]
+    if maxsamplesplot is not None:
+        nsamples = np.minimum(nsamples,maxsamplesplot)
+
+    pose_names = true_example.labels.get_next_pose_names()
+
+    if tsplot is None:
+        tsplot = np.arange(pred_example.ntimepoints-1)
+
+    pose_pred = pred_example.labels.get_next_pose(collapse_samples=True,use_todiscretize=True)
+    pose_true = true_example.labels.get_next_pose(use_todiscretize=True)
+
+    if fig is None:
+        fig,ax = plt.subplots(true_example.labels.d_next_pose,1,sharex=True,figsize=(figwidth,axheight*true_example.labels.d_next_pose))
+    else:
+        ax = fig.get_axes()
+
+    if samplealpha is None:
+        samplealpha = 1/nsamples*4
+
+    if samplecolors is None:
+        samplecolors = plt.cm.hsv(np.arange(nsamples)/nsamples)
+        samplecolors[:,-1] = samplealpha
+
+    if ylims is None:
+        miny = np.minimum(np.min(pose_pred,axis=(0,1)),np.min(pose_true,axis=0))
+        maxy = np.maximum(np.max(pose_pred,axis=(0,1)),np.max(pose_true,axis=0))
+        dy = maxy - miny
+        ylims = np.stack([miny-ylim_pad*dy,maxy+ylim_pad*dy])
+
+    for featnum in range(true_example.labels.d_next_pose):
+
+        for i in range(nsamples):
+            c = samplecolors[i]
+            h, = ax[featnum].plot(pose_pred[i,tsplot,featnum],'.-',color=c)
+            if i == 0:
+                h.set_label('Predicted')
+        ax[featnum].plot(pose_true[tsplot,featnum],'.-',label='True',color=color_true)
+
+        if ylims is not None:
+            ylim = ylims[:,featnum]
+            ax[featnum].set_ylim(ylim)
+        ax[featnum].legend()
+        ax[featnum].set_ylabel(f'{pose_names[featnum]}')
+
+    fig.tight_layout()
+    
+    return fig
+
+def plot_multi_pred_iter_vs_true(pred_example,true_example,color_true='k',samplecolors=None,ylim_nstd=None,tsplot=None,fig=None,ylims=None,
+                                 samplealpha=None,figwidth=16,axheight=4,maxsamplesplot=None):
+    
+    # plot multi
+
+    true_pre_sz = true_example.pre_sz
+    assert np.prod(true_pre_sz) == 1
+    pred_pre_sz = pred_example.pre_sz
+    assert len(pred_pre_sz) == 1
+    nsamples = pred_pre_sz[0]
+    if maxsamplesplot is not None:
+        nsamples = np.minimum(nsamples,maxsamplesplot)
 
     multi_names = true_example.labels.get_multi_names()
 
@@ -1432,7 +1493,7 @@ def plot_multi_pred_iter_vs_true(pred_example,true_example,color_true='k',sample
     multi_true = true_example.labels.get_multi(use_todiscretize=True)
 
     if fig is None:
-        fig,ax = plt.subplots(true_example.labels.d_multi,1,sharex=True,figsize=(16,4*true_example.labels.d_multi))
+        fig,ax = plt.subplots(true_example.labels.d_multi,1,sharex=True,figsize=(figwidth,axheight*true_example.labels.d_multi))
     else:
         ax = fig.get_axes()
 
