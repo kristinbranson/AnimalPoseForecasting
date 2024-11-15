@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.16.4
+#       jupytext_version: 1.16.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -30,7 +30,7 @@ from apf.models import TransformerModel
 from flyllm.config import DEFAULTCONFIGFILE
 from spatial_infomax.utils.data_loader import HeightMap
 
-from experiments.spatial_infomax import load_data, compute_global_movement, compute_observation
+from experiments.spatial_infomax import load_npz_data, compute_global_movement, compute_observation
 
 # +
 configfile = '/groups/branson/home/eyjolfsdottire/data/mouse_experiment/config_mouse_20241008.json'
@@ -42,7 +42,7 @@ config = read_config(
 # -
 
 # Load data
-position, observation, isstart = load_data(config['intrainfile'])
+position, observation, isstart = load_npz_data(config['intrainfile'])
 
 # Compute motion features
 tspred = 1
@@ -71,7 +71,7 @@ train_dataset = Dataset(
 )
 
 # Now do the same for validation data and use the dataset operations from the training data
-val_position, val_observation, val_isstart = load_data(config['invalfile'])
+val_position, val_observation, val_isstart = load_npz_data(config['invalfile'])
 val_global_motion = compute_global_movement(val_position,  dt=tspred, isstart=val_isstart)
 val_motion_data_labels = Data(raw=val_global_motion.T, operation=motion_data_labels.operation)
 val_motion_data_input = Data(raw=np.roll(val_global_motion.T, shift=tspred, axis=1), operation=motion_data_input.operation)

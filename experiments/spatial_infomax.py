@@ -11,12 +11,12 @@ from apf.models import TransformerModel
 
 from flyllm.features import compute_global_velocity
 
-from spatial_infomax.utils.data_loader import HeightMap
+from spatial_infomax.utils.data_loader import HeightMap, load_data
 from spatial_infomax.utils.models import compute_whisker
 
 
 def create_npz(session_ids: list[int]) -> dict:
-    """ Generates data for the given session_ids in a format that can be saved with np.savez and read by load_data.
+    """ Generates data for the given session_ids in a format that can be saved with np.savez and read by load_npz_data.
 
     Note: By default this uses sample_spacing=5 and a smoothing filter
     """
@@ -70,7 +70,7 @@ def create_npz(session_ids: list[int]) -> dict:
     }
 
 
-def load_data(filepath: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def load_npz_data(filepath: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """ Loads data from .npz files and computes observation.
 
     Args:
@@ -169,7 +169,7 @@ def experiment(config: dict) -> None:
     #   data was created with
     #   train_data = create_npz(np.arange(5))
     #   val_data = create_npz([5])
-    position, observation, isstart = load_data(config['intrainfile'])
+    position, observation, isstart = load_npz_data(config['intrainfile'])
 
     # Compute features
     tspred = 1
@@ -194,7 +194,7 @@ def experiment(config: dict) -> None:
     )
 
     # Now do the same for validation data and use the dataset operations from the training data
-    val_position, val_observation, val_sessions = load_data(config['invalfile'])
+    val_position, val_observation, val_sessions = load_npz_data(config['invalfile'])
     val_global_motion = compute_global_movement(val_position, dt=tspred)
     val_motion_data_labels = Data(raw=val_global_motion.T, operation=motion_data_labels.operation)
     val_motion_data_input = Data(raw=np.roll(val_global_motion.T, shift=tspred, axis=1),
