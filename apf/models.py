@@ -29,25 +29,30 @@ def causal_criterion(tgt, pred):
 
 
 def mixed_causal_criterion(tgt, pred, weight_discrete=.5, extraout=False):
-    iscontinuous = tgt['labels'] is not None
-    isdiscrete = tgt['labels_discrete'] is not None
+    tgt_continuous = tgt.get('labels', None)
+    tgt_discrete = tgt.get('labels_discrete', None)
+    pred_continuous = pred.get('continuous', None)
+    pred_discrete = pred.get('discrete', None)
+
+    iscontinuous = tgt_continuous is not None and tgt_continuous.shape[-1] > 0
+    isdiscrete = tgt_discrete is not None
 
     if iscontinuous:
-        n = np.prod(tgt['labels'].shape[:-1])
+        n = np.prod(tgt_continuous.shape[:-1])
     else:
-        n = np.prod(tgt['labels_discrete'].shape[:-2])
+        n = np.prod(tgt_discrete.shape[:-2])
     if iscontinuous:
-        err_continuous = lossfcn_continuous(pred['continuous'], tgt['labels'].to(device=pred['continuous'].device)) * n
+        err_continuous = lossfcn_continuous(pred_continuous, tgt_continuous.to(device=pred_continuous.device)) * n
     else:
-        err_continuous = torch.tensor(0., dtype=tgt['labels_discrete'].dtype, device=tgt['labels_discrete'].device)
+        err_continuous = torch.tensor(0., dtype=tgt_discrete.dtype, device=tgt_discrete.device)
     if isdiscrete:
-        pd = pred['discrete']
+        pd = pred_discrete
         newsz = (np.prod(pd.shape[:-1]), pd.shape[-1])
         pd = pd.reshape(newsz)
-        td = tgt['labels_discrete'].to(device=pd.device).reshape(newsz)
+        td = tgt_discrete.to(device=pd.device).reshape(newsz)
         err_discrete = lossfcn_discrete(pd, td) * n
     else:
-        err_discrete = torch.tensor(0., dtype=tgt['labels'].dtype, device=tgt['labels'].device)
+        err_discrete = torch.tensor(0., dtype=tgt_continuous.dtype, device=tgt_continuous.device)
     err = (1 - weight_discrete) * err_continuous + weight_discrete * err_discrete
     if extraout:
         return err, err_discrete, err_continuous
@@ -111,14 +116,14 @@ def criterion_wrapper(example, pred, criterion, dataset, config):
     else:
         tgt_discrete = None
     tgt = {'labels': tgt_continuous, 'labels_discrete': tgt_discrete}
-    
+
     if 'continuous' in pred:
         pred_continuous = pred['continuous']
     elif 'labels' in pred:
         pred_continuous = pred['labels']
     else:
         pred_continuous = None
-    
+
     if 'discrete' in pred:
         pred_discrete = pred['discrete']
     elif 'labels_discrete' in pred:
@@ -141,9 +146,48 @@ def criterion_wrapper(example, pred, criterion, dataset, config):
             loss, loss_discrete, loss_continuous = criterion(tgt, pred1, weight_discrete=config['weight_discrete'],
                                                              extraout=True)
         else:
-            loss = criterion(tgt_continuous.to(device=pred.device), pred_continuous)
+            loss = criterion(tgt_continuous.to(device=pred_continuous.device), pred_continuous)
             loss_continuous = loss
             loss_discrete = 0.
+    return loss, loss_discrete, loss_continuous
+
+
+def mixed_criterion_wrapper(example, pred, criterion, dataset, config):
+    if 'continuous' in example:
+        tgt_continuous = example['continuous']
+    elif 'labels' in example:
+        tgt_continuous = example['labels']
+    else:
+        tgt_continuous = None
+    if 'discrete' in example:
+        tgt_discrete = example['discrete']
+    elif 'labels_discrete' in example:
+        tgt_discrete = example['labels_discrete']
+    else:
+        tgt_discrete = None
+    tgt = {'labels': tgt_continuous, 'labels_discrete': tgt_discrete}
+
+    if 'continuous' in pred:
+        pred_continuous = pred['continuous']
+    elif 'labels' in pred:
+        pred_continuous = pred['labels']
+    else:
+        pred_continuous = None
+
+    if 'labels_discrete' in pred:
+        pred_discrete = pred['labels_discrete']
+    else:
+        pred_discrete = None
+
+    pred1 = {'continuous': pred_continuous, 'discrete': pred_discrete}
+
+    if dataset.discretize:
+        loss, loss_discrete, loss_continuous = criterion(tgt, pred1, weight_discrete=config['weight_discrete'],
+                                                         extraout=True)
+    else:
+        loss = criterion(tgt_continuous.to(device=pred_continuous.device), pred_continuous)
+        loss_continuous = loss
+        loss_discrete = 0.
     return loss, loss_discrete, loss_continuous
 
 
@@ -479,6 +523,8 @@ class TransformerModel(torch.nn.Module):
             output_discrete = output[..., self.d_output_continuous:].reshape(
                 output.shape[:-1] + (self.d_output_discrete, self.nbins))
             output = {'continuous': output_continuous, 'discrete': output_discrete}
+        else:
+            output = {'continuous': output}
 
         return output
 
@@ -1067,6 +1113,31 @@ def compute_loss(model, dataloader, dataset, device, mask, criterion, config):
             return loss, loss_discrete, loss_continuous
         else:
             return loss
+
+
+def compute_loss_mixed(model, dataloader, device, mask, weight_discrete):
+    model.eval()
+    with torch.no_grad():
+        all_loss = torch.zeros(len(dataloader), device=device)
+        loss = torch.tensor(0.0).to(device)
+        loss_discrete = torch.tensor(0.0).to(device)
+        loss_continuous = torch.tensor(0.0).to(device)
+        nmask = 0
+        for i, example in enumerate(dataloader):
+            pred = model(example['input'].to(device=device), mask=mask, is_causal=True)
+            loss_curr, loss_discrete_curr, loss_continuous_curr = mixed_causal_criterion(
+                example, pred, weight_discrete=weight_discrete, extraout=True
+            )
+            nmask += example['input'].shape[0] * example['input'].shape[1]
+            all_loss[i] = loss_curr
+            loss += loss_curr
+            loss_discrete += loss_discrete_curr
+            loss_continuous += loss_continuous_curr
+
+        loss = loss.item() / nmask
+        loss_discrete = loss_discrete.item() / nmask
+        loss_continuous = loss_continuous.item() / nmask
+        return loss, loss_discrete, loss_continuous
 
 
 def update_loss_nepochs(loss_epoch, nepochs):

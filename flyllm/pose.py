@@ -651,9 +651,8 @@ class FlyExample:
 
         # create PoseLabels object from the example
         self._labels = PoseLabels(example_in, dozscore=dozscore, dodiscretize=dodiscretize,
-                                 **self.get_poselabel_params())
+                                  **self.get_poselabel_params())
 
-        
         if is_train_example and self._do_input_labels:
             self._remove_labels_from_input(example_in)
 
@@ -1215,7 +1214,7 @@ class PoseLabels:
             self.set_keypoints(Xkp, scale)
 
         if 'continuous' in self.labels_raw:
-            assert self.d_multicontinuous == self.labels_raw['continuous'].shape[-1]
+            assert self.d_multicontinuous == self.labels_raw['continuous'].shape[-1], f"{self.d_multicontinuous} != {self.labels_raw['continuous'].shape}"
         if self.is_discretized() and 'discrete' in self.labels_raw:
             assert self.d_multidiscrete == self.labels_raw['discrete'].shape[-2]
 

@@ -1,5 +1,7 @@
 import numpy as np
 import torch
+import inspect
+from typing import Callable
 
 
 def modrange(x, l, u):
@@ -136,3 +138,10 @@ def unzscore(x, mu, sig):
 
 def zscore(x, mu, sig):
     return (x - mu) / sig
+
+
+def function_args_from_config(config: dict, function: Callable) -> dict:
+    """ Returns a subset of entries from config that correspond to parameters to function.
+    """
+    function_args = inspect.getfullargspec(function).args[1:]
+    return {arg: config[arg] for arg in function_args if arg in config}
