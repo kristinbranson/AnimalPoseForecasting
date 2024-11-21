@@ -1075,8 +1075,10 @@ class FlyMLMDataset(torch.utils.data.Dataset):
 class FlyTestDataset(FlyMLMDataset):
     def __init__(self,data: list[dict[str, np.ndarray | dict[str, int]]],
         contextl: int, need_labels: bool = False, need_metadata: bool = False, 
-        need_init: bool = False, make_copy: bool = False, **kwargs):
+        need_init: bool = False, make_copy: bool = False, cudaoptimize=False,
+        **kwargs):
 
+        # cudaoptimize: whether to move data to gpu in bulk
         super().__init__(data,**kwargs)
 
         self._contextl = contextl
@@ -1086,6 +1088,10 @@ class FlyTestDataset(FlyMLMDataset):
         self.need_metadata = need_metadata
         self.make_copy = make_copy
         self.need_init = need_init
+        self.cudaoptimize = cudaoptimize
+        self.cudaid = None
+        self.cudadata = None
+        self.ncudacaches = 0
 
         self.set_eval_mode()
 
@@ -1113,48 +1119,99 @@ class FlyTestDataset(FlyMLMDataset):
     def __getitem__(self, idx: int):
         id = np.searchsorted(self.start_example_per_id,idx,side='right')-1
         idx1 = idx-self.start_example_per_id[id]
+        
+        if self.cudaoptimize:
+            if id != self.cudaid:
+                self.set_cuda_cache(id)
         res = self.data[id].get_train_example(ts=np.arange(idx1,idx1+self.contextl),needinit=self.need_init,
-                                              needlabels=self.need_labels,needmetadata=self.need_metadata,makecopy=self.make_copy)
+                                              needlabels=self.need_labels,needmetadata=self.need_metadata,
+                                              makecopy=self.make_copy)
         res['idx'] = idx
         return res
 
-    def create_data_from_pred(self,all_pred,labelidx):
+    def set_cuda_cache(self,id):
+        if id == self.cudaid:
+            return
+        if self.cudaid is not None:
+            self.data[self.cudaid].clear_cuda_cache()
+        self.cudaid = id
+        if id is not None:
+            self.data[id].set_cuda_cache()
+            self.ncudacaches += 1
+        return
+    
+    def clear_cuda_cache(self):
+        if self.cudaid is None:
+            return
+        self.data[self.cudaid].clear_cuda_cache()
+        self.cudaid = None
+
+    def create_data_from_pred(self,all_pred,labelidx,issqueezed=False):
         """
         pred_data, true_data = self.create_data_from_pred(all_pred,labelidx)
         Inputs:
         all_pred: predictions. If a dict, then each key is a prediction type and each value is a numpy array of predictions of
-        size (pre_sz x) npred x doutput. If a numpy array, then it is of size npred x doutput.
+        size npred x nkeep x doutput. If a numpy array, then it is of size npred x nkeep x doutput.
         labelidx: ndarray indices of the labels corresponding to predictions, of size npred.
         Returns:
         pred_data: list of FlyExample objects with the predictions, one example per id
         true_data: list of FlyExample objects with the true labels, one example per id
         """
+        if issqueezed:
+            # nkeep was 1 and we squeezed it away
+            if type(all_pred) is dict:
+                all_pred = {k:v[:,None,:] for k,v in all_pred.items()}
+
+            else:
+                all_pred = all_pred[:,None,:]
+
+        if type(all_pred) is dict:
+            nkeep = all_pred[next(iter(all_pred.keys()))].shape[1]
+
+        else:
+            nkeep = all_pred.shape[1]
+
+        
         if type(labelidx) is torch.Tensor:
             labelidx = labelidx.cpu().numpy()
-
+            
         labelids = np.searchsorted(self.start_example_per_id,labelidx,side='right')-1
-        labelts = labelidx - self.start_example_per_id[labelids] + self.contextl-1
+        #labelts = labelidx - self.start_example_per_id[labelids]+ self.contextl - 1
+        labelt1s = labelidx - self.start_example_per_id[labelids]+self.contextl
         unique_ids = np.unique(labelids)
         pred_data = [None,]*(np.max(unique_ids)+1)
         true_data = [None,]*(np.max(unique_ids)+1)
 
+        def smush_helper(v,idxcurr,t0scurr,t1scurr,dtcurr):
+            if type(v) is torch.Tensor:
+                v = v.cpu().numpy()
+            vsmush = np.zeros((dtcurr,)+v.shape[2:],dtype=v.dtype)
+            for ii in range(len(idxcurr)):
+                i = idxcurr[ii]
+                vsmush[t0scurr[ii]:t1scurr[ii]] = v[i]
+            return vsmush
 
-        for id in unique_ids:
+        for id in tqdm.tqdm(unique_ids,desc='Creating examples per id'):
             idxcurr = np.nonzero(labelids == id)[0]
-            tscurr = labelts[idxcurr]
-            mint = np.min(tscurr)
-            maxt = np.max(tscurr)
+            t1scurr = labelt1s[idxcurr]
+            t0scurr = t1scurr - nkeep
+            mint = np.min(t0scurr)
+            maxt = np.max(t1scurr)
+            dtcurr = maxt-mint
 
-            true_example = self.data[id].copy_subindex(ts=np.arange(mint,maxt+1))
+            true_example = self.data[id].copy_subindex(ts=np.arange(mint-1,maxt))
             true_data[id] = true_example
             pred_example = true_example.copy()
             
             pred_example.labels.erase_labels()
             if isinstance(all_pred,dict):
-                curr_pred = {k:v[idxcurr] for k,v in all_pred.items()}
+                curr_pred = {}
+                for k,v in all_pred.items():
+                    curr_pred[k] = smush_helper(v,idxcurr,t0scurr-mint,t1scurr-mint,dtcurr)
             else:
-                curr_pred = all_pred[idxcurr]
-            pred_example.labels.set_prediction(curr_pred,ts=labelts[idxcurr]-mint)
+                curr_pred = smush_helper(all_pred,idxcurr,t0scurr-mint,t1scurr-mint,dtcurr)
+
+            pred_example.labels.set_prediction(curr_pred)
             pred_data[id] = pred_example
 
         return pred_data, true_data

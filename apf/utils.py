@@ -1,6 +1,9 @@
 import numpy as np
 import torch
+import matplotlib
 import matplotlib.pyplot as plt
+import tqdm
+import torch
 
 def modrange(x, l, u):
     return np.mod(x - l, u - l) + l
@@ -137,7 +140,7 @@ def unzscore(x, mu, sig):
 def zscore(x, mu, sig):
     return (x - mu) / sig
 
-def allocate_batch_concat(batch,n):
+def allocate_batch_concat(batch,n,device=None):
     """
     allocate_batch_concat(batch,n)
     Allocate for concatenating a bunch of batches in the way that batching in torch concatenates. 
@@ -148,7 +151,9 @@ def allocate_batch_concat(batch,n):
     batch_concat: allocation for a batch of size n*batch.shape[0]
     """
     if isinstance(batch, torch.Tensor):
-        batch_concat = torch.zeros((n*batch.shape[0], *batch.shape[1:]), dtype=batch.dtype, device=batch.device)
+        if device is None:
+            device = batch.device
+        batch_concat = torch.zeros((n*batch.shape[0], *batch.shape[1:]), dtype=batch.dtype, device=device)
         if torch.is_floating_point(batch):
             batch_concat[:] = torch.nan
     elif isinstance(batch, np.ndarray):
@@ -203,9 +208,10 @@ def clip_batch_concat(batch_concat,totallen):
     if isinstance(batch_concat, torch.Tensor) or isinstance(batch_concat, np.ndarray):
         return batch_concat[:totallen]
     elif isinstance(batch_concat, dict):
+        res = {}
         for k in batch_concat.keys():
-            batch_concat[k] = clip_batch_concat(batch_concat[k],totallen)
-        return batch_concat
+            res[k] = clip_batch_concat(batch_concat[k],totallen)
+        return res
     else:
         return batch_concat[:totallen]
     
@@ -301,3 +307,74 @@ def pad_axis_array(array, npad, ax, **kwargs):
     if ax < 0:
         ax = array.ndim + ax
     return np.pad(array, ((0,)*ax + (0, npad),), **kwargs)
+
+def save_animation(ani, filename, writer=None, codec='h264', bitrate=None, fps=30, dpi=None, optimize=3,
+                   preset='faster',crf=20,video_profile='high',pix_fmt='yuv420p',scale=None,
+                   extra_args=[]):
+    """
+    Creates an optimized animation using matplotlib.
+    
+    Args:
+        fig: matplotlib figure object
+        animation_frames: function that updates the plot for each frame
+        filename: output filename
+        fps: frames per second
+    """
+    
+    if writer is None:
+        # get extension from filename
+        ext = filename.split('.')[-1]
+        if ext == 'gif':
+            writer = 'pillow'
+        else:
+            writer = 'ffmpeg'
+
+    kwargs = {'fps':fps}
+    if writer == 'pillow':
+        if optimize is not None:
+            extra_args += ['-optimize',str(optimize)]
+        if len(extra_args) > 0:
+            kwargs['extra_args'] = extra_args
+        if dpi is not None:
+            kwargs['dpi'] = dpi
+
+        writer = matplotlib.animation.PillowWriter(fps=fps,**kwargs)
+    elif writer == 'ffmpeg':
+        if codec is not None:
+            kwargs['codec'] = codec
+        if bitrate is not None:
+            kwargs['bitrate'] = bitrate
+        if preset is not None:
+            extra_args += ['-preset',preset]
+        if crf is not None:
+            extra_args += ['-crf',str(crf)]
+        if video_profile is not None:
+            extra_args += ['-profile:v',video_profile]
+        if pix_fmt is not None:
+            extra_args += ['-pix_fmt',pix_fmt]
+        if scale is not None:
+            extra_args += ['-vf','scale='+scale]
+        if len(extra_args) > 0:
+            kwargs['extra_args'] = extra_args
+        writer = matplotlib.animation.FFMpegWriter(**kwargs)
+    else:
+        raise ValueError('Unknown writer type '+writer)
+    
+    # number of frames in ani
+    total_frames = ani.save_count
+    
+    def progress_callback(current_frame, total_frames):
+        progress_bar.update(1)
+        progress_bar.refresh()
+    
+    # Save animation with progress bar
+    progress_bar = tqdm.tqdm(total=total_frames, desc='Saving animation', leave=True, position=0)
+    ani.save(
+        filename,
+        writer=writer,
+        progress_callback=progress_callback)
+    progress_bar.close()
+    
+def get_cuda_device():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    return device

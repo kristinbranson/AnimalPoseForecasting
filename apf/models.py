@@ -955,8 +955,8 @@ class TransformerMixedModel(TransformerModel):
 
 def generate_square_full_mask(sz: int) -> torch.Tensor:
     """
-  Generates an zero matrix. All words allowed.
-  """
+    Generates an zero matrix. All words allowed.
+    """
     return torch.zeros(sz, sz)
 
 

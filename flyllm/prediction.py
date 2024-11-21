@@ -8,9 +8,44 @@ from apf.models import (
     pred_apply_fun
 )
 from flyllm.pose import FlyExample
+from contextlib import nullcontext
+import datetime
 
-def predict_all(dataloader, dataset, model, config, mask, keepall=True, earlystop=None, debugcheat=False):
+def predict_all(dataloader=None, dataset=None, model=None, config=None, mask=None, keepall=True, earlystop=None, debugcheat=False,
+                savepredfile=None,saveinterval=600,nkeep=None,batchsize=None,shuffle=False,skipinterval=None):
+
+    # get dataset from dataloader
+    if dataset is None:
+        assert dataloader is not None
+        dataset = dataloader.dataset        
+
+    assert model is not None
+    assert config is not None
+    assert mask is not None
+        
+    if batchsize is None:
+        batchsize = config['test_batch_size']
+        
+    if dataloader is None:
+        
+        if skipinterval is not None:
+            if not keepall and (nkeep is None):
+                nkeep = skipinterval
+            sampler = np.arange(0,len(dataset),skipinterval)
+        else:
+            sampler = None
+
+        # create a dataloader
+        dataloader = torch.utils.data.DataLoader(dataset, 
+                                                 batch_size=batchsize, 
+                                                 shuffle=shuffle,
+                                                 pin_memory=dataset.cudaoptimize==False,
+                                                 sampler=sampler)
+
     is_causal = dataset.ismasked() == False
+
+    if not keepall:
+        assert nkeep is not None
 
     with torch.no_grad():
         w = next(iter(model.parameters()))
@@ -28,6 +63,9 @@ def predict_all(dataloader, dataset, model, config, mask, keepall=True, earlysto
     # all_labels_discrete = []
     off = 0
     n = len(dataloader)
+    
+    lastsavetime = datetime.datetime.now()
+    
     if earlystop is not None:
         n = min(n,earlystop)
     for i,example in tqdm.tqdm(enumerate(dataloader),total=n):
@@ -38,18 +76,20 @@ def predict_all(dataloader, dataset, model, config, mask, keepall=True, earlysto
                     'todiscretize': example['labels_todiscretize'].clone()}
         else:
             with torch.no_grad():
-                pred = model.output(example['input'].to(device=device), mask=mask, is_causal=is_causal)
+                if example['input'].device != device:
+                    example['input'] = example['input'].to(device=device)
+                pred = model.output(example['input'], mask=mask, is_causal=is_causal)
                 if config['modelstatetype'] == 'prob':
                     pred = model.maxpred(pred)
                 elif config['modelstatetype'] == 'best':
                     pred = model.randpred(pred)
             
         if not keepall:
-            # only keep the last prediction
+            # only keep the last nkeep predictions
             if isinstance(pred, dict):
-                pred = {k: v[:,[-1,]] for k, v in pred.items()}
+                pred = {k: v[:,-nkeep:] for k, v in pred.items()}
             else:
-                pred = pred[:,[-1,]]
+                pred = pred[:,-nkeep:]
 
         if isinstance(pred, dict):
             pred = {k: v.cpu() for k, v in pred.items()}
@@ -58,8 +98,8 @@ def predict_all(dataloader, dataset, model, config, mask, keepall=True, earlysto
 
         if all_pred is None:
             # allocate
-            all_pred = allocate_batch_concat(pred, len(dataloader))
-            labelidx = torch.zeros(len(dataloader)*example['idx'].shape[0], dtype=torch.int64)
+            all_pred = allocate_batch_concat(pred, n)
+            labelidx = torch.zeros(n*example['idx'].shape[0], dtype=torch.int64)
 
         # assign
         all_pred,off1 = set_batch_concat(pred, all_pred, off)
@@ -67,6 +107,13 @@ def predict_all(dataloader, dataset, model, config, mask, keepall=True, earlysto
         
         off = off1
 
+        timenow = datetime.datetime.now()
+        if savepredfile is not None and (timenow - lastsavetime).total_seconds() > saveinterval:
+            print(f"Saving {off} predictions to {savepredfile}")
+            savestuff = {'all_pred': clip_batch_concat(all_pred, off), 'labelidx': labelidx[:off], 'i': i}
+            np.savez(savepredfile, **savestuff)
+            lastsavetime = timenow
+            
         # pred1 = dataset.get_full_pred(pred)
         # labels1 = dataset.get_full_labels(example=example,use_todiscretize=True)
         # pred_obj = FlyExample(example_in=pred,**example_params)
@@ -89,8 +136,10 @@ def predict_all(dataloader, dataset, model, config, mask, keepall=True, earlysto
     all_pred = clip_batch_concat(all_pred, off)
     labelidx = labelidx[:off]
     
-    # get rid of the batch dimension if not keeping all
-    if not keepall:
+    # all_pred[...] is (nbatches * batchsize) x nkeep x d
+    
+    # get rid of the batch dimension if nkeep == skipinterval
+    if not keepall and (nkeep == 1):
         if isinstance(all_pred, dict):
             all_pred = {k: v.squeeze(1) for k, v in all_pred.items()}
         else:
@@ -99,6 +148,137 @@ def predict_all(dataloader, dataset, model, config, mask, keepall=True, earlysto
     # create FlyLabels objects
 
     return all_pred, labelidx  # ,all_mask,all_pred_discrete,all_labels_discrete
+
+# # this didn't seem to speed inference up
+# def predict_all_twostream(dataloader, dataset, model, config, mask, keepall=True, earlystop=None, debugcheat=False, chunksize=5):
+#     is_causal = dataset.ismasked() == False
+
+#     with torch.no_grad():
+#         w = next(iter(model.parameters()))
+#         device = w.device
+
+#     #example_params = dataset.get_flyexample_params()
+#     model.eval()
+#     dataset.set_eval_mode()
+
+#     # compute predictions and labels for all validation data using default masking
+#     all_pred = None
+#     labelidx = None
+#     #all_mask = []
+#     # all_pred_discrete = []
+#     # all_labels_discrete = []
+#     off = 0
+#     n = len(dataloader)
+#     if earlystop is not None:
+#         n = min(n,earlystop)        
+
+#     # streams for parallelizing data transfer and computation
+#     if device.type == 'cuda':
+#         stream_compute = torch.cuda.Stream()
+#         stream_transfer_input = torch.cuda.Stream()
+#     else:
+#         stream_compute = nullcontext()
+#         stream_transfer_input = nullcontext()
+
+#     # batch iterator
+#     batch_iter = iter(dataloader)
+
+#     # get the first example and put it on the device
+#     example = next(batch_iter)
+#     input = example['input'].to(device=device)
+    
+#     for i in tqdm.trange(n):
+
+
+#         # just copying over the data
+#         if debugcheat:
+#             pred = {'continuous': example['labels'].clone(), 'discrete': example['labels_discrete'].clone(), 
+#                     'todiscretize': example['labels_todiscretize'].clone()}
+            
+#             if not keepall:
+#                 # only keep the last prediction
+#                 if isinstance(pred, dict):
+#                     pred = {k: v[:,[-1,]] for k, v in pred.items()}
+#                 else:
+#                     pred = pred[:,[-1,]]
+
+            
+#         else:
+            
+#             with torch.no_grad():
+#                 if i + 1 < n:
+#                     with torch.cuda.stream(stream_transfer_input):
+#                         next_batch = next(batch_iter)
+#                         next_input = next_batch['input'].to(device,non_blocking=True)
+            
+#                 with torch.cuda.stream(stream_compute):
+#                     pred = model.output(input, mask=mask, is_causal=is_causal)
+#                     if config['modelstatetype'] == 'prob':
+#                         pred = model.maxpred(pred)
+#                     elif config['modelstatetype'] == 'best':
+#                         pred = model.randpred(pred)
+                
+#                     if not keepall:
+#                         # only keep the last prediction
+#                         if isinstance(pred, dict):
+#                             pred = {k: v[:,[-1,]] for k, v in pred.items()}
+#                         else:
+#                             pred = pred[:,[-1,]]
+            
+#                     if isinstance(pred, dict):
+#                         pred = {k: v.cpu() for k, v in pred.items()}
+#                     else:
+#                         pred = pred.cpu()
+
+#         if all_pred is None:
+#             # allocate
+#             all_pred = allocate_batch_concat(pred, n)
+#             labelidx = torch.zeros(n*example['idx'].shape[0], dtype=torch.int64)
+
+#         # assign
+#         all_pred,off1 = set_batch_concat(pred, all_pred, off)
+#         labelidx[off:off1] = example['idx']
+        
+#         off = off1
+
+#         torch.cuda.synchronize()
+        
+#         if i + 1 < n:
+#             example = next_batch
+#             input = next_input
+
+#         # pred1 = dataset.get_full_pred(pred)
+#         # labels1 = dataset.get_full_labels(example=example,use_todiscretize=True)
+#         # pred_obj = FlyExample(example_in=pred,**example_params)
+
+#         # example_obj = FlyExample(example_in=example, **example_params)
+#         # label_obj = example_obj.labels
+#         # pred_obj = label_obj.copy()
+#         # pred_obj.erase_labels()
+#         # pred_obj.set_prediction(pred)
+
+#         # for i in range(np.prod(label_obj.pre_sz)):
+#         #     all_pred.append(pred_obj.copy_subindex(idx_pre=i))
+#         #     all_labels.append(label_obj.copy_subindex(idx_pre=i))
+
+#         # if dataset.discretize:
+#         #   all_pred_discrete.append(pred['discrete'])
+#         #   all_labels_discrete.append(example['labels_discrete'])
+#         # if 'mask' in example:
+#         #   all_mask.append(example['mask'])
+#     all_pred = clip_batch_concat(all_pred, off)
+#     labelidx = labelidx[:off]
+    
+#     # get rid of the batch dimension if not keeping all
+#     if not keepall:
+#         if isinstance(all_pred, dict):
+#             all_pred = {k: v.squeeze(1) for k, v in all_pred.items()}
+#         else:
+#             all_pred = all_pred.squeeze(1)
+    
+#     # create FlyLabels objects
+
+#     return all_pred, labelidx  # ,all_mask,all_pred_discrete,all_labels_discrete
 
 
 def predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model, dataset, maxcontextl=np.inf, debug=False,

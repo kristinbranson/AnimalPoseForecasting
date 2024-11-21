@@ -8,7 +8,7 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.11.2
 #   kernelspec:
-#     display_name: Python 3 (ipykernel)
+#     display_name: transformer
 #     language: python
 #     name: python3
 # ---
@@ -16,8 +16,8 @@
 # %%
 ## Imports
 
-%load_ext autoreload
-%autoreload 2
+# %load_ext autoreload
+# %autoreload 2
 
 import numpy as np
 import torch
@@ -29,8 +29,8 @@ from apf.io import read_config, load_and_filter_data
 from apf.utils import get_dct_matrix, compute_npad, compare_dicts
 from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames, featrelative
 from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx
-from apf.data import chunk_data, debug_less_data
-from flyllm.dataset import FlyMLMDataset
+from apf.data import chunk_data, debug_less_data, process_test_data
+from flyllm.dataset import FlyMLMDataset, FlyTestDataset
 from flyllm.pose import FlyPoseLabels, FlyExample, FlyObservationInputs
 from flyllm.features import kp2feat
 from flyllm.plotting import debug_plot_pose, debug_plot_sample, debug_plot_batch_traj
@@ -133,6 +133,10 @@ compute_feature_params = {
 
 print('Creating training data set...')
 train_dataset = FlyMLMDataset(X,**train_dataset_params,**dataset_params)
+
+test_dataset_params = {}
+test_dataset_params['zscore_params'] = train_dataset.get_zscore_params()
+test_dataset_params['discretize_params'] = train_dataset.get_discretize_params()
 
 # %%
 ## compare flyexample initialized from FlyMLMDataset and from keypoints directly
@@ -584,6 +588,29 @@ ts = np.arange(20,flyexample.ntimepoints)
 flyexample_sub = flyexample.copy_subindex(ts=ts)
 Xkp0 = flyexample.labels.get_next_keypoints(use_todiscretize=True)
 Xkp_sub = flyexample_sub.labels.get_next_keypoints(use_todiscretize=True)
+
+# %%
+# create test datasets with and without caching
+valX = process_test_data(data, reparamfun, **chunk_data_params)
+val_dataset_nocache = FlyTestDataset(valX,config['contextl'],**test_dataset_params,**dataset_params,need_metadata=True,need_labels=True, need_init=True, cudaoptimize=False)
+val_dataset_cache = FlyTestDataset(valX,config['contextl'],**test_dataset_params,**dataset_params,need_metadata=True,need_labels=True, need_init=True, cudaoptimize=True)
+
+
+# %%
+i = len(val_dataset_cache)//2
+ex_nocache = val_dataset_nocache[i]
+ex_cache = val_dataset_cache[i]
+for k in ex_cache.keys():
+    vcache = ex_cache[k]
+    vnocache = ex_nocache[k]
+    if type(vcache) is torch.Tensor:
+        err = torch.abs(vcache-vnocache.to(device=vcache.device))
+        err = torch.max(err[torch.isnan(err)==False]).item()
+        assert err < 1e-6, f"mismatch between cached and non-cached versions of {k}"        
+        print(f'{k}: {err}')
+        
+val_dataset_cache.clear_cuda_cache()
+print(f"After clearing cache, memory allocated: {torch.cuda.memory_allocated()/1e9:.2f} GB, cached {torch.cuda.memory_reserved()/1e9:.2f} GB")
 
 # %%
 ## done

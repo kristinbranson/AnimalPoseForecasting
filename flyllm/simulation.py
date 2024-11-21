@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from matplotlib import animation
 
 from apf.data import get_real_agents
+from apf.utils import save_animation
 from flyllm.features import compute_pose_features, split_features
 from flyllm.config import ARENA_RADIUS_MM
 from flyllm.plotting import plot_flies, plot_arena
@@ -87,7 +88,8 @@ def animate_pose(Xkps, focusflies=[], ax=None, fig=None, t0=0,
                  attn_weights=None, skeledgecolors=None,
                  globalpos_future=None, tspred_future=None,
                  futurecolor=[0, 0, 0, .25], futurelw=1, futurems=6,
-                 futurealpha=.25):
+                 futurealpha=.25,cache_frame_data=False,
+                 save_animation_params={}):
     plotinput = inputs is not None and len(inputs) > 0
 
     # attn_weights[key] should be T x >=contextl x nfocusflies
@@ -323,19 +325,22 @@ def animate_pose(Xkps, focusflies=[], ax=None, fig=None, t0=0,
                 #   axinput[k][-1].set_xlim([0,np.nanmax(attn_curr)])
         return hlist
 
-    ani = animation.FuncAnimation(fig, update, frames=range(trel0, T))
+    ani = animation.FuncAnimation(fig, update, 
+                                  frames=range(trel0, T),
+                                  interval=1000/fps,
+                                  cache_frame_data=cache_frame_data)
 
     if savevidfile is not None:
         print('Saving animation to file %s...' % savevidfile)
-        writer = animation.PillowWriter(fps=30)
-        ani.save(savevidfile, writer=writer)
+        save_animation(ani, savevidfile, fps=fps, **save_animation_params)
         print('Finished writing.')
 
     return ani
 
 
 def animate_predict_open_loop(model, dataset, Xkp_init, fliespred, scales, tpred, burnin=None,
-                              debug=False, plotattnweights=False, plotfuture=False, nsamplesfuture=1, metadata=None):
+                              debug=False, plotattnweights=False, plotfuture=False, nsamplesfuture=0, metadata=None,
+                              animate_pose_params={}):
     # ani = animate_predict_open_loop(model,val_dataset,valdata,val_scale_perfly,config,fliespred,t0,tpred,debug=False,
     #                            plotattnweights=False,plotfuture=train_dataset.ntspred_global>1,nsamplesfuture=nsamplesfuture)
 
@@ -434,6 +439,6 @@ def animate_predict_open_loop(model, dataset, Xkp_init, fliespred, scales, tpred
     ani = animate_pose(Xkps, focusflies=focusflies, t0=t0, titletexts=titletexts,
                        trel0=np.maximum(0, dataset.contextl - 63),
                        inputs=inputs, contextl=dataset.contextl, attn_weights=attn_weights,
-                       **future_args)
+                       **future_args,**animate_pose_params)
 
     return ani

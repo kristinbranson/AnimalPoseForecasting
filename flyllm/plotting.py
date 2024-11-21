@@ -146,7 +146,7 @@ def plot_fly(pose=None, kptidx=keypointidx, skelidx=skeleton_edges, fig=None, ax
                 if name is not None:
                     kptname = name + ' ' + kptname
                 hkpt = \
-                ax.plot(xc, yc, kpt_marker, color=kptcolors, label=kptname, zorder=10, ms=kpt_ms, alpha=kpt_alpha)[0]
+                ax.plot(xc, yc, kpt_marker, color=kptcolors, label=kptname, zorder=10, ms=kpt_ms, alpha=kpt_alpha, mew=0)[0]
             else:
                 if type(kptcolors) == str:
                     kptcolors = plt.get_cmap(kptcolors)
@@ -1472,7 +1472,7 @@ def plot_pose_pred_iter_vs_true(pred_example,true_example,color_true='k',samplec
     return fig
 
 def plot_multi_pred_iter_vs_true(pred_example,true_example,color_true='k',samplecolors=None,ylim_nstd=None,tsplot=None,fig=None,ylims=None,
-                                 samplealpha=None,figwidth=16,axheight=4,maxsamplesplot=None):
+                                 samplealpha=None,figwidth=16,axheight=4,maxsamplesplot=None,plotbestsample=False):
     
     # plot multi
 

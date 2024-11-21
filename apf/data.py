@@ -103,6 +103,8 @@ def process_test_data(data,reparamfun,npad=1,minnframes=None):
     nids = np.max(data['ids'])
     for id in tqdm.trange(nids):
         idxcurr = data['ids'] == id
+        if np.count_nonzero(idxcurr) == 0:
+            continue
         agent_num = np.nonzero(np.any(idxcurr,axis=0))[0]
         assert len(agent_num) == 1, 'More than one agent found'
         agent_num = agent_num[0]

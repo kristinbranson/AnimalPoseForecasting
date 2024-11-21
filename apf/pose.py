@@ -7,7 +7,7 @@ import typing
 #     from apf.dataset import AgentLLMDataset
 
 from apf.data import weighted_sample, discretize_labels
-from apf.utils import len_wrapper, dict_convert_torch_to_numpy, zscore, unzscore, pre_tile_array, pad_axis_array
+from apf.utils import len_wrapper, dict_convert_torch_to_numpy, zscore, unzscore, pre_tile_array, pad_axis_array, get_cuda_device
 
 class AgentParams:
     
@@ -183,6 +183,7 @@ class ObservationInputs:
         # initialize the inputs and metadata
         self._input = None
         self._metadata = None
+        self.cuda_input = None
 
         # set parameters 
         self.set_params(kwargs)
@@ -362,9 +363,11 @@ class ObservationInputs:
                 if metadata_pre_sz != self.pre_sz:
                     if nextra > 0:
                         for k in self._metadata.keys():
-                            self._metadata[k] = np.expand_dims(self._metadata[k],newdims)
+                            if self._metadata[k] is not None:
+                                self._metadata[k] = np.expand_dims(self._metadata[k],newdims)
                     for k in self._metadata.keys():
-                        self._metadata[k] = np.tile(self._metadata[k], reps)
+                        if self._metadata[k] is not None:
+                            self._metadata[k] = np.tile(self._metadata[k], reps)
         
         return
 
@@ -407,20 +410,40 @@ class ObservationInputs:
         """
         return self._zscore_params is not None
 
-    def get_raw_inputs(self, makecopy=True, ts=None, ):
+    def get_raw_inputs(self, makecopy=True, ts=None, cache=None):
         """
         get_raw_inputs(makecopy=True)
         Returns the raw inputs, optionally making a copy.
         Could probably be removed, doesn't do much... 
         """
-        if ts is None:
+        if cache is None:
             input = self._input
         else:
-            input = self._input[...,ts,:]
-        if makecopy:
+            input = cache
+        if ts is not None:
+            input = input[...,ts,:]
+        if (cache is None) and makecopy:
             return input.copy()
         else:
             return input
+        
+    def get_raw_inputs_tensor_copy(self, **kwargs):
+        """
+        get_raw_input_tensor_copy()
+        Returns the raw input converted to a torch tensor.
+        """
+        raw_input = self.get_raw_inputs(makecopy=False, cache=self.cuda_input, **kwargs)
+        if self.cuda_input is None:
+            raw_input = torch.tensor(raw_input)
+        return raw_input
+
+    def set_cuda_cache(self):
+        self.cuda_input = torch.tensor(self._input).to(device=get_cuda_device())
+                
+    def clear_cuda_cache(self):
+        del self.cuda_input
+        self.cuda_input = None
+
 
     def get_inputs(self, zscored=False, **kwargs):
         """
@@ -485,6 +508,8 @@ class ObservationInputs:
         if self.is_zscored() and (zscored == False):
             eta_pose = zscore(eta_pose, self._zscore_params['mu_input'][..., idx[0]:idx[1]],
                               self._zscore_params['sig_input'][..., idx[0]:idx[1]])
+        if type(train_inputs) is torch.Tensor:
+            eta_pose = torch.tensor(eta_pose,device=train_inputs.device)
         train_inputs[..., idx[0]:idx[1]] += eta_pose
 
     def set_inputs(self, input, zscored=False, ts=None):
@@ -583,17 +608,15 @@ class ObservationInputs:
             'eta': added noise if do_add_noise is True, None otherwise.
         """
 
-        train_inputs = self.get_raw_inputs(makecopy=makecopy,ts=ts)
-        assert (makecopy == True) or (do_add_noise == False), 'makecopy must be True if do_add_noise is True'
-
         # makes a copy
+        train_inputs = self.get_raw_inputs_tensor_copy(ts=ts)
+
         if do_add_noise:
             train_inputs, input_labels, eta = self.add_noise(train_inputs, input_labels, labels)
         else:
             eta = None
 
         # makes a copy
-        train_inputs = torch.tensor(train_inputs)
         train_inputs_init = None
         
         if ts is None:
@@ -605,9 +628,11 @@ class ObservationInputs:
             # offset input_labels from inputs so that input_labels correspond to the previous frame
             # then concatenate
             if input_labels is not None:
+                input_labels = input_labels[..., :n-self._starttoff, :]
+                if type(input_labels) is np.ndarray:
+                    input_labels = torch.tensor(input_labels,device=train_inputs.device)
                 train_inputs_init = train_inputs[..., :self._starttoff, :]
-                train_inputs = torch.cat((torch.tensor(input_labels[..., :n-self._starttoff, :]),
-                                          train_inputs[..., self._starttoff:, :]), dim=-1)
+                train_inputs = torch.cat((input_labels,train_inputs[..., self._starttoff:, :]), dim=-1)
         else:
             # haven't debugged flattened stuff
             ntypes = len(self._flatten_obs_idx)
@@ -615,8 +640,7 @@ class ObservationInputs:
                                     dtype=train_inputs.dtype)
             for i, v in enumerate(self._flatten_obs_idx.values()):
                 flatinput[..., i,
-                self._flatten_input_type_to_range[i, 0]:self._flatten_input_type_to_range[i, 1]] = train_inputs[:,
-                                                                                                 v[0]:v[1]]
+                self._flatten_input_type_to_range[i, 0]:self._flatten_input_type_to_range[i, 1]] = train_inputs[:,v[0]:v[1]]
 
             train_inputs = flatinput
 
@@ -729,9 +753,8 @@ class PoseLabels:
         self._metadata = metadata
         self._categories = None
         self._init_pose = init_next
-
-        # cache indices
-
+        self.cuda_labels_raw = None
+        self.cuda_input_labels = None
         
         # initialize from example_in
         if example_in is not None:
@@ -1125,11 +1148,11 @@ class PoseLabels:
             # add nextra dimensions to the start of each array
             newdims = tuple(range(nextra))
             for k in ks:
-                if k in labels:
+                if k in labels and (labels[k] is not None):
                     labels[k] = np.expand_dims(labels[k],newdims)
         
         for k in ks:
-            if k in labels:
+            if k in labels and (labels[k] is not None):
                 ndims = labels[k].ndim
                 reps1 = np.ones(ndims,dtype=int)
                 reps1[:len(reps)] = reps
@@ -1138,9 +1161,11 @@ class PoseLabels:
         if tile_metadata and labels['metadata'] is not None:
             if nextra > 0:
                 for k in labels['metadata'].keys():
-                    labels['metadata'][k] = np.expand_dims(labels['metadata'][k],newdims)
+                    if (labels['metadata'][k] is not None):
+                        labels['metadata'][k] = np.expand_dims(labels['metadata'][k],newdims)
             for k in labels['metadata'].keys():
-                labels['metadata'][k] = np.tile(labels['metadata'][k], reps)
+                if labels['metadata'][k] is not None:
+                    labels['metadata'][k] = np.tile(labels['metadata'][k], reps)
                 
         # will update pre_sz
         self.set_raw_example(labels)
@@ -1768,7 +1793,7 @@ class PoseLabels:
         """
         return 'mask' in self.labels_raw
     
-    def get_raw_labels_basic(self, format='standard', ts=None, makecopy=True, ks=None):
+    def get_raw_labels_basic(self, format='standard', ts=None, makecopy=True, ks=None, cache=None):
         """
         get_raw_labels_basic(ts=None, makecopy=True)
         Returns the raw labels as a dict. 
@@ -1779,18 +1804,23 @@ class PoseLabels:
         makecopy: whether to return a copy of the data. Default is True.
         """
         labels_out = {}
+        if cache is None:
+            labels_in = self.labels_raw
+        else:
+            labels_in = cache
+            
         if ks is None:
-            ks = self.labels_raw.keys()
+            ks = labels_in.keys()
         for kin in ks:
             if format == 'standard':
                 kout = kin
             else:
                 kout = self._label_keys[kin]
 
-            if makecopy:
-                labels_out[kout] = self.labels_raw[kin].copy()
+            if (cache is None) and makecopy:
+                labels_out[kout] = labels_in[kin].copy()
             else:
-                labels_out[kout] = self.labels_raw[kin]
+                labels_out[kout] = labels_in[kin]
             if ts is not None:
                 if kin == 'discrete':
                     labels_out[kout] = labels_out[kout][..., ts, :, :]
@@ -1801,7 +1831,7 @@ class PoseLabels:
         
 
     def get_raw_labels(self, format='standard', ts=None, makecopy=True, needinit=True,
-                       needscale=True, needcategories=True):
+                       needscale=True, needcategories=True, cache=None):
         """
         get_raw_labels(format='standard', ts=None, makecopy=True)
         Returns the raw labels as a dict. 
@@ -1811,7 +1841,7 @@ class PoseLabels:
         an ndarray, a list, a scalar, a slice, or a range. If None, all time points are returned. Default is None.
         makecopy: whether to return a copy of the data. Default is True.
         """
-        labels_out = self.get_raw_labels_basic(format=format, ts=ts, makecopy=makecopy)
+        labels_out = self.get_raw_labels_basic(format=format, ts=ts, makecopy=makecopy, cache=cache)
 
         if needinit:
             labels_out['init'] = self.get_init_pose(ts=ts,makecopy=makecopy)
@@ -1824,17 +1854,50 @@ class PoseLabels:
 
         return labels_out
 
+    def set_cuda_cache(self,cache_input_labels=True):
+        self.cuda_labels_raw = {}
+        raw_labels = self.get_raw_labels_basic(makecopy=False)
+        for k, v in raw_labels.items():
+            if type(v) is np.ndarray:
+                self.cuda_labels_raw[k] = torch.tensor(v).to(get_cuda_device())
+        if cache_input_labels:
+            self.cuda_input_labels = self.get_input_labels()
+            self.cuda_input_labels = torch.tensor(self.cuda_input_labels).to(device=get_cuda_device())
+            
+    def clear_cuda_cache(self):
+        del self.cuda_labels_raw
+        del self.cuda_input_labels
+        self.cuda_labels_raw = None
+        self.cuda_input_labels = None
+
     def get_raw_labels_tensor_copy(self, **kwargs):
         """
         get_raw_labels_tensor_copy()
         Returns the raw labels as a dict, with the numpy arrays copied and converted to torch tensors.
         """
-        raw_labels = self.get_raw_labels(makecopy=False, **kwargs)
+        raw_labels = self.get_raw_labels(makecopy=False, cache=self.cuda_labels_raw, **kwargs)
         labels_out = {}
         for k, v in raw_labels.items():
             if type(v) is np.ndarray:
                 labels_out[k] = torch.tensor(v)
+            else:
+                labels_out[k] = v
         return labels_out
+
+
+    def get_categories(self, makecopy=True):
+        """
+        get_categories(makecopy=True)
+        Returns the categories from the MABe dataset. Currently not used for anything, may be buggy.
+        Optional parameters:
+        makecopy: whether to return a copy of the data. Default is True.
+        """
+        if self._categories is None:
+            return None
+        if makecopy:
+            return self._categories.copy()
+        else:
+            return self._categories
 
     def get_ntokens(self):
         """
@@ -1893,13 +1956,13 @@ class PoseLabels:
                         
         # if naming scheme is train, use keys like 'labels', 'labels_discrete', etc.
         if namingscheme == 'train':
-          rename_dict['discrete'] = 'labels_discrete'
-          rename_dict['continuous'] = 'labels'
-          rename_dict['todiscretize'] = 'labels_todiscretize'
-          if needinit:
-            rename_dict['continuous_init'] = 'labels_init'
-            rename_dict['discrete_init'] = 'labels_discrete_init'
-            rename_dict['todiscretize_init'] = 'labels_todiscretize_init'
+            rename_dict['discrete'] = 'labels_discrete'
+            rename_dict['continuous'] = 'labels'
+            rename_dict['todiscretize'] = 'labels_todiscretize'
+            if needinit:
+                rename_dict['continuous_init'] = 'labels_init'
+                rename_dict['discrete_init'] = 'labels_discrete_init'
+                rename_dict['todiscretize_init'] = 'labels_todiscretize_init'
 
         train_labels = {}
 
@@ -2475,6 +2538,10 @@ class PoseLabels:
         # if ts is not None:
         #     ts = np.atleast_1d(ts)
         #     ts = np.r_[ts[0]-1,ts]
+        
+        if self.cuda_input_labels is not None:
+            return self.cuda_input_labels[...,ts,:]
+        
         return self.get_nextcossin(zscored=self.is_zscored(), use_todiscretize=True, ts=ts)
 
     def get_next(self, **kwargs):
@@ -2951,7 +3018,7 @@ class PoseLabels:
         multi_pred_sample = multi_pred_sample[...,starttoff:,:]
 
         # there are a few different ways to draw from the distributions, currently only for discrete features
-        if self.is_discretized():
+        if true_labels.is_discretized():
             absdiff_multi_sample = np.abs(multi_pred_sample-multi_label[None,...])
             absdiff_multi_samplemean = np.nanmean(absdiff_multi_sample,axis=0)
             absdiff_multi_samplemin = np.nanmin(absdiff_multi_sample,axis=0)
@@ -3000,7 +3067,7 @@ class PoseLabels:
             err['l1_multi_zscored'] = absdiff_multi_z
             err['mse_multi_zscored'] = np.square(absdiff_multi_z)
 
-            if self.is_discretized():
+            if true_labels.is_discretized():
 
                 # nsamples x T x dmulti
                 multi_pred_sample_z = pred_labels.get_multi(nsamples=nsamples,collapse_samples=False,zscored=True)
@@ -3708,6 +3775,7 @@ class AgentExample:
         # to do: add noise
             
         if needinput:
+            # TODOCACHE make this work with caching
             input_labels = self.get_input_labels(ts=ts)
 
             train_inputs = self.inputs.get_train_inputs(input_labels=input_labels,
@@ -3757,6 +3825,18 @@ class AgentExample:
 
         return res
 
+    def clear_cuda_cache(self):
+        self.labels.clear_cuda_cache()
+        self.inputs.clear_cuda_cache()
+        return
+        
+    def set_cuda_cache(self,needinput=True,needlabels=True):
+        if needinput:
+            self.inputs.set_cuda_cache()
+        if needlabels:
+            self.labels.set_cuda_cache(cache_input_labels=self._do_input_labels)
+        return
+    
     def get_train_metadata(self):
         """
         get_train_metadata()
