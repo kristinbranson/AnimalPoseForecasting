@@ -3775,7 +3775,6 @@ class AgentExample:
         # to do: add noise
             
         if needinput:
-            # TODOCACHE make this work with caching
             input_labels = self.get_input_labels(ts=ts)
 
             train_inputs = self.inputs.get_train_inputs(input_labels=input_labels,

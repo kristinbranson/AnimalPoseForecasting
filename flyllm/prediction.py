@@ -64,6 +64,9 @@ def predict_all(dataloader=None, dataset=None, model=None, config=None, mask=Non
     off = 0
     n = len(dataloader)
     
+    if saveinterval is None:
+        saveinterval = np.inf
+
     lastsavetime = datetime.datetime.now()
     
     if earlystop is not None:
