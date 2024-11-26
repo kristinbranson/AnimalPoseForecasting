@@ -361,6 +361,12 @@ def init_datasets(config=None,X=None,valX=None,traindataprocess='chunk',
         sz = example['input'].shape
         LOG.info(f'val batch input shape = {sz}')
         
+        if ('zscore_params' not in dataset_params) or (dataset_params['zscore_params'] is None):
+            dataset_params['zscore_params'] = train_dataset.get_zscore_params()
+        if ('discretize_params' not in dataset_params) or (dataset_params['discretize_params'] is None):
+            dataset_params['discretize_params'] = train_dataset.get_discretize_params()
+            
+        
         res['train_dataset'] = train_dataset
         res['train_dataloader'] = train_dataloader
         res['ntrain_batches'] = ntrain_batches

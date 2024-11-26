@@ -33,6 +33,7 @@ import os
 from matplotlib import animation
 import pickle
 
+from flyllm.prepare import init_flyllm
 from apf.utils import get_dct_matrix, compute_npad
 from apf.data import chunk_data, interval_all, debug_less_data
 from apf.models import (
@@ -87,110 +88,62 @@ LOG.info('matplotlib backend: ' + mpl_backend)
 
 # %%
 # configuration parameters for this model
+
 restartmodelfile = None
 #restartmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flymulttimeglob_predposition_20240305_epoch130_20240825T122647.pth'
-
 configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241125.json'
-assert os.path.exists(configfile), f'config file {configfile} does not exist'
 
 # set to None if you want to use the full data
 quickdebugdatafile = None
-#configfile = "/groups/branson/home/eyjolfsdottire/code/MABe2022/config_fly_llm_multitimeglob_discrete_20230907.json"
-config = read_config(configfile,
-                     default_configfile=DEFAULTCONFIGFILE,
-                     get_sensory_feature_idx=get_sensory_feature_idx,
-                     featglobal=featglobal,
-                     posenames=posenames)
 
-# seed the random number generators
-np.random.seed(config['numpy_seed'])
-torch.manual_seed(config['torch_seed'])
+needtraindata = True
+needvaldata = True
+traindataprocess = 'chunk'
+valdataprocess = 'chunk'
+res = init_flyllm(configfile=configfile,mode='train',restartmodelfile=restartmodelfile,
+                  quickdebugdatafile=quickdebugdatafile,needtraindata=needtraindata,needvaldata=needvaldata,
+                  traindataprocess=traindataprocess,valdataprocess=valdataprocess)
 
-# set device (cuda/cpu)
-device = torch.device(config['device'])
-if device.type == 'cuda':
-    assert torch.cuda.is_available(), 'CUDA is not available'
+# unpack outputs
+config = res['config']
+device = res['device']
+data = res['data']
+scale_perfly = res['scale_perfly']
+valdata = res['valdata']
+val_scale_perfly = res['val_scale_perfly']
+X = res['X']
+valX = res['valX']
+npad = res['npad']
+reparamfun = res['reparamfun']
+val_reparamfun = res['val_reparamfun']
+chunk_data_params = res['train_chunk_data_params']
+train_dataset = res['train_dataset']
+train_dataloader = res['train_dataloader']
+val_dataset = res['val_dataset']
+val_dataloader = res['val_dataloader']
+dataset_params = res['dataset_params']
+ntrain_batches = res['ntrain_batches']
+nval_batches = res['nval_batches']
+model = res['model']
+criterion = res['criterion']
+num_training_steps = res['num_training_steps']
+optimizer = res['optimizer']
+lr_scheduler = res['lr_scheduler']
+loss_epoch = res['loss_epoch']
+epoch = res['epoch']
+modeltype_str = res['modeltype_str']
+savetime = res['model_savetime']
+train_src_mask = res['train_src_mask']
+is_causal = res['is_causal']
 
-# %% [markdown]
-# ### Load data
-
-# %%
-# load raw data
-if quickdebugdatafile is None:
-    data, scale_perfly = load_and_filter_data(config['intrainfile'], config, compute_scale_perfly,
-                                              keypointnames=keypointnames)
-    valdata, val_scale_perfly = load_and_filter_data(config['invalfile'], config, compute_scale_perfly,
-                                                     keypointnames=keypointnames)
-    #LOG.warning('DEBUGGING!!!')
-    #debug_less_data(data, 10000000)
-    #debug_less_data(valdata, 10000)
-else:
-    with open(quickdebugdatafile,'rb') as f:
-        tmp = pickle.load(f)
-        data = tmp['data']
-        scale_perfly = tmp['scale_perfly']
-        valdata = tmp['valdata']
-        val_scale_perfly = tmp['val_scale_perfly']
-
-# %% [markdown]
-# ### Compute features
-# Compute the pose representation and chunk data into sequences for training
-
-# %%
-# if using discrete cosine transform, create dct matrix
-# this didn't seem to work well, so probably won't use in the future
-if config['dct_tau'] is not None and config['dct_tau'] > 0:
-    dct_m, idct_m = get_dct_matrix(config['dct_tau'])
-    # this gives the maximum of 
-    #   a) max number of frames to lookahead or 
-    #   b) dct_tau (number of timepoints for cosine transform)
-else:
-    dct_m = None
-    idct_m = None
-
-# how much to pad outputs by -- depends on how many frames into the future we will predict
-npad = compute_npad(config['tspred_global'], dct_m)
-chunk_data_params = {'npad': npad}
-
-compute_feature_params = {
-    "simplify_out": config['simplify_out'],
-    "simplify_in": config['simplify_in'],
-    "dct_m": dct_m,
-    "tspred_global": config['tspred_global'],
-    "compute_pose_vel": config['compute_pose_vel'],
-    "discreteidx": config['discreteidx'],
+train_dataset_params = {
+    'input_noise_sigma': config['input_noise_sigma'],
 }
 
-# function for computing features
-reparamfun = lambda x, id, flynum, **kwargs: compute_features(
-    x, id, flynum, scale_perfly, outtype=np.float32, **compute_feature_params, **kwargs)
-
-val_reparamfun = lambda x, id, flynum, **kwargs: compute_features(
-    x, id, flynum, val_scale_perfly, outtype=np.float32, **compute_feature_params, **kwargs)
-
-# sanity check on computing features when predicting many frames into the future
-# sanity_check_tspred(
-#     data, 
-#     compute_feature_params,
-#     npad,
-#     scale_perfly,
-#     contextl=config['contextl'],
-#     t0=510,
-#     flynum=0
-# )
-
-# chunk the data if we didn't load the pre-chunked cache file
-LOG.info('Chunking training data...')
-X = chunk_data(data, config['contextl'], reparamfun, **chunk_data_params)
-LOG.info(f'{len(X)} training chunks')
-LOG.info('Chunking val data...')
-valX = chunk_data(valdata, config['contextl'], val_reparamfun, **chunk_data_params)
-LOG.info(f'{len(valX)} val chunks')
-LOG.info(f'Chunk input shape: {X[0]["input"].shape}')
-LOG.info(f'Chunk labels shape: {X[0]["labels"].shape}')
-
 
 # %%
+# some helper functions for debugging
+
 import tracemalloc
 import linecache
 
@@ -232,98 +185,6 @@ def update_plots(figs):
         plt.pause(.1)
 
 
-# %% [markdown]
-# ### Create Dataset, DataLoader objects
-
-# %%
-#import cProfile as profile
-#tracemalloc.start()
-
-dataset_params = {
-    'max_mask_length': config['max_mask_length'],
-    'pmask': config['pmask'],
-    'masktype': config['masktype'],
-    'simplify_out': config['simplify_out'],
-    'pdropout_past': config['pdropout_past'],
-    'input_labels': config['input_labels'],
-    'dozscore': True,
-    'discreteidx': config['discreteidx'],
-    'discretize_nbins': config['discretize_nbins'],
-    'discretize_epsilon': config['discretize_epsilon'],
-    'flatten_labels': config['flatten_labels'],
-    'flatten_obs_idx': config['flatten_obs_idx'],
-    'flatten_do_separate_inputs': config['flatten_do_separate_inputs'],
-    'p_add_input_noise': config['p_add_input_noise'],
-    'dct_ms': (dct_m,idct_m),
-    'tspred_global': config['tspred_global'],
-    'discrete_tspred': config['discrete_tspred'],
-    'compute_pose_vel': config['compute_pose_vel'],
-}
-train_dataset_params = {
-    'input_noise_sigma': config['input_noise_sigma'],
-}
-
-LOG.info('Creating training data set...')
-train_dataset = FlyMLMDataset(X,**train_dataset_params,**dataset_params)
-
-# profile memory usage
-# snapshot = tracemalloc.take_snapshot()
-# display_top(snapshot)
-# tracemalloc.stop()
-
-train_dataset = FlyMLMDataset(X,**train_dataset_params,**dataset_params)
-LOG.info(f'Train dataset size: {len(train_dataset)}')
-
-# zscore and discretize parameters for validation data set based on train data
-# we will continue to use these each time we rechunk the data
-dataset_params['zscore_params'] = train_dataset.get_zscore_params()
-dataset_params['discretize_params'] = train_dataset.get_discretize_params()
-
-LOG.info('Creating validation data set...')
-val_dataset = FlyMLMDataset(valX,**dataset_params)
-print(f'Validation dataset size: {len(val_dataset)}')
-
-train_dataloader = torch.utils.data.DataLoader(train_dataset,
-                                                batch_size=config['batch_size'],
-                                                shuffle=True,
-                                                pin_memory=True,
-                                                )
-ntrain_batches = len(train_dataloader)
-LOG.info(f'Number of training batches: {ntrain_batches}')
-
-val_dataloader = torch.utils.data.DataLoader(val_dataset,
-                                              batch_size=config['batch_size'],
-                                              shuffle=False,
-                                              pin_memory=True,
-                                              )
-nval_batches = len(val_dataloader)
-LOG.info(f'Number of validation batches: {nval_batches}')
-
-example = next(iter(train_dataloader))
-sz = example['input'].shape
-LOG.info(f'batch input shape = {sz}')
-sz = example['labels'].shape
-LOG.info(f'batch labels shape = {sz}')
-if 'labels_discrete' in example:
-    sz = example['labels_discrete'].shape
-    LOG.info(f'batch labels_discrete shape = {sz}')
-
-
-# %%
-exampleobj = train_dataset.get_example(0)
-print('Features:')
-multi_fnames = exampleobj.labels.get_multi_names()
-for i, fname in enumerate(multi_fnames):
-    print(f'{i}: {fname}')
-train_example = exampleobj.get_train_example()
-for k,v in train_example.items():
-    if hasattr(v, 'shape'):
-        print(f'{k}: {v.shape}')
-    else:
-        print(f'{k}: {type(v)}')
-example = next(iter(train_dataloader))
-
-
 # %%
 # profile example creation
 import cProfile
@@ -342,54 +203,6 @@ if False:
 
 if False:
     profile_test()
-
-# %% [markdown]
-# ### Set up model and training
-
-# %%
-# create the model
-model, criterion = initialize_model(config, train_dataset, device)
-
-# optimizer
-num_training_steps = config['num_train_epochs'] * ntrain_batches
-optimizer = torch.optim.AdamW(model.parameters(), **config['optimizer_args']) 
-lr_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1., end_factor=0., total_iters=num_training_steps)
-
-# create attention mask
-contextl = example['input'].shape[1]
-if config['modeltype'] == 'mlm':
-    train_src_mask = generate_square_full_mask(contextl).to(device)
-    is_causal = False
-elif config['modeltype'] == 'clm':
-    train_src_mask = torch.nn.Transformer.generate_square_subsequent_mask(contextl, device=device)
-    is_causal = True
-    #train_src_mask = generate_square_subsequent_mask(contextl).to(device)
-else:
-    raise
-
-# DO THIS
-# sanity check on temporal dependences
-sanity_check_temporal_dep(train_dataloader, device, train_src_mask, is_causal, model, tmess=300)
-
-modeltype_str = get_modeltype_str(config, train_dataset)
-if ('model_nickname' in config) and (config['model_nickname'] is not None):
-    modeltype_str = config['model_nickname']
-    
-if restartmodelfile is not None:
-    loss_epoch = load_model(restartmodelfile, model, device, lr_optimizer=optimizer, scheduler=lr_scheduler)
-    update_loss_nepochs(loss_epoch, config['num_train_epochs'])
-    epoch = np.nonzero(np.isnan(loss_epoch['train'].cpu().numpy()))[0][0]
-else:
-    epoch = 0
-    # initialize structure to keep track of loss
-    loss_epoch = initialize_loss(train_dataset, config)
-
-# DO THIS
-last_val_loss = None
-
-savetime = datetime.datetime.now()
-savetime = savetime.strftime('%Y%m%dT%H%M%S')
-
 
 # %% [markdown]
 # ### Train
@@ -412,6 +225,9 @@ progress_bar = tqdm.tqdm(range(num_training_steps),initial=epoch*ntrain_batches)
 
 ntimepoints_per_batch = train_dataset.ntimepoints
 valexample = next(iter(val_dataloader))
+last_val_loss = loss_epoch['val'][epoch].item()
+if np.isnan(last_val_loss):
+    last_val_loss = None
 
 # train loop
 for epoch in range(epoch, config['num_train_epochs']):
