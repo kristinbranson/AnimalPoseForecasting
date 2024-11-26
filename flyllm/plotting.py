@@ -1472,7 +1472,7 @@ def plot_pose_pred_iter_vs_true(pred_example,true_example,color_true='k',samplec
     return fig
 
 def plot_multi_pred_iter_vs_true(pred_example,true_example,color_true='k',samplecolors=None,ylim_nstd=None,tsplot=None,fig=None,ylims=None,
-                                 samplealpha=None,figwidth=16,axheight=4,maxsamplesplot=None,plotbestsample=False):
+                                 samplealpha=None,figwidth=16,axheight=4,maxsamplesplot=None,plotbestsample=False,featsplot=None):
     
     # plot multi
 
@@ -1492,8 +1492,11 @@ def plot_multi_pred_iter_vs_true(pred_example,true_example,color_true='k',sample
     multi_pred = pred_example.labels.get_multi(collapse_samples=True,use_todiscretize=True)
     multi_true = true_example.labels.get_multi(use_todiscretize=True)
 
+    if featsplot is None:
+        featsplot = np.arange(true_example.labels.d_multi)
+
     if fig is None:
-        fig,ax = plt.subplots(true_example.labels.d_multi,1,sharex=True,figsize=(figwidth,axheight*true_example.labels.d_multi))
+        fig,ax = plt.subplots(len(featsplot),1,sharex=True,figsize=(figwidth,axheight*len(featsplot)))
     else:
         ax = fig.get_axes()
 
@@ -1510,26 +1513,28 @@ def plot_multi_pred_iter_vs_true(pred_example,true_example,color_true='k',sample
             zscore_params.keys()
             ylims = zscore_params['mu_labels'] + ylim_nstd*np.array([-1,1])[:,None]*zscore_params['sig_labels'][None,:]
 
-    for featnum in range(true_example.labels.d_multi):
+    for axi,featnum in enumerate(featsplot):
 
         for i in range(nsamples):
             c = samplecolors[i]
-            h, = ax[featnum].plot(multi_pred[i,tsplot,featnum],'.-',color=c)
+            h, = ax[axi].plot(multi_pred[i,tsplot,featnum],'.-',color=c)
             if i == 0:
                 h.set_label('Predicted')
-        ax[featnum].plot(multi_true[tsplot,featnum],'.-',label='True',color=color_true)
+        ax[axi].plot(multi_true[tsplot,featnum],'.-',label='True',color=color_true)
 
         if ylims is not None:
             ylim = ylims[:,featnum]
-            ax[featnum].set_ylim(ylim)
-        ax[featnum].legend()
-        ax[featnum].set_ylabel(f'{multi_names[featnum]}')
+            ax[axi].set_ylim(ylim)
+        ax[axi].legend()
+        ax[axi].set_ylabel(f'{multi_names[featnum]}')
 
     fig.tight_layout()
     
     return fig
     
-def plot_multi_pred_vs_true(pred_example,true_example,color_true='k',featcolors=None,ylim_nstd=None,nsamples=100,tsplot=None,fig=None,ylims=None):
+def plot_multi_pred_vs_true(pred_example,true_example,color_true='k',featcolors=None,ylim_nstd=None,nsamples=100,
+                            tsplot=None,fig=None,ylims=None,featsplot=None,samplealpha=None,
+                            truelw=.5,truems=3,predlw=1,predms=6):
     
     # plot multi errors
 
@@ -1545,8 +1550,11 @@ def plot_multi_pred_vs_true(pred_example,true_example,color_true='k',featcolors=
     multi_isdiscrete = pred_example.labels.get_multi_isdiscrete()
     #bestsample = np.argmin(np.abs(multi_pred_sample-multi_true[None,...]),axis=0)
 
+    if featsplot is None:
+        featsplot = np.arange(true_example.labels.d_multi)
+
     if fig is None:
-        fig,ax = plt.subplots(true_example.labels.d_multi,1,sharex=True,figsize=(16,4*true_example.labels.d_multi))
+        fig,ax = plt.subplots(len(featsplot),1,sharex=True,figsize=(16,4*len(featsplot)))
     else:
         ax = fig.get_axes()
 
@@ -1554,33 +1562,36 @@ def plot_multi_pred_vs_true(pred_example,true_example,color_true='k',featcolors=
         nfeatcolors = 10
         featcolors = plt.cm.tab10(np.arange(nfeatcolors))
 
+    if samplealpha is None:
+        samplealpha = min(1,1/nsamples*4)
+
     if ylims is None:
         if ylim_nstd is not None:
             zscore_params = true_example.labels.zscore_params
             zscore_params.keys()
             ylims = zscore_params['mu_labels'] + ylim_nstd*np.array([-1,1])[:,None]*zscore_params['sig_labels'][None,:]
 
-    for featnum in range(true_example.labels.d_multi):
+    for axi,featnum in enumerate(featsplot):
         plotsamples = multi_isdiscrete[featnum]
 
         color = featcolors[featnum%nfeatcolors]
 
         if plotsamples:
             c = color.copy()
-            c[-1] = .05
+            c[-1] = samplealpha
             for i in range(multi_pred_sample.shape[0]):
-                h, = ax[featnum].plot(multi_pred_sample[i,tsplot,featnum],'.',color=c)
+                h, = ax[axi].plot(multi_pred_sample[i,tsplot,featnum],'.',color=c,ms=predms)
                 if i == 0:
                     h.set_label('Predicted')
         else:
-            ax[featnum].plot(multi_pred[tsplot,featnum],'.-',label='Predicted',color=color)
-        ax[featnum].plot(multi_true[tsplot,featnum],'.-',label='True',color=color_true)
+            ax[axi].plot(multi_pred[tsplot,featnum],'.-',label='Predicted',color=color,lw=predlw,ms=predms)
+        ax[axi].plot(multi_true[tsplot,featnum],'.-',label='True',color=color_true,lw=truelw,ms=truems)
 
         if ylims is not None:
             ylim = ylims[:,featnum]
-            ax[featnum].set_ylim(ylim)
-        ax[featnum].legend()
-        ax[featnum].set_ylabel(f'{multi_names[featnum]}')
+            ax[axi].set_ylim(ylim)
+        ax[axi].legend()
+        ax[axi].set_ylabel(f'{multi_names[featnum]}')
 
     fig.tight_layout()
     

@@ -425,20 +425,6 @@ class FlyPoseLabels(PoseLabels):
         else:
             return self._scale
 
-    def get_categories(self, makecopy=True):
-        """
-        get_categories(makecopy=True)
-        Returns the categories from the MABe dataset. Currently not used for anything, may be buggy.
-        Optional parameters:
-        makecopy: whether to return a copy of the data. Default is True.
-        """
-        if self._categories is None:
-            return None
-        if makecopy:
-            return self._categories.copy()
-        else:
-            return self._categories
-
     @property
     def _idx_nextglobal_to_next(self):
         """

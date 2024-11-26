@@ -4,6 +4,7 @@ import collections
 import torch
 import tqdm
 import logging
+from scipy.stats import circmean, circstd
 
 from flyllm.config import (
     posenames, keypointnames, scalenames,
@@ -655,6 +656,23 @@ def compute_movement(
 
     return movement, init
 
+def integrate_global_movement(globalvel,init_pose):
+
+    globalpos0 = init_pose[featglobal]
+
+    xorigin0 = globalpos0[:2]
+    xtheta0 = globalpos0[2]
+
+    thetavel = globalvel[2]
+    xtheta = np.cumsum(np.concatenate((xtheta0, thetavel), axis=0), axis=0)
+
+    xoriginvelrel = globalvel[[1,0]]  # forward=y then sideways=x
+    xoriginvel = rotate_2d_points(xoriginvelrel.T, -xtheta[:-1])
+    xorigin = np.cumsum(np.concatenate((xorigin0, xoriginvel.T), axis=1), axis=1)
+
+    globalpos = np.concatenate((xorigin, xtheta[None,:]), axis=0)
+    return globalpos
+
 
 """Compute sensory features
 """
@@ -1242,8 +1260,9 @@ def sanity_check_tspred(data, compute_feature_params, npad, scale_perfly, contex
 
     return
 
-def compute_noise_params(data, scale_perfly, sig_tracking=.25 / PXPERMM,
-                         simplify_out=None, compute_pose_vel=True):
+def compute_noise_params(data, scale_perfly, sig_tracking=.25 / PXPERMM, delta_kpts=None,
+                         simplify_out=None, compute_pose_vel=True,return_extra=False,
+                         compute_std=True,compute_prctile=50,sample_correlated=True):
     # contextlpad = 2
 
     # # all frames for the main fly must have real data
@@ -1253,11 +1272,27 @@ def compute_noise_params(data, scale_perfly, sig_tracking=.25 / PXPERMM,
 
     # X is nkeypts x 2 x T x nflies
     maxnflies = data['X'].shape[3]
+    nkpts = data['X'].shape[0]
 
-    alld = 0.
+    sample_distribution = delta_kpts is not None
+    if sample_distribution:
+        ndist = delta_kpts.shape[-1]
+
+    else:
+        iscorrelatednoise = np.isscalar(sig_tracking) == False
+        if iscorrelatednoise:
+            assert sig_tracking.shape[0] == nkpts*2
+    
+    if compute_std:
+        alld = 0.
+    else:
+        alld = None
     n = 0
     # loop through ids
     LOG.info('Computing noise parameters...')
+    if return_extra:
+        all_movement = {}
+        all_deltas = {}
     for flynum in tqdm.trange(maxnflies):
         idx0 = data['isdata'][:, flynum] & (data['isstart'][:, flynum] == False)
         # bout starts and ends
@@ -1270,17 +1305,164 @@ def compute_noise_params(data, scale_perfly, sig_tracking=.25 / PXPERMM,
             id = data['ids'][t0, flynum]
             scale = scale_perfly[:, id]
             xkp = data['X'][:, :, t0:t1 + 1, flynum]
+            # np.r_[globalpos[:,:2],relpose[:,:2]] == init
             relpose, globalpos = compute_pose_features(xkp, scale)
-            movement = compute_movement(relpose=relpose, globalpos=globalpos, simplify=simplify_out,
-                                        compute_pose_vel=compute_pose_vel)
-            nu = np.random.normal(scale=sig_tracking, size=xkp.shape)
-            relpose_pert, globalpos_pert = compute_pose_features(xkp + nu, scale)
-            movement_pert = compute_movement(relpose=relpose_pert, globalpos=globalpos_pert, simplify=simplify_out,
+            movement,init = compute_movement(relpose=relpose, globalpos=globalpos, simplify=simplify_out,
                                              compute_pose_vel=compute_pose_vel)
-            alld += np.nansum((movement_pert - movement) ** 2., axis=1)
-            ncurr = np.sum((np.isnan(movement) == False), axis=1)
+            if sample_distribution:
+                if sample_correlated:
+                    sampleidx = np.random.choice(ndist, size=xkp.shape[-1])
+                    nu = delta_kpts[..., sampleidx]
+                else:
+                    # sampleidx will be nkpts x 2 x ncurr
+                    sampleidx = np.random.choice(ndist, size=xkp.shape)
+                    kidx,didx,_ = np.meshgrid(range(nkpts),range(2),range(xkp.shape[-1]),indexing='ij')
+                    nu = delta_kpts[kidx,didx,sampleidx]
+            elif iscorrelatednoise:
+                nu = np.random.multivariate_normal(mean=np.zeros(nkpts*2),cov=sig_tracking,size=xkp.shape[-1])
+                nu = nu.reshape((nkpts,2,xkp.shape[-1]))
+            else:
+                nu = np.random.normal(scale=sig_tracking, size=xkp.shape)
+            relpose_pert, globalpos_pert = compute_pose_features(xkp + nu, scale)
+            movement_pert,init = compute_movement(relpose=relpose_pert, globalpos=globalpos_pert, simplify=simplify_out,
+                                                  compute_pose_vel=compute_pose_vel)            
+            delta = movement_pert - movement
+            if compute_std:
+                ncurr = np.sum((np.isnan(movement) == False), axis=1)
+                alld += np.nansum(delta ** 2., axis=1)
+            else:
+                ncurr = delta.shape[1]
+                if alld is None:
+                    # this won't work if there are nans in the middle of movement
+                    alld = np.zeros((delta.shape[0],np.count_nonzero(data['isdata'] & (data['isstart'] == False))))
+                    alld[:] = np.nan
+                alld[:,n:n+ncurr] = np.abs(delta[...,0])
             n += ncurr
+                
+            
+            if return_extra:
+                all_movement[(flynum,t0)] = movement
+                # note that this is redundant with alld if compute_std == False
+                all_deltas[(flynum,t0)] = delta
 
-    epsilon = np.sqrt(alld / n)
+    if compute_std:
+        epsilon = np.sqrt(alld / n)
+    else:
+        epsilon = np.nanpercentile(alld[:,:n],compute_prctile,axis=1)
+        
+    epsilon = epsilon.flatten()
 
-    return epsilon.flatten()
+    if return_extra:
+        return epsilon, all_movement, all_deltas
+    else:
+        return epsilon
+
+def compute_pose_distribution_stats(data,scales_perfly,prctiles=[0,1,2,5]):
+    
+    X = data['X'].reshape((data['X'].shape[0],data['X'].shape[1],-1))
+    ids = data['ids'].flatten()
+    isdata = data['isdata'].flatten() & (ids >= 0)
+    X = X[:,:,isdata]
+    ids = ids[isdata]
+    unique_ids = np.unique(ids)
+    N = X.shape[-1]
+    print(f'N = {N}')
+    relposes = None
+    off = 0
+    for id in tqdm.tqdm(unique_ids):
+        idxcurr = ids == id
+        xcurr = X[:,:,idxcurr]
+        relpose,_ = compute_pose_features(xcurr,scales_perfly[:,id])
+        if relposes is None:
+            d = relpose.shape[0]
+            relposes = np.zeros((d,N),dtype=relpose.dtype)
+            relposes[:] = np.nan
+        ncurr = relpose.shape[1]
+        relposes[:,off:off+ncurr] = relpose[:,:,0]
+        off += ncurr
+
+    relfeatangle = featangle[featrelative]
+
+    prctiles = np.atleast_1d(prctiles)
+    low_prctiles = prctiles
+    high_prctiles = 100-prctiles[::-1]
+    
+    poseangles = relposes[relfeatangle,:]
+    meanangles = circmean(poseangles,axis=1,nan_policy='omit')
+    stdangles = circstd(poseangles,axis=1,nan_policy='omit')
+    meanangles = modrange(meanangles,-np.pi,np.pi)
+    dmeanangles = modrange(poseangles-meanangles[:,None],-np.pi,np.pi)
+    prctiles_angle = np.nanpercentile(dmeanangles,np.r_[low_prctiles,high_prctiles],axis=1)
+    prctiles_angle = modrange(prctiles_angle+meanangles[None,:],-np.pi,np.pi)
+
+    meanrest = np.nanmean(relposes[relfeatangle==False,:],axis=1)
+    stdrest = np.nanstd(relposes[relfeatangle==False,:],axis=1)
+    prctiles_rest = np.nanpercentile(relposes[relfeatangle==False,:],np.r_[low_prctiles,high_prctiles],axis=1)
+
+    meanrelpose = np.zeros((nrelative,))
+    meanrelpose[relfeatangle] = meanangles
+    meanrelpose[relfeatangle==False] = meanrest
+    stdrelpose = np.zeros((nrelative,))
+    stdrelpose[relfeatangle] = stdangles
+    stdrelpose[relfeatangle==False] = stdrest
+    prctiles_relpose = np.zeros((len(prctiles)*2,nrelative))
+    prctiles_relpose[:,relfeatangle] = prctiles_angle
+    prctiles_relpose[:,relfeatangle==False] = prctiles_rest
+    low_prctiles_relpose = prctiles_relpose[:len(prctiles)]
+    high_prctiles_relpose = prctiles_relpose[len(prctiles):]
+
+    return {'meanrelpose': meanrelpose,
+            'stdrelpose':stdrelpose,
+            'low_prctiles_relpose':low_prctiles_relpose,
+            'high_prctiles_relpose':high_prctiles_relpose,
+            'prctiles': prctiles,
+            }
+def regularize_pose(pose,posestats,dampenconstant=0,prctilelim=None):
+    """
+    Average the input pose with posestats['meanrelpose']. Threshold at prctilelim. 
+    Inputs:
+    pose: ... x nfeatures
+    posestats: dict with the following keys:
+        meanrelpose: Mean pose, shape: nrelative
+        stdrelpose: Std pose, shape: nrelative
+        low_prctiles_relpose: Percentiles of the pose, shape: nprctiles x nrelative
+        high_prctiles_relpose: Percentiles of the pose, shape: nprctiles x nrelative
+        prctiles: percentiles computed, shape: nprctiles
+    dampenconstant: 0 to 1, 0 means no dampening, 1 means full dampening
+    prctilelim: None or a percentile to limit the pose to. this must be in posestats['prctiles']
+    """
+    relpose = pose[...,featrelative]
+    newrelpose = relpose.copy()
+    relfeatangle = featangle[featrelative]
+
+    # relpose*(1-dampenconstant) + meanrelpose*dampenconstant
+    if dampenconstant > 0:
+        # be careful with angles -- put the mean in the same range as relpose
+        dangle = modrange(posestats['meanrelpose'][relfeatangle] - relpose[...,relfeatangle],-np.pi,np.pi)
+        meanangle = relpose[...,relfeatangle] + dangle
+        newrelpose[...,relfeatangle] = relpose[...,relfeatangle]*(1-dampenconstant) + meanangle*dampenconstant
+        newrelpose[...,relfeatangle==False] = relpose[...,relfeatangle==False]*(1-dampenconstant) + \
+            posestats['meanrelpose'][relfeatangle==False]*dampenconstant
+    
+    if prctilelim is not None:
+        prcti = np.nonzero(posestats['prctiles'] == prctilelim)[0]
+        assert len(prcti) == 1
+        prcti = prcti[0]
+        lowb = posestats['low_prctiles_relpose'][prcti,:]
+        upb = posestats['high_prctiles_relpose'][prcti,:]
+
+        # be careful with angles -- put bounds in the same range as newrelpose
+        # do this by putting the average of the bounds as close as possible to the newrelpose
+        bangle = (lowb[relfeatangle]+upb[relfeatangle])/2
+        widthangle = upb[relfeatangle]-lowb[relfeatangle]
+        assert np.all(widthangle <= 2*np.pi)
+        bangle = newrelpose[...,relfeatangle] + modrange(bangle - newrelpose[...,relfeatangle],-np.pi,np.pi)
+        lowbangle = bangle - widthangle/2
+        upbangle = bangle + widthangle/2
+        newrelpose[...,relfeatangle] = np.minimum(np.maximum(newrelpose[...,relfeatangle],lowbangle),upbangle)
+        
+        newrelpose[...,relfeatangle==False] = np.minimum(np.maximum(newrelpose[...,relfeatangle==False],
+                                                                    lowb[relfeatangle==False]),upb[relfeatangle==False])
+    newpose = np.zeros(relpose.shape+(nfeatures,))
+    newpose[...,featrelative] = newrelpose
+    return newpose

@@ -90,7 +90,7 @@ LOG.info('matplotlib backend: ' + mpl_backend)
 restartmodelfile = None
 #restartmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flymulttimeglob_predposition_20240305_epoch130_20240825T122647.pth'
 
-configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predpos_20241023.json'
+configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241125.json'
 assert os.path.exists(configfile), f'config file {configfile} does not exist'
 
 # set to None if you want to use the full data
@@ -367,6 +367,7 @@ elif config['modeltype'] == 'clm':
 else:
     raise
 
+# DO THIS
 # sanity check on temporal dependences
 sanity_check_temporal_dep(train_dataloader, device, train_src_mask, is_causal, model, tmess=300)
 
@@ -382,6 +383,8 @@ else:
     epoch = 0
     # initialize structure to keep track of loss
     loss_epoch = initialize_loss(train_dataset, config)
+
+# DO THIS
 last_val_loss = None
 
 savetime = datetime.datetime.now()

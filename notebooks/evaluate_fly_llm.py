@@ -30,12 +30,13 @@ import os
 from matplotlib import animation
 import pickle
 
-from apf.utils import get_dct_matrix, compute_npad
-from apf.data import process_test_data, interval_all, debug_less_data
+from flyllm.prepare import init_flyllm
+from apf.utils import get_dct_matrix, compute_npad, save_animation
+from apf.data import process_test_data, interval_all, debug_less_data, chunk_data
 from apf.io import read_config, get_modeltype_str, load_and_filter_data, save_model, load_model, parse_modelfile, load_config_from_model_file
 from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames, keypointnames
-from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx, compute_scale_perfly
-from flyllm.dataset import FlyTestDataset
+from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx, compute_scale_perfly, compute_pose_distribution_stats
+from flyllm.dataset import FlyTestDataset, FlyMLMDataset
 from flyllm.pose import FlyExample, FlyPoseLabels, FlyObservationInputs
 from flyllm.plotting import (
     initialize_debug_plots, 
@@ -79,8 +80,10 @@ LOG.info('matplotlib backend: ' + mpl_backend)
 # %%
 # configuration parameters for this model
 
-loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredvel_20241022_epoch200_20241023T140356.pth'
-configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241022.json'
+#loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredvel_20241022_epoch200_20241023T140356.pth'
+#configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241022.json'
+loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredvel_20241125_epoch200_20241125T191735.pth'
+configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241125.json'
 outfigdir = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/figs'
 
 # loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredpos_20241023_epoch200_20241028T165510.pth'
@@ -90,31 +93,34 @@ outfigdir = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForec
 #quickdebugdatafile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/tmp_small_usertrainval.pkl'
 quickdebugdatafile = None
 
-# whether to create training data
-needtraindata = False
+needtraindata = True
+needvaldata = True
+traindataprocess = 'test'
+valdataprocess = 'test'
 
-#configfile = "/groups/branson/home/eyjolfsdottire/code/MABe2022/config_fly_llm_multitimeglob_discrete_20230907.json"
-config = read_config(configfile,
-                     default_configfile=DEFAULTCONFIGFILE,
-                     get_sensory_feature_idx=get_sensory_feature_idx,
-                     featglobal=featglobal,
-                     posenames=posenames)
+res = init_flyllm(configfile=configfile,mode='test',loadmodelfile=loadmodelfile,
+                  quickdebugdatafile=quickdebugdatafile,needtraindata=needtraindata,needvaldata=needvaldata,
+                  traindataprocess=traindataprocess,valdataprocess=valdataprocess)
 
-# set loadmodelfile from config if not specified
-if loadmodelfile is None and 'loadmodelfile' in config:
-    loadmodelfile = config['loadmodelfile']
-
-load_config_from_model_file(loadmodelfile=loadmodelfile,config=config)
-assert 'dataset_params' in config, 'dataset_params not in config'
-
-# seed the random number generators
-np.random.seed(config['numpy_seed'])
-torch.manual_seed(config['torch_seed'])
-
-# set device (cuda/cpu)
-device = torch.device(config['device'])
-if device.type == 'cuda':
-    assert torch.cuda.is_available(), 'CUDA is not available'
+# unpack res
+config = res['config']
+device = res['device']
+data = res['data']
+scale_perfly = res['scale_perfly']
+valdata = res['valdata']
+val_scale_perfly = res['val_scale_perfly']
+X = res['X']
+valX = res['valX']
+train_dataset = res['train_dataset']
+train_dataloader = res['train_dataloader']
+val_dataset = res['val_dataset']
+val_dataloader = res['val_dataloader']
+dataset_params = res['dataset_params']
+model = res['model']
+criterion = res['criterion']
+opt_model = res['opt_model']
+train_src_mask = res['train_src_mask']
+is_causal = res['is_causal']
 
 pred_nframes_skip = 20
 
@@ -122,182 +128,23 @@ pred_nframes_skip = 20
 # remove extension from loadmodelfile
 savepredfile = loadmodelfile.split('.')[0] + f'_all_pred_skip_{pred_nframes_skip}.npz'
 
-# %% [markdown]
-# ### Load data
+# where to save pose statistics
+posestatsfile = loadmodelfile.split('.')[0] + '_posestats.npz'
 
 # %%
-# load raw data
-if quickdebugdatafile is None:
-    if needtraindata:
-        data, scale_perfly = load_and_filter_data(config['intrainfile'], config, compute_scale_perfly,
-                                                keypointnames=keypointnames)
-        print(f"training data X shape: {data['X'].shape}")
-    valdata, val_scale_perfly = load_and_filter_data(config['invalfile'], config, compute_scale_perfly,
-                                                     keypointnames=keypointnames)
-    print(f"val data X shape: {valdata['X'].shape}")
-    #LOG.warning('DEBUGGING!!!')
-    #debug_less_data(data, 10000000)
-    #debug_less_data(valdata, 10000)
-else:
-    print("Loading data from quick debug data file ", quickdebugdatafile)
-    with open(quickdebugdatafile,'rb') as f:
-        tmp = pickle.load(f)
-        data = tmp['data']
-        scale_perfly = tmp['scale_perfly']
-        valdata = tmp['valdata']
-        val_scale_perfly = tmp['val_scale_perfly']
+# load/compute pose statistics
+if posestatsfile is not None:
+    if os.path.exists(posestatsfile):
+        print("Loading pose stats from ", posestatsfile)
+        posestats = np.load(posestatsfile)
 
-# %% [markdown]
-# ### Compute features
-# Compute the pose representation and chunk data into sequences for training
-
-# %%
-# process data
-
-# if using discrete cosine transform, create dct matrix
-# this didn't seem to work well, so probably won't use in the future
-if config['dct_tau'] is not None and config['dct_tau'] > 0:
-    dct_m, idct_m = get_dct_matrix(config['dct_tau'])
-    # this gives the maximum of 
-    #   a) max number of frames to lookahead or 
-    #   b) dct_tau (number of timepoints for cosine transform)
-else:
-    dct_m = None
-    idct_m = None
-
-# how much to pad outputs by -- depends on how many frames into the future we will predict
-npad = compute_npad(config['tspred_global'], dct_m)
-chunk_data_params = {'npad': npad, 'minnframes': config['contextl']+1}
-
-compute_feature_params = {
-    "simplify_out": config['simplify_out'],
-    "simplify_in": config['simplify_in'],
-    "dct_m": dct_m,
-    "tspred_global": config['tspred_global'],
-    "compute_pose_vel": config['compute_pose_vel'],
-    "discreteidx": config['discreteidx'],
-}
-
-# function for computing features
-reparamfun = lambda x, id, flynum, **kwargs: compute_features(
-    x, id, flynum, scale_perfly, outtype=np.float32, **compute_feature_params, **kwargs)
-
-val_reparamfun = lambda x, id, flynum, **kwargs: compute_features(
-    x, id, flynum, val_scale_perfly, outtype=np.float32, **compute_feature_params, **kwargs)
-
-# process the data
-
-if needtraindata:
-    LOG.info('Processing training data...')
-    X = process_test_data(data, reparamfun, **chunk_data_params)
-    LOG.info(f'{len(X)} training ids, total of {sum([len(x) for x in X])} time points')
-LOG.info('Processing val data...')
-valX = process_test_data(valdata, val_reparamfun, **chunk_data_params)
-LOG.info(f'{len(valX)} val ids, total of {sum([len(x) for x in valX])} time points')
-
-# %% [markdown]
-# ### Create Dataset, DataLoader objects
-
-# %%
-dataset_params = {
-    'max_mask_length': config['max_mask_length'],
-    'pmask': config['pmask'],
-    'masktype': config['masktype'],
-    'simplify_out': config['simplify_out'],
-    'pdropout_past': config['pdropout_past'],
-    'input_labels': config['input_labels'],
-    'dozscore': True,
-    'discreteidx': config['discreteidx'],
-    'discretize_nbins': config['discretize_nbins'],
-    'discretize_epsilon': config['discretize_epsilon'],
-    'flatten_labels': config['flatten_labels'],
-    'flatten_obs_idx': config['flatten_obs_idx'],
-    'flatten_do_separate_inputs': config['flatten_do_separate_inputs'],
-    'p_add_input_noise': config['p_add_input_noise'],
-    'dct_ms': (dct_m,idct_m),
-    'tspred_global': config['tspred_global'],
-    'discrete_tspred': config['discrete_tspred'],
-    'compute_pose_vel': config['compute_pose_vel'],
-    
-}
-# zscore and discretize parameters
-for k in config['dataset_params']:
-    dataset_params[k] = config['dataset_params'][k]
-
-if needtraindata:
-    LOG.info('Creating training data set...')
-    train_dataset = FlyTestDataset(X,config['contextl'],**dataset_params)
-    LOG.info(f'Train dataset size: {len(train_dataset)}')
-
-    train_dataloader = torch.utils.data.DataLoader(train_dataset,
-                                                    batch_size=config['test_batch_size'],
-                                                    shuffle=True,
-                                                    pin_memory=True,
-                                                    )
-    ntrain_batches = len(train_dataloader)
-    LOG.info(f'Number of training batches: {ntrain_batches}')
-
-LOG.info('Creating validation data set...')
-val_dataset = FlyTestDataset(valX,config['contextl'],**dataset_params)
-print(f'Validation dataset size: {len(val_dataset)}')
-    
-val_dataloader = torch.utils.data.DataLoader(val_dataset,
-                                              batch_size=config['test_batch_size'],
-                                              shuffle=False,
-                                              pin_memory=True,
-                                              )
-nval_batches = len(val_dataloader)
-LOG.info(f'Number of validation batches: {nval_batches}')
-example = next(iter(val_dataloader))
-LOG.info(f'batch keys: {example.keys()}')
-sz = example['input'].shape
-LOG.info(f'batch input shape = {sz}')
-
-# %%
-# check that sizes of everything make sense
-ntimepoints_valdata = np.count_nonzero(np.any(np.isnan(valdata['X'])==False,axis=(0,1)))
-print(f'ntimepoints_valdata = {ntimepoints_valdata}')
-ntimepoints_valX = np.sum([x['input'].shape[0] for x in valX])
-print(f'ntimepoints_valX = {ntimepoints_valX}')
-nexamples_val = len(val_dataset)
-print(f'nexamples_val = {nexamples_val}')
-nbatches_val = len(val_dataloader)
-print(f'nbatches_val = {nbatches_val}, batch size = {config["test_batch_size"]}, total examples = {nbatches_val*config["test_batch_size"]}')
-
-if needtraindata:
-    ntimepoints_traindata = np.count_nonzero(np.any(np.isnan(data['X'])==False,axis=(0,1)))
-    print(f'ntimepoints_traindata = {ntimepoints_traindata}')
-    ntimepoints_trainX = np.sum([x['input'].shape[0] for x in X])
-    print(f'ntimepoints_trainX = {ntimepoints_trainX}')
-    nexamples_train = len(train_dataset)
-    print(f'nexamples_train = {nexamples_train}')
-    nbatches_train = len(train_dataloader)
-    print(f'nbatches_train = {nbatches_train}, batch size = {config["test_batch_size"]}, total examples = {nbatches_train*config["test_batch_size"]}')
-
-# %% [markdown]
-# ### Load the model
-
-# %%
-# create the model
-model, criterion = initialize_model(config, val_dataset, device)
-
-# load the model
-modeltype_str, savetime = parse_modelfile(loadmodelfile)
-loss_epoch = load_model(loadmodelfile, model, device)
-
-# create attention mask
-contextl = example['input'].shape[1]
-if config['modeltype'] == 'mlm':
-    train_src_mask = generate_square_full_mask(contextl).to(device)
-    is_causal = False
-elif config['modeltype'] == 'clm':
-    train_src_mask = torch.nn.Transformer.generate_square_subsequent_mask(contextl, device=device)
-    is_causal = True
-    #train_src_mask = generate_square_subsequent_mask(contextl).to(device)
-else:
-    raise ValueError(f'Unknown modeltype: {config["modeltype"]}')
-
-opt_model = torch.compile(model)
+    else:
+        # check if variable data exists
+        if needtraindata == False:
+            data, scale_perfly = load_and_filter_data(config['intrainfile'], config, compute_scale_perfly,
+                                                    keypointnames=keypointnames)
+        posestats = compute_pose_distribution_stats(data,scale_perfly)
+        np.savez(posestatsfile, **posestats)
 
 # %%
 # profile stuff 
@@ -307,8 +154,8 @@ import pstats
 
 from flyllm.prediction import predict_all
 
-doprofile = True
-dodebug = False
+doprofile = False
+dodebug = True
 from flyllm.dataset import FlyTestDataset
 val_dataset.clear_cuda_cache()
 val_dataset.ncudacaches = 0
@@ -341,7 +188,7 @@ if doprofile:
     t1 = datetime.datetime.now()
     print('Elapsed time: ', t1-t0)
     print('ncudacaches = ', val_dataset.ncudacaches)
-     
+
     p = pstats.Stats('profile_test.out')
     print('sorted by time')
     stats = p.sort_stats(pstats.SortKey.TIME)
@@ -355,120 +202,7 @@ if (not doprofile) and dodebug:
     profile_predict_all()
 
 # %%
-# try making context length longer and masking out earlier frames
-print(train_src_mask.cpu().numpy()[:5,:5])
-tri1 = np.tri(2*config['contextl']-1,k=0)
-tri2 = np.tri(2*config['contextl']-1,k=-config['contextl'])
-tri = np.log(tri1-tri2)
-test_mask = torch.from_numpy(tri).to(device,dtype=torch.float32)
-print(tri[:5,:5])
-fig,ax = plt.subplots(1,2)
-ax[0].imshow(train_src_mask.cpu().numpy())
-ax[0].set_title('train_src_mask')
-ax[1].imshow(tri)
-ax[1].set_title('test_mask')
-quadtri1 = np.tri(4*config['contextl']-1,k=0)
-quadtri2 = np.tri(4*config['contextl']-1,k=-config['contextl'])
-quadtri = np.log(quadtri1-quadtri2)
-quad_test_mask = torch.from_numpy(quadtri).to(device,dtype=torch.float32)
-quad_test_mask1 = torch.from_numpy(np.log(quadtri1)).to(device,dtype=torch.float32)
-
-val_dataset_small = FlyTestDataset(valX[1:2],config['contextl'],**dataset_params,need_metadata=True)
-val_dataloader = torch.utils.data.DataLoader(val_dataset_small,
-                                              batch_size=256,
-                                              shuffle=False,
-                                              pin_memory=True
-                                              )
-double_val_dataset_small = FlyTestDataset(valX[1:2],2*config['contextl'],**dataset_params)
-double_val_dataloader = torch.utils.data.DataLoader(double_val_dataset_small,
-                                                    batch_size=1,
-                                                    shuffle=False,
-                                                    pin_memory=True)
-quadruple_val_dataset_small = FlyTestDataset(valX[1:2],4*config['contextl'],**dataset_params)
-quadruple_val_dataloader = torch.utils.data.DataLoader(quadruple_val_dataset_small,
-                                                       batch_size=1,
-                                                       shuffle=False,
-                                                       pin_memory=True)
-example = next(iter(val_dataloader))
-double_example = next(iter(double_val_dataloader))
-quadruple_example = next(iter(quadruple_val_dataloader))
-
-with torch.no_grad():
-    out = model(example['input'].to(device=device),train_src_mask)
-    doubleout = model(double_example['input'].to(device=device),test_mask)
-    quadrupleout = model(quadruple_example['input'].to(device=device),quad_test_mask)
-
-for k in out:
-    out[k] = out[k].cpu().numpy()
-    doubleout[k] = doubleout[k].cpu().numpy()
-    quadrupleout[k] = quadrupleout[k].cpu().numpy()
-
-print(f"error in first 511 frames: {np.max(np.abs(doubleout['continuous'][0,:config['contextl']-1]-out['continuous'][0]))}")
-fig,ax = plt.subplots(1,2,figsize=(10,5))
-err = np.zeros(out['continuous'].shape[0])
-for i in range(out['continuous'].shape[0]):
-    err[i] = np.abs(out['continuous'][i,-1,:]-doubleout['continuous'][0,config['contextl']-2+i,:]).max()
-ax[0].plot(err)
-ax[0].set_title('double error')
-quaderr = np.abs(quadrupleout['continuous'][0,:2*config['contextl']-1]-doubleout['continuous'][0]).max(axis=-1)
-ax[1].plot(quaderr)
-ax[1].set_title(f'quadruple error')
-
-# %%
-# mess up some inputs and see how far the error affects things
-
-idxmess = range(50,55)
-double_example_nan = {}
-for k,v in double_example.items():
-    double_example_nan[k] = v.clone()
-double_example_nan['input'][:,idxmess,:] = (torch.rand_like(double_example_nan['input'][:,idxmess,:])-.5)*9999999
-with torch.no_grad():
-    doubleoutnan = model(double_example_nan['input'].to(device=device),test_mask)
-for k in doubleoutnan:
-    doubleoutnan[k] = doubleoutnan[k].cpu().numpy()
-    
-quadruple_example_nan = {}
-for k,v in quadruple_example.items():
-    quadruple_example_nan[k] = v.clone()
-quadruple_example_nan['input'][:,idxmess,:] = (torch.rand_like(quadruple_example_nan['input'][:,idxmess,:])-.5)*9999999
-with torch.no_grad():
-    quadrupleoutnan = model(quadruple_example_nan['input'].to(device=device),quad_test_mask)
-    quadrupleout1 = model(quadruple_example['input'].to(device=device),quad_test_mask1)
-    quadrupleoutnan1 = model(quadruple_example_nan['input'].to(device=device),quad_test_mask1)
-for k in quadrupleoutnan:
-    quadrupleoutnan[k] = quadrupleoutnan[k].cpu().numpy()
-    quadrupleout1[k] = quadrupleout1[k].cpu().numpy()
-    quadrupleoutnan1[k] = quadrupleoutnan1[k].cpu().numpy()
-
-np.count_nonzero(np.isnan(doubleoutnan['continuous'][0,:,0]))
-fig,ax = plt.subplots(3,3,figsize=(20,10),sharex=True)
-ax[0,0].plot(doubleout['continuous'][0,:,:])  
-ax[0,0].set_title('doubleout')
-ax[0,1].plot(doubleoutnan['continuous'][0,:,:])
-ax[0,1].set_title('doubleoutnan')
-err = np.mean(np.abs(doubleoutnan['continuous'][0,:,:]-doubleout['continuous'][0,:,:]),axis=1)
-ax[0,2].plot(err)
-ax[0,2].set_title('error')
-
-ax[1,0].plot(quadrupleout['continuous'][0,:,:])
-ax[1,0].set_title('quadrupleout')
-ax[1,1].plot(quadrupleoutnan['continuous'][0,:,:])
-ax[1,1].set_title('quadrupleoutnan')
-err = np.mean(np.abs(quadrupleoutnan['continuous'][0,:,:]-quadrupleout['continuous'][0,:,:]),axis=1)
-ax[1,2].plot(err)
-ax[1,2].set_title('error')
-
-ax[2,0].plot(quadrupleout1['continuous'][0,:,:])
-ax[2,0].set_title('quadrupleout1')
-ax[2,1].plot(quadrupleoutnan1['continuous'][0,:,:])
-ax[2,1].set_title('quadrupleoutnan1')
-err = np.mean(np.abs(quadrupleoutnan1['continuous'][0,:,:]-quadrupleout1['continuous'][0,:,:]),axis=1)
-ax[2,2].plot(err)
-ax[2,2].set_title('error')
-
-
-
-# %%
+# clean up 
 import gc
 torch.cuda.empty_cache()
 gc.collect()
@@ -496,11 +230,6 @@ if (not debugcheat) and (savepredfile is not None):
     np.savez(savepredfile,all_pred=all_pred,labelidx=labelidx)
 
 # %%
-pred_data,true_data = val_dataset.create_data_from_pred(all_pred,labelidx)
-
-# %%
-
-# %%
 
 # load all_pred and labelidx from savepredfile
 if savepredfile is not None and os.path.exists(savepredfile):
@@ -517,7 +246,7 @@ pred_data,true_data = val_dataset.create_data_from_pred(all_pred, labelidx)
 
 # compute error in various ways
 err_example = []
-for pred_example,true_example in zip(pred_data,true_data):
+for pred_example,true_example in tqdm.tqdm(zip(pred_data,true_data),total=len(pred_data)):
     errcurr = true_example.labels.compute_error(pred_example.labels)
     err_example.append(errcurr)
 
@@ -533,15 +262,45 @@ for k,v in err_total.items():
 # plot multi errors
 from flyllm.plotting import plot_multi_pred_vs_true
 
-i = 0
-pred_example = pred_data[i]
-true_example = true_data[i]
-tsplot = np.arange(8775,8925)
+featsplot=[0,1,2,14, 16, 20, 22, 24, 26]
+toplots = [{'i': 0, 'tsplot': np.arange(8500,8800)}, {'i': 89, 'tsplot': np.arange(32400,32700)}, ]
+nsamples = 2
+ylim_nstd = 5
 
-fig = plot_multi_pred_vs_true(pred_example,true_example,ylim_nstd=5,nsamples=100,tsplot=tsplot)
+for toplot in toplots:
+    i = toplot['i']
+    tsplot = toplot['tsplot']
+    pred_example = pred_data[i]
+    true_example = true_data[i]
+    id = true_example.metadata['id']
 
-# save this figure as a pdf
-#fig.savefig(os.path.join(outfigdir,f'multi_pred_vs_true_{config["model_nickname"]}_{tsplot[0]}_to_{tsplot[-1]}.pdf'))
+    fig = plot_multi_pred_vs_true(pred_example,true_example,ylim_nstd=ylim_nstd,nsamples=nsamples,tsplot=tsplot)
+
+    # save this figure as a pdf
+    fig.savefig(os.path.join(outfigdir,f'multi_pred_vs_true_{config["model_nickname"]}_fly{id}_{tsplot[0]}_to_{tsplot[-1]}.pdf'))
+
+# %%
+i = toplots[1]['i']
+tsplot = toplots[1]['tsplot']
+plt.imshow(pred_data[i].labels.labels_raw['discrete'][tsplot,2,:].T,aspect='auto')
+j = np.argmax(np.sum(pred_data[i].labels.labels_raw['discrete'][tsplot,2,:],axis=0))
+print(np.diff(dataset_params['discretize_params']['bin_edges'][2][j:j+2]))
+print(dataset_params['discretize_epsilon'][2])
+
+# %%
+plt.plot(dataset_params['discretize_params']['bin_edges'][2],'.')
+np.diff(dataset_params['discretize_params']['bin_edges'][2])
+
+
+# %%
+import re
+
+names = true_example.labels.get_multi_names()
+# get indices of names that have 'leg_tip_angle' in the name using regular expressions
+idx = [i for i, name in enumerate(names) if re.search('leg_tip_angle', name)]
+for i in idx:
+    print(f'{i}: {names[i]}')
+print(idx)
 
 # %%
 
@@ -670,7 +429,7 @@ print('Finished writing.')
 animate_pose_params = {'figsizebase': 8,'ms': 4, 'focus_ms':8, 'lw': .75, 'focus_lw': 2}
 
 # choose data to initialive behavior modeling
-tpred = np.minimum(1000 + config['contextl'], valdata['isdata'].shape[0] // 2)
+tpred = np.minimum(4000 + config['contextl'], valdata['isdata'].shape[0] // 2)
 
 # all frames must have real data
 burnin = config['contextl'] - 1

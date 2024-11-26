@@ -4,6 +4,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 import tqdm
 import torch
+import h5py
+import scipy.io
 
 def modrange(x, l, u):
     return np.mod(x - l, u - l) + l
@@ -378,3 +380,99 @@ def save_animation(ani, filename, writer=None, codec='h264', bitrate=None, fps=3
 def get_cuda_device():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     return device
+
+def matstruct_to_dict(mat):
+    """
+    d = matstruct_to_dict(mat)
+    Convert Matlab struct read with scipy.io.loadmat to a dict
+    """
+    d = {}
+    for k in mat.dtype.names:
+        if mat[k].size == 1:
+            d[k] = mat[k].flatten()[0]
+        else:
+            d[k] = mat[k]
+    return d
+
+def matdict_to_dict(matdict):
+    """
+    d = matdict_to_dict(matdict)
+    Convert the output from scipy.io.loadmat to a dict
+    """
+    d = {}
+    for k,v in matdict.items():
+        if isinstance(v,np.ndarray):
+            if v.dtype.names is None:
+                d[k] = v
+            else:
+                if v.size == 1:
+                    d[k] = matstruct_to_dict(v)
+                else:
+                    d[k] = []
+                    v = v.flatten()
+                    for i in range(len(v)):
+                        d[k].append(matstruct_to_dict(v[i]))
+        else:
+            d[k] = v
+    return d
+
+
+def hdf5_to_py(A, h5file):
+    if isinstance(A, h5py._hl.dataset.Dataset):
+        if 'Python.Type' in A.attrs and A.attrs['Python.Type'] == b'str':
+            out = u''.join([chr(int(t)) for t in A])
+        elif 'Python.Type' in A.attrs and A.attrs['Python.Type'] in [b'list', b'tuple']:
+            if 'Python.Empty' in A.attrs and A.attrs['Python.Empty'] == 1:
+                out = []
+            else:
+                out = [hdf5_to_py(t, h5file) for t in A[()].flatten().tolist()]
+        elif 'Python.Type' in A.attrs and A.attrs['Python.Type'] == b'bool':
+            out = bool(A[()])
+        elif 'Python.Type' in A.attrs and A.attrs['Python.Type'] == b'int':
+            out = int(A[()])
+        elif 'Python.Type' in A.attrs and A.attrs['Python.Type'] == b'float':
+            out = float(A[()])
+        elif 'Python.numpy.Container' in A.attrs and A.attrs['Python.numpy.Container'] == b'scalar' and A.attrs['Python.Type'] == b'numpy.float64':
+            out = np.array(A[()].flatten())
+        elif 'Python.Type' in A.attrs and A.attrs['Python.Type'] == b'numpy.ndarray' and 'Python.Empty' in A.attrs and A.attrs['Python.Empty'] == 1:
+            out = np.zeros(0)
+        else:
+            out = A[()].T
+    elif isinstance(A,h5py._hl.group.Group):
+        out = {}
+        for key, val in A.items():
+            out[key] = hdf5_to_py(val, h5file)
+    elif isinstance(A,h5py.h5r.Reference):
+        out = hdf5_to_py(h5file[A],h5file)
+    elif isinstance(A,np.ndarray) and A.dtype=='O':
+        out = np.array([hdf5_to_py(x,h5file) for x in A])
+    else:
+        out = A
+    return out
+
+
+def read_matfile(mat_file):
+    """
+    data = read_matfile(mat_file)
+    Read mat_file either using scipy.io.loadmat for old-style mat files, h5py if hdf5 files
+    """
+    try:
+        data = scipy.io.loadmat(mat_file)
+        data = matdict_to_dict(data)
+    except NotImplementedError:
+        data = h5py.File(mat_file, 'r')
+        data = hdf5_to_py(data,data)
+    return data
+
+def compute_ylim(h,margin=0.1):
+    """
+    Compute ylim for a lines
+    """
+    ylim = [np.inf,-np.inf]
+    for line in h:
+        ylim[0] = np.minimum(ylim[0],np.nanmin(line.get_ydata()))
+        ylim[1] = np.maximum(ylim[1],np.nanmax(line.get_ydata()))
+    dy = ylim[1]-ylim[0]
+    ylim[0] -= margin*dy
+    ylim[1] += margin*dy
+    return ylim

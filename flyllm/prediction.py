@@ -10,6 +10,7 @@ from apf.models import (
 from flyllm.pose import FlyExample
 from contextlib import nullcontext
 import datetime
+from flyllm.features import regularize_pose
 
 def predict_all(dataloader=None, dataset=None, model=None, config=None, mask=None, keepall=True, earlystop=None, debugcheat=False,
                 savepredfile=None,saveinterval=600,nkeep=None,batchsize=None,shuffle=False,skipinterval=None):
@@ -285,12 +286,12 @@ def predict_all(dataloader=None, dataset=None, model=None, config=None, mask=Non
 
 
 def predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model, dataset, maxcontextl=np.inf, debug=False,
-                               need_weights=False, nsamples=0, labels_true=None):
+                      need_weights=False, nsamples=0, labels_true=None, posestats=None, dampenconstant=0):
 
     """
     predict_iterative(examples_pred,fliespred,scales,Xkp_fill,burnin,model,dataset,
-                               maxcontextl=np.inf,debug=False,need_weights=False,nsamples=0,
-                               labels_true=None)
+                      maxcontextl=np.inf,debug=False,need_weights=False,nsamples=0,
+                      labels_true=None)
 
     Args:
         examples_pred: list of FlyExample objects to be predicted in open loop. labels can be nan 
@@ -448,10 +449,18 @@ def predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model,
                 pred = pred_apply_fun(pred, lambda x: x[:, [-1,], ...].cpu().numpy() if type(x) is torch.Tensor else x)
                 
             # set the label for frame t, but not the inputs yet
-            examples_pred[i].labels.set_prediction(pred,ts=t)                
-            
-            # store keypoints predicted for this frame
+            examples_pred[i].labels.set_prediction(pred,ts=t)
+
+            if (posestats is not None) and (dampenconstant > 0):
+                pose = examples_pred[i].labels.get_next_pose(ts=[t,],init_pose=pose_prev[i])
+                newpose = regularize_pose(pose,posestats,dampenconstant)
+                examples_pred[i].labels.set_next_pose(newpose,ts=[t,])
+
+            # get pose/keypoints for predicted frame
             Xkpcurr = examples_pred[i].labels.get_next_keypoints(ts=[t,],init_pose=pose_prev[i])
+
+
+            # store keypoints predicted for this frame            
             Xkp_fill[...,:,:,t+1,fly] = Xkpcurr[...,-1,:,:]
 
 

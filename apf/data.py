@@ -88,7 +88,6 @@ def chunk_data(data, contextl, reparamfun, npad=1):
             nframestotal += contextl
 
     LOG.info(f'In total {nframestotal} frames of data after chunking')
-
     return X
 
 def process_test_data(data,reparamfun,npad=1,minnframes=None):
@@ -102,7 +101,7 @@ def process_test_data(data,reparamfun,npad=1,minnframes=None):
     X = []
     nids = np.max(data['ids'])
     for id in tqdm.trange(nids):
-        idxcurr = data['ids'] == id
+        idxcurr = (data['ids'] == id) & data['isdata']
         if np.count_nonzero(idxcurr) == 0:
             continue
         agent_num = np.nonzero(np.any(idxcurr,axis=0))[0]
@@ -110,6 +109,7 @@ def process_test_data(data,reparamfun,npad=1,minnframes=None):
         agent_num = agent_num[0]
         t0 = np.nonzero(idxcurr[:,agent_num])[0][0]
         t1 = np.nonzero(idxcurr[:,agent_num])[0][-1]
+        assert np.any(data['isstart'][t0+1:t1+1,agent_num]) == False, 'Data has start frame in the middle'
         nframes = t1 - t0
         if nframes < minnframes:
             continue
@@ -133,6 +133,11 @@ def select_bin_edges(movement, nbins, bin_epsilon, outlierprct=0, feati=None):
             f'setting all bins to be the same size'
         )
         bin_edges = np.linspace(lims[0], lims[1], nbins + 1)
+        return bin_edges
+
+    if bin_epsilon <= 0:
+        bin_prctiles = np.linspace(outlierprct,100-outlierprct,nbins+1)
+        bin_edges = np.percentile(movement, bin_prctiles)
         return bin_edges
 
     bin_edges = np.arange(lims[0], lims[1], bin_epsilon)
