@@ -160,9 +160,9 @@ def animate_pose(Xkps, focusflies=[], ax=None, fig=None, t0=0,
             gs = matplotlib.gridspec.GridSpec(3, len(Xkps) * nsubax, figure=fig)
             ax = np.array([fig.add_subplot(gs[:2, nsubax * i:nsubax * (i + 1)]) for i in range(len(Xkps))])
         else:
-            ax = fig.subplots(naxr, naxc)
+            ax = fig.subplots(naxr, naxc, squeeze=False)
 
-        for axcurr in ax:
+        for axcurr in ax.flatten():
             axcurr.set_xticks([])
             axcurr.set_yticks([])
         createdax = True
@@ -340,7 +340,7 @@ def animate_pose(Xkps, focusflies=[], ax=None, fig=None, t0=0,
 
 def animate_predict_open_loop(model, dataset, Xkp_init, fliespred, scales, tpred, burnin=None,
                               debug=False, plotattnweights=False, plotfuture=False, nsamplesfuture=0, metadata=None,
-                              animate_pose_params={}):
+                              animate_pose_params={},predict_iterative_params={},plottrue=True):
     # ani = animate_predict_open_loop(model,val_dataset,valdata,val_scale_perfly,config,fliespred,t0,tpred,debug=False,
     #                            plotattnweights=False,plotfuture=train_dataset.ntspred_global>1,nsamplesfuture=nsamplesfuture)
 
@@ -400,14 +400,16 @@ def animate_predict_open_loop(model, dataset, Xkp_init, fliespred, scales, tpred
 
     # capture all outputs of predict_open_loop in a tuple
     res = predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model, dataset, maxcontextl=dataset.contextl+1,
-                                    debug=debug, need_weights=plotattnweights, nsamples=nsamplesfuture, 
-                                    labels_true=labels_true)
+                            debug=debug, need_weights=plotattnweights, nsamples=nsamplesfuture, 
+                            labels_true=labels_true,**predict_iterative_params)
     if plotattnweights:
         examples_pred,attn_weights0 = res
     else:
         examples_pred = res
 
-    Xkps = {'Pred': Xkp_fill.copy(), 'True': Xkp_true.copy()}
+    Xkps = {'Pred': Xkp_fill.copy()}
+    if plottrue:
+        Xkps['True'] = Xkp_true.copy()
     if len(fliespred) == 1:
         starttoff = dataset.get_start_toff()
         split_inputs = examples_pred[0].inputs.get_split_inputs(zscored=False,makecopy=True)

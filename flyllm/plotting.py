@@ -118,7 +118,7 @@ def get_Dark3_cmap():
 def plot_fly(pose=None, kptidx=keypointidx, skelidx=skeleton_edges, fig=None, ax=None, kptcolors=None, color=None,
              name=None,
              plotskel=True, plotkpts=True, hedge=None, hkpt=None, textlabels=None, htxt=None, kpt_ms=6, skel_lw=1,
-             kpt_alpha=1., skel_alpha=1., skeledgecolors=None, kpt_marker='.'):
+             kpt_alpha=1., skel_alpha=1., skeledgecolors=None, kpt_marker='.', keypointnames=keypointnames):
     # plot_fly(x,fig=None,ax=None,kptcolors=None):
     # x is nfeatures x 2
     assert (pose is not None)
@@ -1414,7 +1414,8 @@ def explore_representation(configfile):
     )
 
 def plot_pose_pred_iter_vs_true(pred_example,true_example,color_true='k',samplecolors=None,ylim_pad=.05,tsplot=None,fig=None,ylims=None,
-                                samplealpha=None,figwidth=16,axheight=4,maxsamplesplot=None):
+                                samplealpha=None,figwidth=16,axheight=4,maxsamplesplot=None,samplelabel='Predicted',plottrue=True,
+                                plotbinedges=False):
     
     # plot pose
 
@@ -1440,7 +1441,7 @@ def plot_pose_pred_iter_vs_true(pred_example,true_example,color_true='k',samplec
         ax = fig.get_axes()
 
     if samplealpha is None:
-        samplealpha = 1/nsamples*4
+        samplealpha = np.minimum(1,1/nsamples*4)
 
     if samplecolors is None:
         samplecolors = plt.cm.hsv(np.arange(nsamples)/nsamples)
@@ -1458,8 +1459,9 @@ def plot_pose_pred_iter_vs_true(pred_example,true_example,color_true='k',samplec
             c = samplecolors[i]
             h, = ax[featnum].plot(pose_pred[i,tsplot,featnum],'.-',color=c)
             if i == 0:
-                h.set_label('Predicted')
-        ax[featnum].plot(pose_true[tsplot,featnum],'.-',label='True',color=color_true)
+                h.set_label(samplelabel)
+        if plottrue:
+            ax[featnum].plot(pose_true[tsplot,featnum],'.-',label='True',color=color_true)
 
         if ylims is not None:
             ylim = ylims[:,featnum]
@@ -1471,8 +1473,50 @@ def plot_pose_pred_iter_vs_true(pred_example,true_example,color_true='k',samplec
     
     return fig
 
+def plot_bin_edges(featidx,xplot=None,yplot=None,example=None,labels=None,zscored=False,ax=None,isx=None,**kwargs):
+    
+    if labels is None:
+        labels = example.labels    
+
+    bin_edges = labels.get_discretize_params(zscored=zscored)['bin_edges']
+    nbins = bin_edges.shape[1]
+    featdiscreteidx = labels._idx_multi_to_multidiscrete[featidx]
+    featdiscreteidx = np.atleast_1d(featdiscreteidx)
+    if ax is None:
+        ax = plt.gca()
+    isaxarray = hasattr(ax,'__len__')
+    if isx is None:
+        isx = xplot is None
+    
+    h = []
+    
+    for i,featdiscretei in enumerate(featdiscreteidx):
+        if isaxarray:
+            axcurr = ax[i]
+        else:
+            axcurr = ax
+        bindata = np.stack((bin_edges[featdiscretei],bin_edges[featdiscretei],np.nan+np.zeros(nbins)),axis=1)
+        if isx:
+            xplot1 = bindata
+            if yplot is None:
+                yplot0 = axcurr.get_ylim()
+            else:
+                yplot0 = yplot
+            yplot1 = np.concatenate((np.tile(yplot0,(nbins,1)),np.nan+np.zeros((nbins,1))),axis=1)
+        else:
+            yplot1 = bindata
+            if xplot is None:
+                xplot0 = axcurr.get_xlim()
+            else:
+                xplot0 = xplot
+            xplot1 = np.concatenate((np.tile(xplot0,(nbins,1)),np.nan+np.zeros((nbins,1))),axis=1)
+        h.append(axcurr.plot(xplot1.flatten(),yplot1.flatten(),**kwargs))
+    
+    return h
+
 def plot_multi_pred_iter_vs_true(pred_example,true_example,color_true='k',samplecolors=None,ylim_nstd=None,tsplot=None,fig=None,ylims=None,
-                                 samplealpha=None,figwidth=16,axheight=4,maxsamplesplot=None,plotbestsample=False,featsplot=None):
+                                 samplealpha=None,figwidth=16,axheight=4,maxsamplesplot=None,plotbestsample=False,featsplot=None,
+                                 samplelabel='Predicted',plottrue=True):
     
     # plot multi
 
@@ -1519,8 +1563,9 @@ def plot_multi_pred_iter_vs_true(pred_example,true_example,color_true='k',sample
             c = samplecolors[i]
             h, = ax[axi].plot(multi_pred[i,tsplot,featnum],'.-',color=c)
             if i == 0:
-                h.set_label('Predicted')
-        ax[axi].plot(multi_true[tsplot,featnum],'.-',label='True',color=color_true)
+                h.set_label(samplelabel)
+        if plottrue:
+            ax[axi].plot(multi_true[tsplot,featnum],'.-',label='True',color=color_true)
 
         if ylims is not None:
             ylim = ylims[:,featnum]
@@ -1534,7 +1579,7 @@ def plot_multi_pred_iter_vs_true(pred_example,true_example,color_true='k',sample
     
 def plot_multi_pred_vs_true(pred_example,true_example,color_true='k',featcolors=None,ylim_nstd=None,nsamples=100,
                             tsplot=None,fig=None,ylims=None,featsplot=None,samplealpha=None,
-                            truelw=.5,truems=3,predlw=1,predms=6):
+                            truelw=.5,truems=3,predlw=1,predms=6,plotbinedges=False,bincolor=[.6,.6,.6]):
     
     # plot multi errors
 
@@ -1589,7 +1634,15 @@ def plot_multi_pred_vs_true(pred_example,true_example,color_true='k',featcolors=
 
         if ylims is not None:
             ylim = ylims[:,featnum]
-            ax[axi].set_ylim(ylim)
+        else:
+            ylim = ax[axi].get_ylim()
+        xlim = ax[axi].get_xlim()
+
+        if plotsamples and plotbinedges:
+            hbin = plot_bin_edges(featnum,example=pred_example,ax=ax[axi],lw=.5,color=bincolor,zscored=False,xplot=xlim)
+
+        ax[axi].set_ylim(ylim)
+        ax[axi].set_xlim(xlim)
         ax[axi].legend()
         ax[axi].set_ylabel(f'{multi_names[featnum]}')
 

@@ -1,3 +1,19 @@
+# ---
+# jupyter:
+#   jupytext:
+#     cell_metadata_filter: -all
+#     custom_cell_magics: kql
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.11.2
+#   kernelspec:
+#     display_name: transformer
+#     language: python
+#     name: python3
+# ---
+
 # %%
 # %load_ext autoreload
 # %autoreload 2
@@ -172,7 +188,7 @@ if needtraindata:
     X = chunk_data(data, config['contextl'], reparamfun, npad=chunk_data_params['npad'])
     #X = process_test_data(data, reparamfun, **chunk_data_params)
     LOG.info(f'{len(X)} training ids, total of {sum([x['input'].shape[0] for x in X])} time points')
-iff needvaldata:
+if needvaldata:
     LOG.info('Processing val data...')
     valX = process_test_data(valdata, val_reparamfun, **chunk_data_params)
     LOG.info(f' {len(valX)} val ids, total of {sum([x['input'].shape[0] for x in valX])} time points')
@@ -346,6 +362,28 @@ delta_kpts = pred_kpts-true_kpts
 # can either draw from a multivariate normal with empirical covariance, or
 # draw from the actual error vectors
 sig = np.cov(delta_kpts.reshape(-1,n),rowvar=True)
+
+
+# %%
+# compute sigmas for OKS
+
+from scipy.spatial import ConvexHull
+
+errpx = aptgtdata['true_kpts']- aptgtdata['pred_kpts']
+# for oks: d_i is the eucidean distance between the predicted and true keypoint locations
+d2px = np.sum(errpx**2.,axis=2)
+
+# compute the area of the convex hull of each set of keypoints
+s2px = np.zeros(aptgtdata['true_kpts'].shape[0])
+for i in range(aptgtdata['true_kpts'].shape[0]):
+    p = aptgtdata['true_kpts'][i] # nkpts x 2
+    p = p[~np.isnan(p).any(axis=1)]
+    hull = ConvexHull(p)
+    s2px[i] = hull.volume
+sigpx = np.sqrt(np.mean(d2px/s2px[:,None],axis=0))
+
+print(sigpx)
+print(sigpx.shape)
 
 
 # %%
