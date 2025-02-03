@@ -146,7 +146,7 @@ def compute_relpose_velocity(relpose, tspred_dct=[]):
     drelpose1 = relpose[:, 1:, :] - relpose[:, :-1, :]
     drelpose1[featangle[featrelative], :, :] = modrange(drelpose1[featangle[featrelative], :, :], -np.pi, np.pi)
 
-    # drelpose[:,tau,t,fly] is the change in pose for fly fly at time t+tau from time t
+    # drelpose[:,tau,t,fly] is the change in pose for fly at time t+tau from time t
     drelpose = np.zeros((nrelative, T, ntspred_dct + 1, nflies), dtype=relpose.dtype)
     drelpose[:] = np.nan
     drelpose[:, :-1, 0, :] = drelpose1
@@ -277,7 +277,7 @@ def kp2feat(
 
     Args:
         Xkp: n_keypoints x 2 [x T [x n_flies]]
-        scale_perfly: n_scales x n_flies
+        scale_perfly: n_scales x n_total_flies
         flyid: n_flies
         return_scale: If True, returns the scale_perfly and flyid along with the feature array.
 
@@ -719,9 +719,11 @@ def compute_sensory(xeye_main, yeye_main, theta_main,
     ytouch_main = np.reshape(ytouch_main, (npts_touch, T))
 
     # don't deal with missing data :)
-    assert (np.any(np.isnan(xeye_main)) == False)
-    assert (np.any(np.isnan(yeye_main)) == False)
-    assert (np.any(np.isnan(theta_main)) == False)
+    # assert (np.any(np.isnan(xeye_main)) == False)
+    # assert (np.any(np.isnan(yeye_main)) == False)
+    # assert (np.any(np.isnan(theta_main)) == False)
+    if np.any(np.isnan(xeye_main)):
+        print(f"Warning! {np.isnan(xeye_main).sum()} / {T} is nan")
 
     # vision bin size
     step = 2. * np.pi / SENSORY_PARAMS['n_oma']
@@ -864,7 +866,7 @@ def compute_sensory_wrapper(Xkp, flynum, theta_main=None, returnall=False, retur
 
     if theta_main is None:
         _, _, theta_main = body_centric_kp(Xkp[..., [flynum, ]])
-        theta_main = theta_main[..., 0]
+        theta_main = theta_main[..., 0].astype(np.float64)
 
     otherflies_vision, wall_touch, otherflies_touch = \
         compute_sensory(xeye_main, yeye_main, theta_main + np.pi / 2,

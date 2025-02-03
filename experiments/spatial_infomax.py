@@ -1,8 +1,10 @@
+import importlib
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from apf.dataset import Multi, Zscore, Discretize, Data, Dataset
+from apf.dataset import Zscore, Discretize, Data, Dataset
 from apf.simulation import compare_gt_motion_pred_sim
 from apf.io import load_raw_npz_data
 from apf.training import to_dataloader, init_model, train
@@ -180,7 +182,7 @@ def experiment(config: dict) -> None:
     # Continuous output
     # motion_data_labels = Data(raw=global_motion.T, operation=motion_zscore)
     # Discrete output
-    motion_data_labels = Data(raw=global_motion.T, operation=Multi([motion_zscore, Discretize()]))
+    motion_data_labels = Data(raw=global_motion.T, operation=Discretize())
     # TODO: Move the roll logic into Data or Dataset?
     motion_data_input = Data(raw=np.roll(global_motion.T, shift=tspred, axis=1), operation=motion_zscore)
     observation_data = Data(raw=observation.T, operation=Zscore())

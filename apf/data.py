@@ -25,7 +25,7 @@ def interval_all(x, l):
     return y
 
 
-def chunk_data(data, contextl, reparamfun, npad=1):
+def chunk_data(data, contextl, reparamfun, npad=1, offset=True):
     contextlpad = contextl + npad
 
     # all frames for the main agent must have real data
@@ -54,7 +54,10 @@ def chunk_data(data, contextl, reparamfun, npad=1):
 
         mint0curr = canstartidx[0]
         # offset a bit
-        t0 = mint0curr + np.random.randint(0, contextl, None)
+        if offset:
+            t0 = mint0curr + np.random.randint(0, contextl, None)
+        else:
+            t0 = mint0curr
         # find the next allowed frame
         if canstart[t0, agent_num] == False:
             if not np.any(canstart[t0:, agent_num]):
@@ -98,7 +101,7 @@ def chunk_data(data, contextl, reparamfun, npad=1):
 
 def select_bin_edges(movement, nbins, bin_epsilon, outlierprct=0, feati=None):
     n = movement.shape[0]
-    lims = np.percentile(movement, [outlierprct, 100 - outlierprct])
+    lims = np.nanpercentile(movement, [outlierprct, 100 - outlierprct])
     max_bin_epsilon = (lims[1] - lims[0]) / (nbins + 1)
     if bin_epsilon >= max_bin_epsilon:
         LOG.info(
@@ -106,6 +109,11 @@ def select_bin_edges(movement, nbins, bin_epsilon, outlierprct=0, feati=None):
             f'setting all bins to be the same size'
         )
         bin_edges = np.linspace(lims[0], lims[1], nbins + 1)
+        return bin_edges
+
+    if bin_epsilon <= 0:
+        bin_prctiles = np.linspace(outlierprct,100-outlierprct,nbins+1)
+        bin_edges = np.percentile(movement, bin_prctiles)
         return bin_edges
 
     bin_edges = np.arange(lims[0], lims[1], bin_epsilon)
@@ -182,6 +190,12 @@ def fit_discretize_data(data, nbins=50, bin_epsilon=None, outlierprct=.001, frac
             bin_edges[feati, :] = select_bin_edges(data[:, feati], nbins, bin_epsilon[feati],
                                                    outlierprct=outlierprct, feati=feati)
     else:
+        # bin_edges = np.zeros((data.shape[-1], nbins+1))
+        # for i, feat in enumerate(data.T):
+        #     perc_min = np.nanpercentile(feat, outlierprct)
+        #     perc_max = np.nanpercentile(feat, 100 - outlierprct)
+        #     step = (perc_max - perc_min) / (nbins)
+        #     bin_edges[i] = np.arange(perc_min, perc_max + step / 2, step)
         bin_edges = np.percentile(data, prctiles_compute, axis=0)
         bin_edges = bin_edges.astype(dtype).T
 

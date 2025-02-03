@@ -145,3 +145,15 @@ def function_args_from_config(config: dict, function: Callable) -> dict:
     """
     function_args = inspect.getfullargspec(function).args[1:]
     return {arg: config[arg] for arg in function_args if arg in config}
+
+
+def connected_components(vector):
+    # pad with zeros
+    padded = np.zeros(len(vector) + 2, bool)
+    padded[1:-1] = vector > 0
+
+    indices = np.where(np.diff(padded))[0]
+    starts = indices[0:-1:2]
+    ends = indices[1::2]
+
+    return np.hstack([starts[:, None], ends[:, None]])

@@ -5,6 +5,7 @@ import torch
 
 
 lossfcn_discrete = torch.nn.CrossEntropyLoss()
+# lossfcn_discrete = torch.nn.BCEWithLogitsLoss()
 lossfcn_continuous = torch.nn.L1Loss()
 
 
@@ -1049,7 +1050,8 @@ def initialize_model(config, train_dataset, device):
 
         if train_dataset.discretize:
             # Before refactor this was: config['weight_discrete'] = len(config['discreteidx']) / nfeatures
-            config['weight_discrete'] = len(train_dataset.discreteidx) / train_dataset.d_output
+            # config['weight_discrete'] = len(train_dataset.discreteidx) / train_dataset.d_output
+            config['weight_discrete'] = train_dataset.d_output_discrete / train_dataset.d_output
             if config['modeltype'] == 'mlm':
                 criterion = mixed_masked_criterion
             else:
