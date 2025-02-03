@@ -95,9 +95,40 @@ def chunk_data(data, contextl, reparamfun, npad=1, offset=True):
             nframestotal += contextl
 
     LOG.info(f'In total {nframestotal} frames of data after chunking')
-
     return X
 
+def process_test_data(data,reparamfun,npad=1,minnframes=None):
+
+    if minnframes is None:
+        if npad is None:
+            minnframes = 5
+        else:
+            minnframes = npad + 1
+    
+    X = []
+    nids = np.max(data['ids'])
+    for id in tqdm.trange(nids):
+        idxcurr = (data['ids'] == id) & data['isdata']
+        if np.count_nonzero(idxcurr) == 0:
+            continue
+        agent_num = np.nonzero(np.any(idxcurr,axis=0))[0]
+        assert len(agent_num) == 1, 'More than one agent found'
+        agent_num = agent_num[0]
+        t0 = np.nonzero(idxcurr[:,agent_num])[0][0]
+        t1 = np.nonzero(idxcurr[:,agent_num])[0][-1]
+        assert np.any(data['isstart'][t0+1:t1+1,agent_num]) == False, 'Data has start frame in the middle'
+        nframes = t1 - t0
+        if nframes < minnframes:
+            continue
+        #LOG.info(f'id: {id}, agent_num: {agent_num}, t0: {t0}, t1: {t1}')
+        # data['X'] is nkeypoints x 2 x T x n_agents
+        xcurr = reparamfun(data['X'][..., t0:t1+1, :], id, agent_num, npad=npad)
+        xcurr['metadata'] = {'flynum': agent_num, 'id': id, 't0': t0, 'videoidx': data['videoidx'][t0, 0],
+                                'frame0': data['frames'][t0, 0]}
+        xcurr['categories'] = data['y'][:, t0:t1 + 1, agent_num].astype(np.float32)
+        X.append(xcurr)
+
+    return X
 
 def select_bin_edges(movement, nbins, bin_epsilon, outlierprct=0, feati=None):
     n = movement.shape[0]
@@ -138,12 +169,14 @@ def select_bin_edges(movement, nbins, bin_epsilon, outlierprct=0, feati=None):
 
 def weighted_sample(w, nsamples=0):
     SMALLNUM = 1e-6
-    assert (torch.all(w >= 0.))
     nbins = w.shape[-1]
     szrest = w.shape[:-1]
     n = int(np.prod(szrest))
-    p = torch.cumsum(w.reshape((n, nbins)), dim=-1)
-    assert (torch.all(torch.abs(p[:, -1] - 1) <= SMALLNUM))
+    w = w.reshape((n, nbins))
+    p = torch.cumsum(w, dim=-1)
+    isgood = torch.all(torch.isnan(p) == False,dim=-1)
+    assert (torch.all(torch.abs(p[isgood, -1] - 1) <= SMALLNUM))
+    p[isgood==False,:] = 0.
     p[p > 1.] = 1.
     p[:, -1] = 1.
     if nsamples == 0:
@@ -154,6 +187,7 @@ def weighted_sample(w, nsamples=0):
     s = torch.zeros((nsamples1,) + p.shape, dtype=w.dtype, device=w.device)
     s[:] = r[..., None] <= p
     idx = torch.argmax(s, dim=-1)
+    idx[:,isgood==False] = -1
     if nsamples > 0:
         szrest = (nsamples,) + szrest
     return idx.reshape(szrest)
@@ -394,6 +428,10 @@ def debug_less_data(data, n_frames_per_video=10000, max_n_videos=1):
     data['y'] = data['y'][:, frame_ids, :]
     data['isdata'] = data['isdata'][frame_ids, :]
     data['isstart'] = data['isstart'][frame_ids, :]
+    nframes = np.count_nonzero(data['isdata'])
+    nids = len(np.unique(data['ids'][data['isdata']]))
+    LOG.info(f'After less data: nframes = {nframes}, nids = {nids}, X.shape = {data["X"].shape}')
+
     return
 
 

@@ -12,7 +12,8 @@ from apf.models import (  # TODO: dataset should not depend on models
     pred_apply_fun
 )
 from flyllm.pose import FlyExample
-
+import logging
+LOG = logging.getLogger(__name__)
 
 class FlyMLMDataset(torch.utils.data.Dataset):
     def __init__(
@@ -168,25 +169,31 @@ class FlyMLMDataset(torch.utils.data.Dataset):
         
         # zscore
         if dozscore:
-            print('Z-scoring data...')
+            LOG.info('Z-scoring data...')
             data = self.zscore(data, **zscore_params)
-            print('Done.')
+            LOG.info('Done.')
         
         # discretize
         if discreteidx is not None:
-            print('Discretizing labels...')
+            LOG.info('Discretizing labels...')
             data = self.discretize_labels(data, discreteidx, discrete_tspred, nbins=discretize_nbins,
                                           bin_epsilon=discretize_epsilon, **discretize_params)
-            print('Done.')
+            LOG.info('Done.')
 
         # flatten -- flattening hasn't been implemented in pose class yet
         self.set_flatten_params(flatten_labels=flatten_labels, flatten_obs_idx=flatten_obs_idx,
                                 flatten_do_separate_inputs=flatten_do_separate_inputs)
 
         # store examples in objects
+        LOG.info('Creating FlyExample objects...')
         self.data = []
-        for example_in in data:
+        for i in tqdm.trange(len(data)):
+            example_in = data[i]
             self.data.append(FlyExample(example_in, dataset=self))
+            # if i > 1000:
+            #     LOG.warning('DEBUGGING: breaking after 100 examples')
+            #     break
+        LOG.info('Done.')
 
         self.set_train_mode()
 
@@ -382,7 +389,7 @@ class FlyMLMDataset(torch.utils.data.Dataset):
             self.discretize_bin_medians = bin_medians
             assert nbins == bin_edges.shape[-1] - 1
 
-        for example in data:
+        for example in tqdm.tqdm(data):
             example['labels_todiscretize'] = example['labels'][:, self.discreteidx]
             example['labels_discrete'] = discretize_labels(example['labels_todiscretize'], self.discretize_bin_edges,
                                                            soften_to_ends=True)
@@ -538,10 +545,10 @@ class FlyMLMDataset(torch.utils.data.Dataset):
     def get_zscore_params(self):
 
         zscore_params = {
-            'mu_input': self.mu_input.copy(),
-            'sig_input': self.sig_input.copy(),
-            'mu_labels': self.mu_labels.copy(),
-            'sig_labels': self.sig_labels.copy(),
+            'mu_input': self.mu_input,
+            'sig_input': self.sig_input,
+            'mu_labels': self.mu_labels,
+            'sig_labels': self.sig_labels,
         }
         return zscore_params
 
@@ -666,10 +673,12 @@ class FlyMLMDataset(torch.utils.data.Dataset):
             relative pose features to keypoints.
             example['categories'] are the currently unused categories for this sequence.
             example['metadata'] is a dict of metadata about this sequence.
+            example['idx'] is the index of this example in the dataset.
 
         """
 
         res = self.data[idx].get_train_example()
+        res['idx'] = idx
         res['input'], mask, dropout_mask = self.mask_input(res['input'])
         if mask is not None:
             res['mask'] = mask
@@ -999,6 +1008,13 @@ class FlyMLMDataset(torch.utils.data.Dataset):
         """
         return self.data[0].labels.get_multi_names()
 
+    def get_model_params(self):
+        model_params = {
+            'zscore_params': self.get_zscore_params(),
+            'discretize_params': self.get_discretize_params(),
+        }
+        return model_params
+
     # REMOVE AFTER DEBUGGING FLATTENING
     # def unflatten_labels(self, labels_flattened):
         
@@ -1013,7 +1029,8 @@ class FlyMLMDataset(torch.utils.data.Dataset):
     #     if self.d_output_continuous > 0:
     #         labels_continuous = labels_flattened[..., -1, :self.d_output_continuous]
     #     else:
-    #         labels_continuous = None
+    #         labels_continuous = Noneclass FlyTestDataset(F)
+
     #     if self.discretize:
     #         labels_discrete = labels_flattened[..., self.flatten_nobs_types:, :self.discretize_nbins]
     #         if self.continuous:
@@ -1054,3 +1071,147 @@ class FlyMLMDataset(torch.utils.data.Dataset):
     #         newinput[..., :, v[0]:v[1]] = input_flattened[..., i,
     #                                       self.flatten_input_type_to_range[i, 0]:self.flatten_input_type_to_range[i, 1]]
     #     return newinput
+
+class FlyTestDataset(FlyMLMDataset):
+    def __init__(self,data: list[dict[str, np.ndarray | dict[str, int]]],
+        contextl: int, need_labels: bool = False, need_metadata: bool = False, 
+        need_init: bool = False, make_copy: bool = False, cudaoptimize=False,
+        **kwargs):
+
+        # cudaoptimize: whether to move data to gpu in bulk
+        super().__init__(data,**kwargs)
+
+        self._contextl = contextl
+        self.n_examples_per_id = np.array([self.data[i].ntimepoints-self.contextl+1 for i in range(len(self.data))])
+        self.start_example_per_id = np.r_[0,np.cumsum(self.n_examples_per_id)]
+        self.need_labels = need_labels
+        self.need_metadata = need_metadata
+        self.make_copy = make_copy
+        self.need_init = need_init
+        self.cudaoptimize = cudaoptimize
+        self.cudaid = None
+        self.cudadata = None
+        self.ncudacaches = 0
+
+        self.set_eval_mode()
+
+        return
+
+    @property
+    def contextl(self):
+        return self._contextl
+
+    def __len__(self):
+        return self.start_example_per_id[-1]
+    
+    def get_example(self, idx: int, lastonly: bool = False):
+        """
+        example = self.get_example(idx)
+        Returns dataset example idx, FlyExample object
+        """
+        id = np.searchsorted(self.start_example_per_id,idx,side='right')-1
+        idx1 = idx-self.start_example_per_id[id]
+        if lastonly:
+            return self.data[id].copy_subindex(ts=[idx1+self.contextl-2,idx1+self.contextl-1])
+        else:
+            return self.data[id].copy_subindex(ts=np.arange(idx1,idx1+self.contextl))
+    
+    def __getitem__(self, idx: int):
+        id = np.searchsorted(self.start_example_per_id,idx,side='right')-1
+        idx1 = idx-self.start_example_per_id[id]
+        
+        if self.cudaoptimize:
+            if id != self.cudaid:
+                self.set_cuda_cache(id)
+        res = self.data[id].get_train_example(ts=np.arange(idx1,idx1+self.contextl),needinit=self.need_init,
+                                              needlabels=self.need_labels,needmetadata=self.need_metadata,
+                                              makecopy=self.make_copy)
+        res['idx'] = idx
+        return res
+
+    def set_cuda_cache(self,id):
+        if id == self.cudaid:
+            return
+        if self.cudaid is not None:
+            self.data[self.cudaid].clear_cuda_cache()
+        self.cudaid = id
+        if id is not None:
+            self.data[id].set_cuda_cache()
+            self.ncudacaches += 1
+        return
+    
+    def clear_cuda_cache(self):
+        if self.cudaid is None:
+            return
+        self.data[self.cudaid].clear_cuda_cache()
+        self.cudaid = None
+
+    def create_data_from_pred(self,all_pred,labelidx,issqueezed=False):
+        """
+        pred_data, true_data = self.create_data_from_pred(all_pred,labelidx)
+        Inputs:
+        all_pred: predictions. If a dict, then each key is a prediction type and each value is a numpy array of predictions of
+        size npred x nkeep x doutput. If a numpy array, then it is of size npred x nkeep x doutput.
+        labelidx: ndarray indices of the labels corresponding to predictions, of size npred.
+        Returns:
+        pred_data: list of FlyExample objects with the predictions, one example per id
+        true_data: list of FlyExample objects with the true labels, one example per id
+        """
+        if issqueezed:
+            # nkeep was 1 and we squeezed it away
+            if type(all_pred) is dict:
+                all_pred = {k:v[:,None,:] for k,v in all_pred.items()}
+
+            else:
+                all_pred = all_pred[:,None,:]
+
+        if type(all_pred) is dict:
+            nkeep = all_pred[next(iter(all_pred.keys()))].shape[1]
+
+        else:
+            nkeep = all_pred.shape[1]
+
+        
+        if type(labelidx) is torch.Tensor:
+            labelidx = labelidx.cpu().numpy()
+            
+        labelids = np.searchsorted(self.start_example_per_id,labelidx,side='right')-1
+        #labelts = labelidx - self.start_example_per_id[labelids]+ self.contextl - 1
+        labelt1s = labelidx - self.start_example_per_id[labelids]+self.contextl
+        unique_ids = np.unique(labelids)
+        pred_data = [None,]*(np.max(unique_ids)+1)
+        true_data = [None,]*(np.max(unique_ids)+1)
+
+        def smush_helper(v,idxcurr,t0scurr,t1scurr,dtcurr):
+            if type(v) is torch.Tensor:
+                v = v.cpu().numpy()
+            vsmush = np.zeros((dtcurr,)+v.shape[2:],dtype=v.dtype)
+            for ii in range(len(idxcurr)):
+                i = idxcurr[ii]
+                vsmush[t0scurr[ii]:t1scurr[ii]] = v[i]
+            return vsmush
+
+        for id in tqdm.tqdm(unique_ids,desc='Creating examples per id'):
+            idxcurr = np.nonzero(labelids == id)[0]
+            t1scurr = labelt1s[idxcurr]
+            t0scurr = t1scurr - nkeep
+            mint = np.min(t0scurr)
+            maxt = np.max(t1scurr)
+            dtcurr = maxt-mint
+
+            true_example = self.data[id].copy_subindex(ts=np.arange(mint-1,maxt))
+            true_data[id] = true_example
+            pred_example = true_example.copy()
+            
+            pred_example.labels.erase_labels()
+            if isinstance(all_pred,dict):
+                curr_pred = {}
+                for k,v in all_pred.items():
+                    curr_pred[k] = smush_helper(v,idxcurr,t0scurr-mint,t1scurr-mint,dtcurr)
+            else:
+                curr_pred = smush_helper(all_pred,idxcurr,t0scurr-mint,t1scurr-mint,dtcurr)
+
+            pred_example.labels.set_prediction(curr_pred)
+            pred_data[id] = pred_example
+
+        return pred_data, true_data

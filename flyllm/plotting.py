@@ -3,9 +3,10 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib import cm, colors
 import torch
+import tqdm
 
 from apf.models import criterion_wrapper
-from apf.utils import npindex
+from apf.utils import npindex, zscore, unzscore
 from apf.data import get_batch_idx, split_data_by_id, select_bin_edges, get_real_agents
 from flyllm.config import (
     DEFAULTCONFIGFILE, SENSORY_PARAMS, ARENA_RADIUS_MM,
@@ -14,7 +15,7 @@ from flyllm.config import (
     nglobal, nrelative, nkptouch, nfeatures
 )
 from flyllm.features import (
-    compute_features, zscore, unzscore, get_sensory_feature_idx,
+    compute_features, get_sensory_feature_idx,
     compute_noise_params, compute_scale_perfly, ensure_otherflies_touch_mult,
 )
 from flyllm.pose import FlyExample
@@ -145,7 +146,7 @@ def plot_fly(pose=None, kptidx=keypointidx, skelidx=skeleton_edges, fig=None, ax
                 if name is not None:
                     kptname = name + ' ' + kptname
                 hkpt = \
-                ax.plot(xc, yc, kpt_marker, color=kptcolors, label=kptname, zorder=10, ms=kpt_ms, alpha=kpt_alpha)[0]
+                ax.plot(xc, yc, kpt_marker, color=kptcolors, label=kptname, zorder=10, ms=kpt_ms, alpha=kpt_alpha, mew=0)[0]
             else:
                 if type(kptcolors) == str:
                     kptcolors = plt.get_cmap(kptcolors)
@@ -962,50 +963,46 @@ def debug_plot_histograms(dataset, alpha=1):
     return
 
 
-def debug_plot_global_histograms(all_pred, all_labels, train_dataset, nbins=50, subsample=1, compare='time'):
-    outnames_global = train_dataset.get_next_global_feature_names()
+def debug_plot_global_histograms(unz_gpredv, unz_glabelsv, dataset, nbins=50, subsample=1, compare='time'):
+    outnames_global = dataset.get_next_global_feature_names()
 
     # global labels, continuous representation, unzscored
-    # ntimepoints x tspred x nglobal
-    unz_glabelsv = np.concatenate(
-        [labels.get_future_global(zscored=False, use_todiscretize=True) for labels in all_labels], axis=0)
+    # nexamples x ntimepoints x tspred x nglobal
+    labelobj = dataset.get_example(0).labels
+    if dataset.discretize:
 
-    # global predictions, continuous representation, unzscored
-    # ntimepoints x tspred x nglobal
-    unz_gpredv = np.concatenate([pred.get_future_global(zscored=False) for pred in all_pred], axis=0)
-
-    if train_dataset.discretize:
-
-        bin_edges = train_dataset.get_bin_edges(zscored=False)
+        bin_edges = dataset.get_bin_edges(zscored=False)
         # TODO: better use of labels class
-        ftidx = all_labels[0]._idx_multi_to_multifeattpred[all_labels[0]._idx_multidiscrete_to_multi]
+        ftidx = labelobj._idx_multi_to_multifeattpred[labelobj._idx_multidiscrete_to_multi]
         bins = []
         for f in featglobal:
             j = np.nonzero(np.all(ftidx == np.array([f, 1])[None, ...], axis=1))[0][0]
             bins.append(bin_edges[j])
-        nbins = train_dataset.discretize_nbins
+        nbins = dataset.discretize_nbins
     else:
         lims = [[np.percentile(unz_glabelsv[::100, :, axi].flatten(), i).item() for i in [.1, 99.9]] for axi in
                 range(nglobal)]
         bins = [np.arange(l[0], l[1], nbins + 1) for l in lims]
 
-    ntspred = len(train_dataset.tspred_global)
+    ntspred = len(dataset.tspred_global)
     off0 = .1
 
     if compare == 'time':
-        colors = get_n_colors_from_colormap('jet', len(train_dataset.tspred_global))
+        colors = get_n_colors_from_colormap('jet', ntspred)
         colors[:, :-1] *= .8
 
         fig, ax = plt.subplots(2, nglobal, figsize=(30, 10), sharex='col')
         w = (1 - 2 * off0) / ntspred
         for axj, (datacurr, datatype) in enumerate(zip([unz_glabelsv, unz_gpredv], ['label ', 'pred '])):
+            # flatten over examples and timepoints
+            datacurr = datacurr.reshape((-1, ntspred, nglobal))
             for axi in range(nglobal):
                 ax[axj, axi].cla()
                 off = off0
-                for i in range(unz_glabelsv.shape[1]):
+                for i in range(ntspred):
                     density, _ = np.histogram(datacurr[::subsample, i, axi], bins=bins[axi], density=True)
                     ax[axj, axi].bar(np.arange(nbins) + off, density, width=w, color=colors[i], log=True,
-                                     align='edge', label=str(train_dataset.tspred_global[i]))
+                                     align='edge', label=str(dataset.tspred_global[i]))
                     off += w
                 ax[axj, axi].set_xticks(np.arange(nbins + 1))
                 ax[axj, axi].set_xticklabels(['%.2f' % x for x in bins[axi]], rotation=90)
@@ -1027,7 +1024,7 @@ def debug_plot_global_histograms(all_pred, all_labels, train_dataset, nbins=50, 
                     off += w
                 axcurr.set_xticks(np.arange(nbins + 1))
                 axcurr.set_xticklabels(['%.2f' % x for x in bins[fi]], rotation=90)
-                axcurr.set_title(f'{outnames_global[fi]} t = {train_dataset.tspred_global[ti]}')
+                axcurr.set_title(f'{outnames_global[fi]} t = {dataset.tspred_global[ti]}')
 
     ax[0, 0].legend()
     fig.tight_layout()
@@ -1415,3 +1412,187 @@ def explore_representation(configfile):
         compute_noise_params=compute_noise_params,
         keypointnames=keypointnames
     )
+
+def plot_pose_pred_iter_vs_true(pred_example,true_example,color_true='k',samplecolors=None,ylim_pad=.05,tsplot=None,fig=None,ylims=None,
+                                samplealpha=None,figwidth=16,axheight=4,maxsamplesplot=None):
+    
+    # plot pose
+
+    true_pre_sz = true_example.pre_sz
+    assert np.prod(true_pre_sz) == 1
+    pred_pre_sz = pred_example.pre_sz
+    assert len(pred_pre_sz) == 1
+    nsamples = pred_pre_sz[0]
+    if maxsamplesplot is not None:
+        nsamples = np.minimum(nsamples,maxsamplesplot)
+
+    pose_names = true_example.labels.get_next_pose_names()
+
+    if tsplot is None:
+        tsplot = np.arange(pred_example.ntimepoints-1)
+
+    pose_pred = pred_example.labels.get_next_pose(collapse_samples=True,use_todiscretize=True)
+    pose_true = true_example.labels.get_next_pose(use_todiscretize=True)
+
+    if fig is None:
+        fig,ax = plt.subplots(true_example.labels.d_next_pose,1,sharex=True,figsize=(figwidth,axheight*true_example.labels.d_next_pose))
+    else:
+        ax = fig.get_axes()
+
+    if samplealpha is None:
+        samplealpha = 1/nsamples*4
+
+    if samplecolors is None:
+        samplecolors = plt.cm.hsv(np.arange(nsamples)/nsamples)
+        samplecolors[:,-1] = samplealpha
+
+    if ylims is None:
+        miny = np.minimum(np.min(pose_pred,axis=(0,1)),np.min(pose_true,axis=0))
+        maxy = np.maximum(np.max(pose_pred,axis=(0,1)),np.max(pose_true,axis=0))
+        dy = maxy - miny
+        ylims = np.stack([miny-ylim_pad*dy,maxy+ylim_pad*dy])
+
+    for featnum in range(true_example.labels.d_next_pose):
+
+        for i in range(nsamples):
+            c = samplecolors[i]
+            h, = ax[featnum].plot(pose_pred[i,tsplot,featnum],'.-',color=c)
+            if i == 0:
+                h.set_label('Predicted')
+        ax[featnum].plot(pose_true[tsplot,featnum],'.-',label='True',color=color_true)
+
+        if ylims is not None:
+            ylim = ylims[:,featnum]
+            ax[featnum].set_ylim(ylim)
+        ax[featnum].legend()
+        ax[featnum].set_ylabel(f'{pose_names[featnum]}')
+
+    fig.tight_layout()
+    
+    return fig
+
+def plot_multi_pred_iter_vs_true(pred_example,true_example,color_true='k',samplecolors=None,ylim_nstd=None,tsplot=None,fig=None,ylims=None,
+                                 samplealpha=None,figwidth=16,axheight=4,maxsamplesplot=None,plotbestsample=False,featsplot=None):
+    
+    # plot multi
+
+    true_pre_sz = true_example.pre_sz
+    assert np.prod(true_pre_sz) == 1
+    pred_pre_sz = pred_example.pre_sz
+    assert len(pred_pre_sz) == 1
+    nsamples = pred_pre_sz[0]
+    if maxsamplesplot is not None:
+        nsamples = np.minimum(nsamples,maxsamplesplot)
+
+    multi_names = true_example.labels.get_multi_names()
+
+    if tsplot is None:
+        tsplot = np.arange(pred_example.ntimepoints-1)
+
+    multi_pred = pred_example.labels.get_multi(collapse_samples=True,use_todiscretize=True)
+    multi_true = true_example.labels.get_multi(use_todiscretize=True)
+
+    if featsplot is None:
+        featsplot = np.arange(true_example.labels.d_multi)
+
+    if fig is None:
+        fig,ax = plt.subplots(len(featsplot),1,sharex=True,figsize=(figwidth,axheight*len(featsplot)))
+    else:
+        ax = fig.get_axes()
+
+    if samplealpha is None:
+        samplealpha = 1/nsamples*4
+
+    if samplecolors is None:
+        samplecolors = plt.cm.hsv(np.arange(nsamples)/nsamples)
+        samplecolors[:,-1] = samplealpha
+
+    if ylims is None:
+        if ylim_nstd is not None:
+            zscore_params = true_example.labels.zscore_params
+            zscore_params.keys()
+            ylims = zscore_params['mu_labels'] + ylim_nstd*np.array([-1,1])[:,None]*zscore_params['sig_labels'][None,:]
+
+    for axi,featnum in enumerate(featsplot):
+
+        for i in range(nsamples):
+            c = samplecolors[i]
+            h, = ax[axi].plot(multi_pred[i,tsplot,featnum],'.-',color=c)
+            if i == 0:
+                h.set_label('Predicted')
+        ax[axi].plot(multi_true[tsplot,featnum],'.-',label='True',color=color_true)
+
+        if ylims is not None:
+            ylim = ylims[:,featnum]
+            ax[axi].set_ylim(ylim)
+        ax[axi].legend()
+        ax[axi].set_ylabel(f'{multi_names[featnum]}')
+
+    fig.tight_layout()
+    
+    return fig
+    
+def plot_multi_pred_vs_true(pred_example,true_example,color_true='k',featcolors=None,ylim_nstd=None,nsamples=100,
+                            tsplot=None,fig=None,ylims=None,featsplot=None,samplealpha=None,
+                            truelw=.5,truems=3,predlw=1,predms=6):
+    
+    # plot multi errors
+
+    multi_names = true_example.labels.get_multi_names()
+
+    if tsplot is None:
+        tsplot = np.arange(pred_example.ntimepoints-1)
+
+    multi_pred = pred_example.labels.get_multi(nsamples=0,collapse_samples=True,use_todiscretize=False)
+    multi_pred_sample = pred_example.labels.get_multi(nsamples=nsamples,collapse_samples=True,use_todiscretize=False)
+    #multi_pred_meansample = np.nanmean(multi_pred_sample,axis=0)
+    multi_true = true_example.labels.get_multi(use_todiscretize=True)
+    multi_isdiscrete = pred_example.labels.get_multi_isdiscrete()
+    #bestsample = np.argmin(np.abs(multi_pred_sample-multi_true[None,...]),axis=0)
+
+    if featsplot is None:
+        featsplot = np.arange(true_example.labels.d_multi)
+
+    if fig is None:
+        fig,ax = plt.subplots(len(featsplot),1,sharex=True,figsize=(16,4*len(featsplot)))
+    else:
+        ax = fig.get_axes()
+
+    if featcolors is None:
+        nfeatcolors = 10
+        featcolors = plt.cm.tab10(np.arange(nfeatcolors))
+
+    if samplealpha is None:
+        samplealpha = min(1,1/nsamples*4)
+
+    if ylims is None:
+        if ylim_nstd is not None:
+            zscore_params = true_example.labels.zscore_params
+            zscore_params.keys()
+            ylims = zscore_params['mu_labels'] + ylim_nstd*np.array([-1,1])[:,None]*zscore_params['sig_labels'][None,:]
+
+    for axi,featnum in enumerate(featsplot):
+        plotsamples = multi_isdiscrete[featnum]
+
+        color = featcolors[featnum%nfeatcolors]
+
+        if plotsamples:
+            c = color.copy()
+            c[-1] = samplealpha
+            for i in range(multi_pred_sample.shape[0]):
+                h, = ax[axi].plot(multi_pred_sample[i,tsplot,featnum],'.',color=c,ms=predms)
+                if i == 0:
+                    h.set_label('Predicted')
+        else:
+            ax[axi].plot(multi_pred[tsplot,featnum],'.-',label='Predicted',color=color,lw=predlw,ms=predms)
+        ax[axi].plot(multi_true[tsplot,featnum],'.-',label='True',color=color_true,lw=truelw,ms=truems)
+
+        if ylims is not None:
+            ylim = ylims[:,featnum]
+            ax[axi].set_ylim(ylim)
+        ax[axi].legend()
+        ax[axi].set_ylabel(f'{multi_names[featnum]}')
+
+    fig.tight_layout()
+    
+    return fig

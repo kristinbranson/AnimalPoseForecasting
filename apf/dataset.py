@@ -925,3 +925,10 @@ class Dataset(torch.utils.data.Dataset):
 #         """ Returns the number of data chunks this dataset can produce.
 #         """
 #         return self.chunk_indices.shape[0]
+
+
+# =======
+# class AgentLLMDataset:
+#     def __init__(self):
+#         return
+# >>>>>>> upstream/kb_working

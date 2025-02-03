@@ -4,10 +4,12 @@ import matplotlib.pyplot as plt
 from matplotlib import animation
 
 from apf.data import get_real_agents
+from apf.utils import save_animation
 from flyllm.features import compute_pose_features, split_features
 from flyllm.config import ARENA_RADIUS_MM
 from flyllm.plotting import plot_flies, plot_arena
-from flyllm.pose import PoseLabels, FlyExample
+from flyllm.pose import FlyPoseLabels, FlyExample
+from flyllm.prediction import predict_iterative
 
 
 def get_pose_future(data, scales, tspred_global, ts=None, fliespred=None):
@@ -86,7 +88,8 @@ def animate_pose(Xkps, focusflies=[], ax=None, fig=None, t0=0,
                  attn_weights=None, skeledgecolors=None,
                  globalpos_future=None, tspred_future=None,
                  futurecolor=[0, 0, 0, .25], futurelw=1, futurems=6,
-                 futurealpha=.25):
+                 futurealpha=.25,cache_frame_data=False,
+                 save_animation_params={}):
     plotinput = inputs is not None and len(inputs) > 0
 
     # attn_weights[key] should be T x >=contextl x nfocusflies
@@ -322,19 +325,22 @@ def animate_pose(Xkps, focusflies=[], ax=None, fig=None, t0=0,
                 #   axinput[k][-1].set_xlim([0,np.nanmax(attn_curr)])
         return hlist
 
-    ani = animation.FuncAnimation(fig, update, frames=range(trel0, T))
+    ani = animation.FuncAnimation(fig, update, 
+                                  frames=range(trel0, T),
+                                  interval=1000/fps,
+                                  cache_frame_data=cache_frame_data)
 
     if savevidfile is not None:
         print('Saving animation to file %s...' % savevidfile)
-        writer = animation.PillowWriter(fps=30)
-        ani.save(savevidfile, writer=writer)
+        save_animation(ani, savevidfile, fps=fps, **save_animation_params)
         print('Finished writing.')
 
     return ani
 
 
 def animate_predict_open_loop(model, dataset, Xkp_init, fliespred, scales, tpred, burnin=None,
-                              debug=False, plotattnweights=False, plotfuture=False, nsamplesfuture=1, metadata=None):
+                              debug=False, plotattnweights=False, plotfuture=False, nsamplesfuture=0, metadata=None,
+                              animate_pose_params={}):
     # ani = animate_predict_open_loop(model,val_dataset,valdata,val_scale_perfly,config,fliespred,t0,tpred,debug=False,
     #                            plotattnweights=False,plotfuture=train_dataset.ntspred_global>1,nsamplesfuture=nsamplesfuture)
 
@@ -363,13 +369,13 @@ def animate_predict_open_loop(model, dataset, Xkp_init, fliespred, scales, tpred
     # fliespred = np.nonzero(mabe.get_real_agents(Xkp))[0]
     labels_true = []
     examples_pred = []
-    for i, flynum in enumerate(fliespred):
+    for i, agentnum in enumerate(fliespred):
         scale = scales[i]
-        label_true = PoseLabels(Xkp=Xkp_true[..., flynum], scale=scale, dataset=dataset)
+        label_true = FlyPoseLabels(Xkp=Xkp_true[..., agentnum], scale=scale, dataset=dataset)
         labels_true.append(label_true)
         # note that labels for > 1 frame into the future may be nan here if t+tspred > burnin
         # labels and pred should match up to t = burnin
-        example_pred = FlyExample(Xkp=Xkp, flynum=flynum, scale=scale, dataset=dataset)
+        example_pred = FlyExample(Xkp=Xkp, agentnum=agentnum, scale=scale, dataset=dataset)
         examples_pred.append(example_pred)
 
     # TODOKB: reimplement this
@@ -386,10 +392,14 @@ def animate_predict_open_loop(model, dataset, Xkp_init, fliespred, scales, tpred
 
     model.eval()
 
-    Xkp_fill = Xkp[...,:-dataset.ntspred_max+1,:].copy()
+    if dataset.ntspred_max == 1:
+        endoff = None
+    else:
+        endoff = -dataset.ntspred_max+1
+    Xkp_fill = Xkp[...,:endoff,:].copy()        
 
     # capture all outputs of predict_open_loop in a tuple
-    res = dataset.predict_open_loop(examples_pred, fliespred, scales, Xkp_fill, burnin, model, maxcontextl=dataset.contextl+1,
+    res = predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model, dataset, maxcontextl=dataset.contextl+1,
                                     debug=debug, need_weights=plotattnweights, nsamples=nsamplesfuture, 
                                     labels_true=labels_true)
     if plotattnweights:
@@ -429,6 +439,6 @@ def animate_predict_open_loop(model, dataset, Xkp_init, fliespred, scales, tpred
     ani = animate_pose(Xkps, focusflies=focusflies, t0=t0, titletexts=titletexts,
                        trel0=np.maximum(0, dataset.contextl - 63),
                        inputs=inputs, contextl=dataset.contextl, attn_weights=attn_weights,
-                       **future_args)
+                       **future_args,**animate_pose_params)
 
     return ani
