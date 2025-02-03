@@ -265,6 +265,7 @@ dependencies:
   - pyqt=5.15.9=py312h949fe66_5
   - pyqt5-sip=12.12.2=py312h30efb56_5
   - pysocks=1.7.1=pyha2e5f31_6
+  - pytest
   - python=3.12.4=h194c7f8_0_cpython
   - python-dateutil=2.9.0=pyhd8ed1ab_0
   - python-fastjsonschema=2.20.0=pyhd8ed1ab_0
