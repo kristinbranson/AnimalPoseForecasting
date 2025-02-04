@@ -1359,7 +1359,7 @@ def compute_noise_params(data, scale_perfly, sig_tracking=.25 / PXPERMM, delta_k
     else:
         return epsilon
 
-def compute_pose_distribution_stats(data,scales_perfly,prctiles=[0,1,2,5]):
+def compute_pose_distribution_stats(data,scales_perfly,prctiles=[0,.001,.01,.1,.5,1,2.5,5]):
     
     X = data['X'].reshape((data['X'].shape[0],data['X'].shape[1],-1))
     ids = data['ids'].flatten()
@@ -1465,6 +1465,6 @@ def regularize_pose(pose,posestats,dampenconstant=0,prctilelim=None):
         
         newrelpose[...,relfeatangle==False] = np.minimum(np.maximum(newrelpose[...,relfeatangle==False],
                                                                     lowb[relfeatangle==False]),upb[relfeatangle==False])
-    newpose = np.zeros(relpose.shape+(nfeatures,))
+    newpose = pose.copy()
     newpose[...,featrelative] = newrelpose
     return newpose

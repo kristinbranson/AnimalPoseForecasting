@@ -409,7 +409,21 @@ class ObservationInputs:
         Returns True if the inputs are z-scored, False otherwise.
         """
         return self._zscore_params is not None
-
+    
+    def get_zscore_params(self,makecopy=True):
+        """
+        get_zscore_params()
+        Returns the z-score parameters for the inputs.
+        Inputs:
+        makecopy: Whether to make a copy of the z-score parameters. Default is True.
+        Output:
+        zscore_params: dict with keys 'mu_input' and 'sig_input' with the mean and standard deviation of the inputs.
+        """
+        if self.is_zscored() and makecopy:
+            return copy.deepcopy(self._zscore_params)
+        else:
+            return self._zscore_params
+        
     def get_raw_inputs(self, makecopy=True, ts=None, cache=None):
         """
         get_raw_inputs(makecopy=True)
@@ -2441,7 +2455,7 @@ class PoseLabels:
         multi = self.get_multi(**kwargs)
         return self._multi_to_nextcossin(multi)
 
-    def set_nextcossin(self, nextcossin, use_discretized=True,**kwargs):
+    def set_nextcossin(self, nextcossin, use_todiscretize=True,**kwargs):
         """
         set_nextcossin(nextcossin, zscored=False, ts=None, nsamples=0)
         Sets the next_cossin representation of the labels. This will only update the next frame labels, not the 
@@ -2456,13 +2470,13 @@ class PoseLabels:
         centers is computed. If 1, then it will sample from the bin distributions. Default is 0.
         """
         if self.is_todiscretize():
-            assert use_discretized == True
+            assert use_todiscretize == True
         nextcossin = np.atleast_2d(nextcossin)
         # get all multi features
         # if self.is_todiscretize() == False, then get_multi will convert from discrete to continuous for all features. 
         # This will get overwritten for the next frame features, but not for the future frame features.
         # TODO - maybe do this better?
-        multi = self.get_multi(use_discretized=True,**kwargs)
+        multi = self.get_multi(use_todiscretize=True,**kwargs)
         # fill in next features
         multi[..., self._idx_nextcossin_to_multi] = nextcossin
         self.set_multi(multi, **kwargs)
@@ -2503,6 +2517,7 @@ class PoseLabels:
         szrest = next.shape[:-1]
         n = np.prod(szrest)
         next_cossin = np.zeros((n, self.d_next_cossin), dtype=next.dtype)
+        next = next.reshape((n, self.d_next))
         idx_next_to_nextcossin = self._idx_next_to_nextcossin
         for inext in range(self.d_next):
             # indices of the next_cossin features that correspond to inext
@@ -2514,6 +2529,7 @@ class PoseLabels:
             else:
                 # otherwise just copy
                 next_cossin[..., inextcossin] = next[..., inext]
+        next_cossin = next_cossin.reshape(szrest + (self.d_next_cossin,))
         return next_cossin
 
     def next_to_input_labels(self, next):
@@ -2925,6 +2941,44 @@ class PoseLabels:
         multi_names = self.get_multi_names()
         continuous_names = [multi_names[i] for i in self._idx_multicontinuous_to_multi]
         return continuous_names
+    
+    def get_zscore_params(self,makecopy=True):
+        """
+        get_zscore_params()
+        Returns the zscore parameters.
+        Inputs: 
+        makecopy: whether to return a copy of the zscore parameters. Default is True.
+        Returns:
+        zscore_params: dictionary with keys 'mu_labels' and 'sigma_labels' containing the mean and standard deviation
+        """
+        if self.is_zscored() and makecopy:
+            return copy.deepcopy(self._zscore_params)
+        else:
+            return self._zscore_params
+    
+    def get_discretize_params(self,makecopy=True,zscored=True):
+        """
+        get_discretize_params()
+        Returns the discretize parameters.
+        Inputs: 
+        makecopy: whether to return a copy of the discretize parameters. Default is True.
+        zscored: whether the discretize parameters should be zscored, if self.is_zscored(). Default is True.
+        Returns:
+        discretize_params: dictionary with keys 'bin_edges' containing the bin edges for discretization
+        """
+        if not self.is_discretized():
+            return None
+        if self.is_zscored() and (zscored == False):
+            idx_discrete = self._idx_multidiscrete_to_multi
+            params = {}
+            for k,v in self._discretize_params.items():
+                # v may have extra dimensions                    
+                params[k] = unzscore(v,self._zscore_params['mu_labels'][idx_discrete,None],self._zscore_params['sig_labels'][idx_discrete,None])
+            return params
+        elif makecopy:
+            return copy.deepcopy(self._discretize_params)
+        else:
+            return self._discretize_params
     
     def compute_error(true_labels,pred_labels,nsamples=10,collapsetime=True):
         """

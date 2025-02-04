@@ -31,7 +31,8 @@ from matplotlib import animation
 import pickle
 
 from flyllm.prepare import init_flyllm
-from apf.utils import get_dct_matrix, compute_npad, save_animation
+from apf.utils import get_dct_matrix, compute_npad, save_animation, compute_ylim
+
 from apf.data import process_test_data, interval_all, debug_less_data, chunk_data
 from apf.io import read_config, get_modeltype_str, load_and_filter_data, save_model, load_model, parse_modelfile, load_config_from_model_file
 from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames, keypointnames
@@ -48,7 +49,9 @@ from flyllm.plotting import (
     debug_plot_global_error, 
     debug_plot_predictions_vs_labels,
     select_featidx_plot,
+    plot_multi_pred_iter_vs_true,
 )
+
 from apf.models import (
     initialize_model, 
     initialize_loss, 
@@ -60,7 +63,8 @@ from apf.models import (
     stack_batch_list,
 )
 from flyllm.simulation import animate_predict_open_loop
-from flyllm.prediction import predict_all
+from flyllm.prediction import predict_all, predict_iterative_all
+
 from IPython.display import HTML
 
 import logging
@@ -121,6 +125,8 @@ criterion = res['criterion']
 opt_model = res['opt_model']
 train_src_mask = res['train_src_mask']
 is_causal = res['is_causal']
+modeltype_str = res['modeltype_str']
+savetime = res['model_savetime']
 
 pred_nframes_skip = 20
 
@@ -134,13 +140,13 @@ posestatsfile = loadmodelfile.split('.')[0] + '_posestats.npz'
 # %%
 # load/compute pose statistics
 if posestatsfile is not None:
-    if os.path.exists(posestatsfile):
+    if False:#os.path.exists(posestatsfile):
         print("Loading pose stats from ", posestatsfile)
         posestats = np.load(posestatsfile)
 
     else:
         # check if variable data exists
-        if needtraindata == False:
+        if 'data' not in locals():
             data, scale_perfly = load_and_filter_data(config['intrainfile'], config, compute_scale_perfly,
                                                     keypointnames=keypointnames)
         posestats = compute_pose_distribution_stats(data,scale_perfly)
@@ -262,9 +268,10 @@ for k,v in err_total.items():
 # plot multi errors
 from flyllm.plotting import plot_multi_pred_vs_true
 
+savefig = False
 featsplot=[0,1,2,14, 16, 20, 22, 24, 26]
 toplots = [{'i': 0, 'tsplot': np.arange(8500,8800)}, {'i': 89, 'tsplot': np.arange(32400,32700)}, ]
-nsamples = 2
+nsamples = 100
 ylim_nstd = 5
 
 for toplot in toplots:
@@ -274,90 +281,21 @@ for toplot in toplots:
     true_example = true_data[i]
     id = true_example.metadata['id']
 
-    fig = plot_multi_pred_vs_true(pred_example,true_example,ylim_nstd=ylim_nstd,nsamples=nsamples,tsplot=tsplot)
+    fig = plot_multi_pred_vs_true(pred_example,true_example,ylim_nstd=ylim_nstd,nsamples=nsamples,tsplot=tsplot,plotbinedges=True,featsplot=featsplot)
 
     # save this figure as a pdf
-    fig.savefig(os.path.join(outfigdir,f'multi_pred_vs_true_{config["model_nickname"]}_fly{id}_{tsplot[0]}_to_{tsplot[-1]}.pdf'))
+    if savefig:
+        fig.savefig(os.path.join(outfigdir,f'multi_pred_vs_true_{config["model_nickname"]}_fly{id}_{tsplot[0]}_to_{tsplot[-1]}.pdf'))
+        plt.close(fig)
+    else:
+        break
 
 # %%
-i = toplots[1]['i']
-tsplot = toplots[1]['tsplot']
-plt.imshow(pred_data[i].labels.labels_raw['discrete'][tsplot,2,:].T,aspect='auto')
-j = np.argmax(np.sum(pred_data[i].labels.labels_raw['discrete'][tsplot,2,:],axis=0))
-print(np.diff(dataset_params['discretize_params']['bin_edges'][2][j:j+2]))
-print(dataset_params['discretize_epsilon'][2])
+bin_edges = true_example.labels.get_discretize_params(zscored=True)['bin_edges']
+featdiscretei = 0
+nbins = bin_edges.shape[1]
+np.stack((bin_edges[featdiscretei][:-1],bin_edges[featdiscretei][1:],np.nan+np.zeros(nbins-1)),axis=1).flatten()
 
-# %%
-plt.plot(dataset_params['discretize_params']['bin_edges'][2],'.')
-np.diff(dataset_params['discretize_params']['bin_edges'][2])
-
-
-# %%
-import re
-
-names = true_example.labels.get_multi_names()
-# get indices of names that have 'leg_tip_angle' in the name using regular expressions
-idx = [i for i, name in enumerate(names) if re.search('leg_tip_angle', name)]
-for i in idx:
-    print(f'{i}: {names[i]}')
-print(idx)
-
-# %%
-
-# # plot next pose errors
-# # I think this doesn't make sense to plot -- it is integrating errors, but also
-# # has access to previous frames correct velocities when predicting... 
-
-# i = 0
-# pred_example = pred_data[i]
-# true_example = true_data[i]
-# next_pose_names = true_example.labels.get_next_names()
-
-# #featnum = 58
-# nsamples = 100
-# #tsplot = np.arange(pred_example.ntimepoints-1)
-# tsplot = np.arange(0,100)
-
-# next_pose_pred = pred_example.labels.get_next_pose(nsamples=0,use_todiscretize=False)
-# next_pose_pred_sample = pred_example.labels.get_next_pose(nsamples=nsamples,use_todiscretize=False)
-# next_pose_pred_meansample = np.nanmean(next_pose_pred_sample,axis=0)
-# next_pose_true = true_example.labels.get_next_pose(use_todiscretize=True)
-# next_pose_isdiscrete = np.nanmax((np.max(next_pose_pred_sample,axis=0)-np.min(next_pose_pred_sample,axis=0)),axis=0) > 1e-6
-# bestsample = np.argmin(np.abs(next_pose_pred_sample-next_pose_true[None,...]),axis=0)
-
-# tabcolors = plt.cm.tab10(np.arange(10))
-# colors = {}
-# colors['true'] = 'k'
-# colors['weightedsum'] = tabcolors[0]
-# colors['meansample'] = tabcolors[1]
-# colors['minsample'] = tabcolors[2]
-# colors['sample'] = tabcolors[3]
-
-# fig,ax = plt.subplots(true_example.labels.d_next_pose,1,sharex=True,figsize=(16,4*true_example.labels.d_next_pose))
-
-# for featnum in range(true_example.labels.d_next_pose):
-
-#     miny = np.nanmin(next_pose_true[tsplot,featnum])
-#     maxy = np.nanmax(next_pose_true[tsplot,featnum])
-#     dy = maxy-miny
-#     ylim = (miny-.1*dy,maxy+.1*dy)
-
-#     if plotsamples:
-#         for i in range(next_pose_pred_sample.shape[0]):
-#             c = colors['sample'].copy()
-#             c[-1] = .05
-#             h, = ax[featnum].plot(next_pose_pred_sample[i,tsplot,featnum],'.',color=c)
-#             if i == 0:
-#                 h.set_label('random sample')
-#         ax[featnum].plot(next_pose_pred_meansample[tsplot,featnum],'.-',color=colors['meansample'],label='mean sample')
-#         ax[featnum].plot(next_pose_pred_sample[bestsample[tsplot,featnum],tsplot,featnum],'.-',label='best sample',color=colors['minsample'])
-
-#     ax[featnum].plot(next_pose_pred[tsplot,featnum],'.-',label='expected value',color=colors['weightedsum'])
-#     ax[featnum].plot(next_pose_true[tsplot,featnum],'.:',label='true',color=colors['true'])
-#     ax[featnum].set_ylim(ylim)
-#     if featnum == 0:
-#         ax[featnum].legend()
-#     ax[featnum].set_ylabel(f'{next_pose_names[featnum]}')
 
 # %%
 # store the random state so we can reproduce the same results
@@ -375,7 +313,7 @@ torch.random.set_rng_state(randstate_torch)
 
 animate_pose_params = {'figsizebase': 8,'ms': 4, 'focus_ms':8, 'lw': .75, 'focus_lw': 2}
 
-tpred = np.minimum(10 + config['contextl'], valdata['isdata'].shape[0] // 2)
+tpred = np.minimum(4000 + config['contextl'], valdata['isdata'].shape[0] // 2)
 
 # all frames must have real data
 burnin = config['contextl'] - 1
@@ -414,8 +352,6 @@ HTML(ani.to_html5_video())
 
 # %%
 # write the video to file 
-from apf.utils import save_animation
-
 vidtime = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
 flynumstr = '_'.join([str(x) for x in fliespred])
 savevidfile = os.path.join(config['savedir'], f"samplevideo_{modeltype_str}_{savetime}_{vidtime}_t0_{metadata['t0']}_flies{flynumstr}.mp4")
@@ -474,21 +410,17 @@ save_animation(ani, savevidfile)
 print('Finished writing.')
 
 # %%
+# create dataset for iterative prediction evaluation
 max_tpred = 150
 iter_val_dataset = FlyTestDataset(valX,config['contextl']+max_tpred+1,**dataset_params,need_labels=True,need_metadata=True,need_init=True,make_copy=True)
 
 # %%
-from apf.pose import PoseLabels, ObservationInputs, AgentExample
-from flyllm.pose import FlyPoseLabels, FlyObservationInputs, FlyExample
-from flyllm.prediction import predict_iterative_all
-
 # all_pred_iter is a list of length N of FlyExample objects
 # labelidx_iter is an ndarray of which test example each FlyExample corresponds to
 all_pred_iter, labelidx_iter = predict_iterative_all(valdata,iter_val_dataset,model,max_tpred,N=10,keepall=False,nsamples=10)
 
 # %%
 # plot multi predictions vs true
-from flyllm.plotting import plot_multi_pred_iter_vs_true
 savefig = True
 
 toff0 = 50
@@ -509,13 +441,15 @@ for i in range(len(all_pred_iter)):
 
     if savefig:
         fig.savefig(os.path.join(outfigdir,f'multi_pred_iter_vs_true_{config["model_nickname"]}_t0_{metadata["t0"]}_fly_{metadata["flynum"]}.pdf'))
+        plt.close(fig)
+    else:
+        break
+
 
 # %%
 # plot pose predictions vs true
 
-import flyllm.plotting
-from flyllm.plotting import plot_pose_pred_iter_vs_true
-
+savefig = True
 for i in range(len(all_pred_iter)):
     pred_example = all_pred_iter[i]
     examplei = labelidx_iter[i]
@@ -554,9 +488,6 @@ for k,v in err_total_iter.items():
         print(f'{k}: {type(v)}')
 
 # %%
-FlyExample(example_in=next(iter(iter_val_dataloader)),dataset=iter_val_dataset).labels.get_next_pose(nsamples=10).shape[slice(None)]
-
-# %%
 # plot multi errors
 
 d_multi = len(err_total_iter['multi_names'])
@@ -572,3 +503,281 @@ for featnum in range(d_multi):
     ax[featnum].set_ylabel(err_total_iter['multi_names'][featnum])
 
 fig.tight_layout()
+
+# %%
+# # debug setting pose
+
+# examplei = 0
+# example = iter_val_dataset[examplei]
+# exampleobj = FlyExample(example_in=example,dataset=iter_val_dataset)
+# multi0 = exampleobj.labels.get_multi(use_todiscretize=True)
+# next0 = exampleobj.labels.get_next(use_todiscretize=True)
+# pose0 = exampleobj.labels.get_next_pose(use_todiscretize=True)
+# kp0 = exampleobj.labels.get_next_keypoints(use_todiscretize=True)
+# multibad0 = np.zeros(multi0.shape)
+# exampleobj.labels.set_multi(multibad0,zscored=True)
+# multibad1 = exampleobj.labels.get_multi(use_todiscretize=True,zscored=True)
+# assert np.allclose(multibad0,multibad1)
+# nextbad1 = exampleobj.labels.get_next(use_todiscretize=True)
+# posebad1 = exampleobj.labels.get_next_pose(use_todiscretize=True)
+# kpbad1 = exampleobj.labels.get_next_keypoints(use_todiscretize=True)
+# print(f'max error between next0 and nextbad1: {np.max(np.abs(next0-nextbad1))}')
+# print(f'max error between pose0 and posebad1: {np.max(np.abs(pose0-posebad1))}')
+# print(f'max error between kp0 and kpbad1: {np.max(np.abs(kp0-kpbad1))}')
+# exampleobj.labels.set_next_pose(pose0)
+# next1 = exampleobj.labels.get_next(use_todiscretize=True)
+# pose1 = exampleobj.labels.get_next_pose(use_todiscretize=True)
+# kp1 = exampleobj.labels.get_next_keypoints(use_todiscretize=True)
+# print(f'max error between next0 and next1: {np.max(np.abs(next0-next1))}')
+# print(f'max error between pose0 and pose1: {np.max(np.abs(pose0-pose1))}')
+# print(f'max error between kp0 and kp1: {np.max(np.abs(kp0-kp1))}')
+# assert np.allclose(next0,next1,atol=1e-4)
+# assert np.allclose(pose0,pose1,atol=1e-4)
+# assert np.allclose(kp0,kp1,atol=1e-4)
+
+# ts = [config['contextl'],]
+# exampleobj = FlyExample(example_in=example,dataset=iter_val_dataset)
+# multi0 = exampleobj.labels.get_multi(use_todiscretize=True,ts=ts)
+
+# poseall0 = exampleobj.labels.get_next_pose(use_todiscretize=True)
+# init0 = poseall0[...,ts[0],:]
+# pose0 = exampleobj.labels.get_next_pose(use_todiscretize=True,ts=ts,init_pose=init0)
+# next0 = exampleobj.labels.get_next(use_todiscretize=True,ts=ts)
+# kp0 = exampleobj.labels.get_next_keypoints(use_todiscretize=True,ts=ts,init_pose=init0)
+# assert np.allclose(poseall0[[ts[0],ts[0]+1],:],pose0)
+# multibad = exampleobj.labels.get_multi(use_todiscretize=True,zscored=True)
+# multibad[...,ts,:] = 0
+# exampleobj.labels.set_multi(multibad,zscored=True)
+# multibad1 = exampleobj.labels.get_multi(use_todiscretize=True,zscored=True)
+# assert np.allclose(multibad,multibad1)
+# posebad1 = exampleobj.labels.get_next_pose(use_todiscretize=True,ts=ts,init_pose=init0)
+# nextbad1 = exampleobj.labels.get_next(use_todiscretize=True,ts=ts)
+# kpbad1 = exampleobj.labels.get_next_keypoints(use_todiscretize=True,ts=ts,init_pose=init0)
+# print(f'max error between pose0 and posebad1: {np.max(np.abs(pose0-posebad1))}')
+# print(f'max error between next0 and nextbad1: {np.max(np.abs(next0-nextbad1))}')
+# print(f'max error between kp0 and kpbad1: {np.max(np.abs(kp0-kpbad1))}')
+# exampleobj.labels.set_next_pose(pose0,ts=ts)
+# pose1 = exampleobj.labels.get_next_pose(use_todiscretize=True,ts=ts,init_pose=init0)
+# next1 = exampleobj.labels.get_next(use_todiscretize=True,ts=ts)
+# kp1 = exampleobj.labels.get_next_keypoints(use_todiscretize=True,ts=ts,init_pose=init0)
+# print(f'max error between pose0 and pose1: {np.max(np.abs(pose0-pose1))}')
+# print(f'max error between next0 and next1: {np.max(np.abs(next0-next1))}')
+# print(f'max error between kp0 and kp1: {np.max(np.abs(kp0-kp1))}')
+# assert np.allclose(pose0,pose1,atol=1e-4)
+# assert np.allclose(next0,next1,atol=1e-4)
+# assert np.allclose(kp0,kp1,atol=1e-4)
+
+
+# %%
+# reseed numpy random number generator with randstate_np
+np.random.set_state(randstate_np)
+# reseed torch random number generator with randstate_torch
+torch.random.set_rng_state(randstate_torch)
+
+all_pred_iter_reg, labelidx_iter_reg = predict_iterative_all(valdata,iter_val_dataset,model,max_tpred,keepall=False,
+                                                             labelidx=labelidx_iter[[0,]],nsamples=2,dampenconstant=1e-2,
+                                                             posestats=posestats,prctilelim=1e-3)
+
+
+# reseed numpy random number generator with randstate_np
+np.random.set_state(randstate_np)
+# reseed torch random number generator with randstate_torch
+torch.random.set_rng_state(randstate_torch)
+
+all_pred_iter_noreg, labelidx_iter_noreg = predict_iterative_all(valdata,iter_val_dataset,model,max_tpred,keepall=False,
+                                                             labelidx=labelidx_iter[[0,]],nsamples=2)
+
+# reseed numpy random number generator with randstate_np
+np.random.set_state(randstate_np)
+# reseed torch random number generator with randstate_torch
+torch.random.set_rng_state(randstate_torch)
+
+all_pred_iter_noreg1, labelidx_iter_noreg1 = predict_iterative_all(valdata,iter_val_dataset,model,max_tpred,keepall=False,
+                                                             labelidx=labelidx_iter[[0,]],nsamples=2)
+
+
+
+# %%
+# plot pose
+
+assert np.allclose(all_pred_iter_noreg1[0].labels.labels_raw['todiscretize'],all_pred_iter_noreg[0].labels.labels_raw['todiscretize'])
+nr = 3
+nc = 3
+nplots = nr*nc
+tsplot = config['contextl']-1 + np.arange(0,5*nplots,5)
+print(tsplot)
+kp_noreg = all_pred_iter_noreg[0].labels.get_next_keypoints(use_todiscretize=True)
+kp_reg = all_pred_iter_reg[0].labels.get_next_keypoints(use_todiscretize=True)
+pose_noreg = all_pred_iter_noreg[0].labels.get_next_pose(use_todiscretize=True)
+print(kp_noreg.shape)
+
+t = tsplot[1]
+samplei = 0
+fig,axs = plt.subplots(nr,nc,figsize=(nc*5,nr*5))
+axs = axs.flatten()
+
+from flyllm.plotting import plot_fly
+from flyllm.features import feat2kp
+
+for i,t in enumerate(tsplot):
+    ax = axs[i]
+    meanpose = pose_noreg[samplei,t].copy()
+    meanpose[3:] = posestats['meanrelpose']
+    meankp = feat2kp(meanpose,all_pred_iter_noreg[0].labels._scale[0])
+    meankp = meankp[:,:,0,0]
+    print(meankp.shape)
+    plot_fly(meankp,ax=ax,color=[.6,.6,.6],skel_lw=2,kpt_ms=50,kpt_marker='o')
+    plot_fly(kp_noreg[samplei,t],ax=ax,color=[0,0,0],skel_lw=2,kpt_ms=100,kpt_marker='x')
+    plot_fly(kp_reg[samplei,t],ax=ax,color=[0,0,.6],kpt_ms=100,kpt_marker='+')
+
+    for i in range(meankp.shape[0]):
+        ax.plot([kp_noreg[samplei,t,i,0],kp_reg[samplei,t,i,0],meankp[i,0]],
+                [kp_noreg[samplei,t,i,1],kp_reg[samplei,t,i,1],meankp[i,1]],'g-')
+
+    ax.set_aspect('equal')
+    ax.set_title(f't = {t}')
+    
+fig.tight_layout()
+
+# %%
+dampenconstants = [0,1e-4,1e-3,1e-2,5e-2,1e-1]
+prctilelim = 1e-3
+
+all_pred_iter_reg = [None,]*len(dampenconstants)
+for i,dampenconstant in enumerate(dampenconstants):
+    np.random.set_state(randstate_np)
+    torch.random.set_rng_state(randstate_torch)
+    all_pred_iter_reg[i], _ = predict_iterative_all(valdata,iter_val_dataset,model,max_tpred,keepall=False,
+                                                labelidx=labelidx_iter,nsamples=2,dampenconstant=dampenconstant,
+                                                posestats=posestats,prctilelim=prctilelim)
+
+# %%
+dampencolors = plt.cm.jet(np.arange(len(dampenconstants))/len(dampenconstants))*.8
+
+savefig = True
+toff0 = 50
+tsplot = config['contextl']+np.arange(-toff0,max_tpred+1)
+
+for exampleii in range(len(labelidx_iter)):
+
+    fig = None
+    examplei = labelidx_iter[exampleii]
+    true_example_dict = iter_val_dataset[examplei]
+    true_example_obj = FlyExample(example_in=true_example_dict,dataset=iter_val_dataset)
+    for i in range(len(dampenconstants)):
+        fig = plot_pose_pred_iter_vs_true(all_pred_iter_reg[i][exampleii],true_example_obj,tsplot=tsplot,maxsamplesplot=2,
+                                        samplecolors=np.tile(dampencolors[i,:],[2,1]),fig=fig,plottrue=i==len(dampenconstants)-1,
+                                        samplelabel=f'dampen = {dampenconstants[i]}')
+    axs = fig.get_axes()
+    for axi,ax in enumerate(axs):
+        # set the y lim so that all lines are visible
+        h = ax.get_lines()
+        ylimcurr = compute_ylim(h)
+        ax.set_ylim(ylimcurr)
+        ax.plot([toff0+1,toff0+1],ylimcurr,'k--')
+        if axi >= 3:
+            meanv = posestats['meanrelpose'][axi-3]
+            ax.plot([0,tsplot[-1]-tsplot[0]],[meanv,meanv],'k--')
+        
+    if savefig:
+        metadata = true_example_obj.metadata
+        fig.savefig(os.path.join(outfigdir,f'pose_pred_iter_vs_true_dampen_{config["model_nickname"]}_t0_{metadata["t0"]}_fly_{metadata["flynum"]}.pdf'))
+        plt.close(fig)
+    else:
+        plt.show()
+
+plt.close('all')
+
+# %%
+savefig = True
+
+for exampleii in range(len(labelidx_iter)):
+
+    fig = None
+    examplei = labelidx_iter[exampleii]
+    true_example_dict = iter_val_dataset[examplei]
+    true_example_obj = FlyExample(example_in=true_example_dict,dataset=iter_val_dataset)
+    for i in range(len(dampenconstants)):
+        fig = plot_multi_pred_iter_vs_true(all_pred_iter_reg[i][exampleii],true_example_obj,tsplot=tsplot,maxsamplesplot=2,
+                                            samplecolors=np.tile(dampencolors[i,:],[2,1]),fig=fig,plottrue=i==len(dampenconstants)-1,
+                                            samplelabel=f'dampen = {dampenconstants[i]}')
+    axs = fig.get_axes()
+    for axi,ax in enumerate(axs):
+        # set the y lim so that all lines are visible
+        h = ax.get_lines()
+        ylimcurr = compute_ylim(h)
+        ax.set_ylim(ylimcurr)
+        ax.plot([toff0+1,toff0+1],ylimcurr,'k--')
+        if axi >= 3:
+            meanv = posestats['meanrelpose'][axi-3]
+            ax.plot([0,tsplot[-1]-tsplot[0]],[meanv,meanv],'k--')
+        
+    if savefig:
+        metadata = true_example_obj.metadata
+        fig.savefig(os.path.join(outfigdir,f'multi_pred_iter_vs_true_dampen_{config["model_nickname"]}_t0_{metadata["t0"]}_fly_{metadata["flynum"]}.pdf'))
+        plt.close(fig)
+    else:
+        plt.show()
+        break
+
+
+# %%
+# simulate all flies with dampening
+
+# reseed numpy random number generator with randstate_np
+np.random.set_state(randstate_np)
+# reseed torch random number generator with randstate_torch
+torch.random.set_rng_state(randstate_torch)
+
+dampenconstant = .01
+prctilelim = 1e-3
+
+animate_pose_params = {'figsizebase': 8,'ms': 4, 'focus_ms':8, 'lw': .75, 'focus_lw': 2}
+predict_iterative_params = {'dampenconstant': dampenconstant, 'prctilelim': prctilelim, 'posestats': posestats}
+
+# choose data to initialive behavior modeling
+tpred = np.minimum(4000 + config['contextl'], valdata['isdata'].shape[0] // 2)
+
+# all frames must have real data
+burnin = config['contextl'] - 1
+contextlpad = burnin + val_dataset.ntspred_max
+allisdata = interval_all(valdata['isdata'], contextlpad)
+isnotsplit = interval_all(valdata['isstart'] == False, tpred)[1:, ...]
+canstart = np.logical_and(allisdata[:isnotsplit.shape[0], :], isnotsplit)
+flynum = 2  # 2
+t0 = np.nonzero(canstart[:, flynum])[0]
+idxstart = np.minimum(8700, len(t0) - 1)
+
+if len(t0) > idxstart:
+    t0 = t0[idxstart]
+else:
+    t0 = t0[0]
+isreal = np.any(np.isnan(valdata['X'][...,t0:t0+tpred,:]),axis=(0,1,2)) == False
+print(isreal)
+fliespred = np.nonzero(isreal)[0]
+
+nsamplesfuture = 0 # 32
+
+isreal = np.any(np.isnan(valdata['X'][...,t0:t0+tpred,:]),axis=(0,1,2)) == False
+Xkp_init = valdata['X'][...,t0:t0+tpred+val_dataset.ntspred_max,isreal]
+scales_pred = []
+for flypred in fliespred:
+  id = valdata['ids'][t0, flypred]
+  scales_pred.append(val_scale_perfly[:,id])
+metadata = {'t0': t0, 'ids': fliespred, 'videoidx': valdata['videoidx'][t0], 'frame0': valdata['frames'][t0]}
+print(metadata)
+
+ani = animate_predict_open_loop(model, val_dataset, Xkp_init, fliespred, scales_pred, tpred, 
+                          debug=False, plotattnweights=False, plotfuture=val_dataset.ntspred_max > 1, 
+                          nsamplesfuture=nsamplesfuture, metadata=metadata,
+                          animate_pose_params=animate_pose_params,plottrue=False,
+                          predict_iterative_params=predict_iterative_params)
+
+# %%
+# write the video to file 
+vidtime = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
+flynumstr = 'all'
+savevidfile = os.path.join(config['savedir'], f"samplevideo_dampen_{dampenconstant}_{modeltype_str}_{savetime}_{vidtime}_t0_{metadata['t0']}_flies{flynumstr}.mp4")
+print('Saving animation to file %s...'%savevidfile)
+save_animation(ani, savevidfile)
+print('Finished writing.')

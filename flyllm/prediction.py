@@ -286,7 +286,7 @@ def predict_all(dataloader=None, dataset=None, model=None, config=None, mask=Non
 
 
 def predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model, dataset, maxcontextl=np.inf, debug=False,
-                      need_weights=False, nsamples=0, labels_true=None, posestats=None, dampenconstant=0):
+                      need_weights=False, nsamples=0, labels_true=None, posestats=None, dampenconstant=0, prctilelim=None):
 
     """
     predict_iterative(examples_pred,fliespred,scales,Xkp_fill,burnin,model,dataset,
@@ -451,10 +451,11 @@ def predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model,
             # set the label for frame t, but not the inputs yet
             examples_pred[i].labels.set_prediction(pred,ts=t)
 
-            if (posestats is not None) and (dampenconstant > 0):
-                pose = examples_pred[i].labels.get_next_pose(ts=[t,],init_pose=pose_prev[i])
-                newpose = regularize_pose(pose,posestats,dampenconstant)
-                examples_pred[i].labels.set_next_pose(newpose,ts=[t,])
+            if (posestats is not None) and ((dampenconstant > 0) or (prctilelim is not None)):
+                pose = examples_pred[i].labels.get_next_pose(ts=[t,],init_pose=pose_prev[i], use_todiscretize=True)
+                # pose for frames [t-1,t]
+                pose[...,-1,:] = regularize_pose(pose[...,-1,:],posestats,dampenconstant,prctilelim=prctilelim)
+                examples_pred[i].labels.set_next_pose(pose,ts=[t,])
 
             # get pose/keypoints for predicted frame
             Xkpcurr = examples_pred[i].labels.get_next_keypoints(ts=[t,],init_pose=pose_prev[i])
@@ -483,7 +484,7 @@ def predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model,
         return examples_pred
 
 
-def predict_iterative_all(rawdata, dataset, model, tpred, N=None, keepall=True, debugcheat=False, nsamples=0):
+def predict_iterative_all(rawdata, dataset, model, tpred, N=None, keepall=True, debugcheat=False, nsamples=0, labelidx=None, **kwargs):
 
     # total number of frames we will crop out for each example
     ttotal = dataset.contextl
@@ -493,7 +494,9 @@ def predict_iterative_all(rawdata, dataset, model, tpred, N=None, keepall=True, 
     model.eval()
     dataset.set_eval_mode()
     
-    if N is not None and N < len(dataset):
+    if labelidx is not None:
+        N = len(labelidx)
+    elif N is not None and N < len(dataset):
         labelidx = np.random.choice(len(dataset),N,replace=False)
     else:
         labelidx = np.array(range(len(dataset)))
@@ -525,7 +528,7 @@ def predict_iterative_all(rawdata, dataset, model, tpred, N=None, keepall=True, 
                 Xkp_fill = np.tile(Xkp_fill[None],(nsamples,1,1,1,1))
 
             exampleobjs_pred = predict_iterative([exampleobj,], [agentnum,], [scale,], Xkp_fill, burnin, model, dataset, maxcontextl=burnin,
-                                                        debug=False, need_weights=False, nsamples=nsamples)
+                                                        debug=False, need_weights=False, nsamples=nsamples, **kwargs)
 
             exampleobj_pred = exampleobjs_pred[0]
         all_pred.append(exampleobj_pred)

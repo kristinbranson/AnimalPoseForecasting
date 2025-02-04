@@ -265,7 +265,10 @@ def fit_discretize_data(data, nbins=50, bin_epsilon=None, outlierprct=.001, frac
 
 
 def discretize_labels(movement, bin_edges, soften_to_ends=False):
-    n = movement.shape[0]
+
+    szrest = movement.shape[:-1]
+    n = int(np.prod(szrest))
+    movement = movement.reshape((n, -1))
     nfeat = bin_edges.shape[0]
     nbins = bin_edges.shape[1] - 1
 
@@ -298,6 +301,8 @@ def discretize_labels(movement, bin_edges, soften_to_ends=False):
         # d[:,-1] = True
         # d[:,1:-1] = movement[:,i,None] <= bin_edges[None,1:-1,i]
         # labels[:,:,i] = (d[:,:-1] == False) & (d[:,1:] == True)
+        
+    labels = labels.reshape(szrest + (nfeat, nbins))
 
     return labels
 

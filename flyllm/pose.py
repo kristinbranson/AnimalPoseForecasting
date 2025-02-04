@@ -13,7 +13,8 @@ from flyllm.features import (
     ravel_label_index,
     unravel_label_index,
     feat2kp,
-    kp2feat
+    kp2feat,
+    compute_movement,
 )
 from apf.pose import AgentParams, AgentExample, PoseLabels, ObservationInputs
 
@@ -1232,28 +1233,43 @@ class FlyPoseLabels(PoseLabels):
         nextpose: ndarray of size (pre_sz x ) ntimepoints x d_next with the next pose representation of the labels.
         Returns:
         next: ndarray of size (pre_sz x ) ntimepoints x d_next with the next representation of the labels.
-        init_pose: ndarray of size (pre_sz x ) d_next with the initial pose.
+        init_pose: ndarray of size (pre_sz x ) tinit x d_next with the initial pose.
         """
 
         szrest = nextpose.shape[:-2]
         n = int(np.prod(szrest))
         T = nextpose.shape[-2]
         nextpose = nextpose.reshape((n, T, self.d_next))
-        init_pose = nextpose[..., 0, :]
+        #init_pose = nextpose[..., 0, :]
+        
+        idx_nextglobal_to_next = self._idx_nextglobal_to_next
+        idx_nextrelative_to_next = self._idx_nextrelative_to_next
+        relpose = nextpose[...,idx_nextrelative_to_next]
+        globalpos = nextpose[...,idx_nextglobal_to_next]
+        # compute movement expects inputs of shape d x T x nflies
+        relpose = np.transpose(relpose, (2, 1, 0))
+        globalpos = np.transpose(globalpos, (2, 1, 0))
+        movement,init = compute_movement(relpose=relpose, globalpos=globalpos, simplify=self._simplify_out, 
+                                        dct_m=self._dct_m,
+                                        tspred_global=self.tspred_global,
+                                        compute_pose_vel=self._is_velocity,
+                                        discreteidx=self._idx_nextdiscrete_to_next)
+        # movement is d x T x nflies
+        movement = np.transpose(movement, (2, 1, 0))
+        init = np.transpose(init, (2, 1, 0))
         
         # if is_velocity, then compute diff for all features
         if self._is_velocity:
-            next = np.diff(nextpose, axis=1)
+            next = movement
         else:
-            # otherwise just compute for global features
-            idx_nextglobal_to_next = self._idx_nextglobal_to_next
+            # for relative features, just copy the relative features
             # offset by 1 to get the next frame's relative features
-            next = nextpose[..., 1:, :].copy()
-            next[..., idx_nextglobal_to_next] = np.diff(nextpose[..., idx_nextglobal_to_next], axis=1)
+            next[...,idx_nextrelative_to_next] = nextpose[..., 1:, idx_nextrelative_to_next].copy()
         next[..., self.is_angle_next] = modrange(next[..., self.is_angle_next], -np.pi, np.pi)
         next = next.reshape(szrest + (T - 1, self.d_next))
+        init = init.reshape(szrest + init.shape[1:])
 
-        return next, init_pose
+        return next, init
 
     def _next_to_nextvelocity(self, next):
         """
@@ -1367,7 +1383,7 @@ class FlyPoseLabels(PoseLabels):
         nextpose_global = self.next_to_nextglobal(nextpose)
         return nextpose_global
 
-    def set_next_pose(self, nextpose, **kwargs):
+    def set_next_pose(self, nextpose, ts=None, **kwargs):
         """
         set_next_pose(nextpose,nsamples=0)
         Sets the next pose representation of the labels. This will only update the next frame labels, not the
@@ -1381,8 +1397,9 @@ class FlyPoseLabels(PoseLabels):
         """
         self._pre_sz = nextpose.shape[:-2]
         next, init_pose = self._nextpose_to_next(nextpose)
-        self._init_pose = init_pose.T
-        self.set_next(next, zscored=False, **kwargs)
+        if (ts is None) or (ts[0] == 0):
+            self._init_pose = np.moveaxis(init_pose,-2,-1)
+        self.set_next(next, zscored=False, ts=ts, **kwargs)
 
     def _nextpose_to_nextkeypoints(self, pose):
         """
@@ -1577,7 +1594,7 @@ class FlyPoseLabels(PoseLabels):
             else:
                 multi_names[i] = nextcs_names[ft[i, 0]]
         return multi_names
-
+    
     def select_featidx_plot(self, ntsplot=None, ntsplot_global=None, ntsplot_relative=None):
         """
         select_featidx_plot(ntsplot=None, ntsplot_global=None, ntsplot_relative=None)

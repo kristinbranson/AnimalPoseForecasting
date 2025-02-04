@@ -46,7 +46,7 @@ mpl_backend = plt.get_backend()
 if mpl_backend == 'inline':
     from IPython import display
 
-def init_config(configfile=None,config=None,mode='train',loadmodelfile=None,res={}):
+def init_config(configfile=None,config=None,mode='train',loadmodelfile=None,overrideconfig={},res={}):
     """
     res = init_config(configfile=None,config=None,mode='train',loadmodelfile=None,res={})
     Read configuration from configfile and optionally loadmodelfile
@@ -69,6 +69,10 @@ def init_config(configfile=None,config=None,mode='train',loadmodelfile=None,res=
                             get_sensory_feature_idx=get_sensory_feature_idx,
                             featglobal=featglobal,
                             posenames=posenames)
+        
+    if overrideconfig is not None:
+        for k in overrideconfig:
+            config[k] = overrideconfig[k]
     
     if mode in ['test']:
         # set loadmodelfile from config if not specified
@@ -518,7 +522,7 @@ def init_flyllm(configfile=None,config=None,mode='test',loadmodelfile=None,seedr
                 quickdebugdatafile=None,needtraindata=None,needvaldata=None,traindataprocess=None,
                 valdataprocess=None,restartmodelfile=None,res={},
                 doinitconfig=True,doinitstate=True,doinitrawdata=True,doinitprocessdata=True,
-                doinitdatasets=True,doinitmodel=True):
+                doinitdatasets=True,doinitmodel=True,overrideconfig={}):
     """
     res = init_flyllm(configfile=None,config=None,mode='test',loadmodelfile=None,seedrandom=True,
                       quickdebugdatafile=None,needtraindata=None,needvaldata=None,traindataprocess=None,
@@ -626,7 +630,8 @@ def init_flyllm(configfile=None,config=None,mode='test',loadmodelfile=None,seedr
     ## load config
     if doinitconfig:
         # adds 'config' to res
-        res = init_config(configfile=configfile,config=config,mode=mode,loadmodelfile=loadmodelfile,res=res)
+        res = init_config(configfile=configfile,config=config,mode=mode,loadmodelfile=loadmodelfile,
+                          overrideconfig=overrideconfig,res=res)
 
     ## setup device and random
     if doinitstate:
