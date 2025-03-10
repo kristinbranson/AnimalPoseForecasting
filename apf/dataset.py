@@ -39,6 +39,14 @@ class Data(NamedTuple):
     operations: list[Operation] = []
 
 
+class Identity(Operation):
+    def apply(self, data: np.ndarray):
+        return data
+
+    def inverse(self, data: np.ndarray):
+        return data
+
+
 class Zscore(Operation):
     """ Zscores and unzscores data.
 
@@ -253,7 +261,7 @@ class Discretize(Operation):
         data_flat_discrete = discretize_labels(data_flat, self.bin_edges, soften_to_ends=True)
         return data_flat_discrete.reshape((n_agents, n_frames, -1))
 
-    def inverse(self, data: np.ndarray, do_sampling: bool = False) -> np.ndarray:
+    def inverse(self, data: np.ndarray, do_sampling: bool = True) -> np.ndarray:
         """ Unbins the data.
 
         Args:
@@ -661,11 +669,12 @@ def apply_opers_from_data(data_from, data_to):
     I think I can just use this instead of assemble inputs, just need to concatenate the output
     """
     assert len(data_from.keys()) == len(data_to.keys()), "The two data collections must have the same keys"
-    for key_from, key_to in zip(data_from.keys(), data_to.keys()):
-        assert key_from == key_to, "The two data collections must have the same keys in the same order"
-        opers = get_post_operations(data_from[key_from].operations, key_from)
-        data_to[key_from] = apply_operations(data_to[key_from],opers)
-    return data_to
+    processed_data = {}
+    for key in data_from.keys():
+        assert key in data_to, "Expect both data to have all of the same keys"
+        opers = get_post_operations(data_from[key].operations, key)
+        processed_data[key] = apply_operations(data_to[key], opers)
+    return processed_data
 
 
 class Dataset(torch.utils.data.Dataset):

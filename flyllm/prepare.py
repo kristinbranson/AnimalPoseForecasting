@@ -512,7 +512,11 @@ def init_model(config=None,somedataset=None,somedataloader=None,device=None,load
     res['is_causal'] = is_causal
 
     if mode in ['test',]:
-        res['opt_model'] = torch.compile(model)
+        try:
+            res['opt_model'] = torch.compile(model)
+        except Exception as e:
+            res['opt_model'] = None
+            LOG.error(f"Couldn't compile model: {e}")
     else:
         res['opt_model'] = None
 
@@ -706,8 +710,12 @@ def init_flyllm(configfile=None,config=None,mode='test',loadmodelfile=None,seedr
                 args['somedataloader'] = res['train_dataloader']
                 args['ntrain_batches'] = res['ntrain_batches']
             elif mode in ['test',]:
-                args['somedataset'] = res['val_dataset']
-                args['somedataloader'] = res['val_dataloader']
+                if res['val_dataset'] is not None:
+                    args['somedataset'] = res['val_dataset']
+                    args['somedataloader'] = res['val_dataloader']
+                elif res['train_dataset'] is not None:
+                    args['somedataset'] = res['train_dataset']
+                    args['somedataloader'] = res['train_dataloader']
             else:
                 if res['traindataset'] is not None:
                     args['somedataset'] = res['train_dataset']

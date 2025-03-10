@@ -1072,8 +1072,9 @@ def initialize_model(config, train_dataset, device):
         d_output = train_dataset.d_output_continuous
     else:
         d_output = train_dataset.d_output
-        
-    MODEL_ARGS['dataset_params'] = train_dataset.get_model_params()
+
+    if hasattr(train_dataset, 'get_model_params'):
+        MODEL_ARGS['dataset_params'] = train_dataset.get_model_params()
 
     if config['modelstatetype'] == 'prob':
         model = TransformerStateModel(d_input, d_output, **MODEL_ARGS).to(device)

@@ -2,10 +2,10 @@ import sys
 import torch
 from torch.utils.data import DataLoader
 import tqdm
-import numpy as np
 import copy
+# import numpy as np
 
-from apf.dataset import Dataset
+# from apf.dataset import Dataset
 from apf.models import (
     sanity_check_temporal_dep,
     compute_loss_mixed,
@@ -14,46 +14,46 @@ from apf.models import (
 )
 
 
-def to_dataloader(dataset: Dataset, device: torch.device, batch_size: int, shuffle: bool) -> DataLoader:
-    """ Convert all data in dataset to tensors and wrap dataset in a torch data loader.
-
-    Args:
-        dataset: Dataset to be wrapped into data loader
-        device: Device to put the tensors on
-        batch_size: Batch size that the data loader will use for training
-        shuffle: Whether to shuffle items in dataset.
-    """
-    # Map data to torch
-    for data in dataset.all_data():
-        if not isinstance(data.processed, torch.Tensor):
-            data.processed = torch.from_numpy(data.processed.astype(np.float32)).to(device)
-
-    # Wrap dataset in data loader
-    # TODO: See why pin_memory=True was failing
-    return DataLoader(
-        dataset, batch_size=batch_size, shuffle=shuffle, pin_memory=False
-    )
-
-
-def init_model(train_dataset: Dataset, model_args: dict) -> TransformerModel:
-    """ Initialize a transformer model based on training dataset dimensions and config parameters.
-
-    Args:
-        train_dataset: Dataset containing d_input, d_output_continuous, d_output_discrete and n_bins attributes
-        model_args: Dictionary containing arguments for TransformerModel.
-
-    Returns:
-        model: Transformer model iwt random weights.
-    """
-    # Initialize a transformer model
-    model = TransformerModel(
-        d_input=train_dataset.d_input,
-        d_output=train_dataset.d_output_continuous,
-        d_output_discrete=train_dataset.d_output_discrete,
-        nbins=train_dataset.n_bins,
-        **model_args,
-    )
-    return model
+# def to_dataloader(dataset: Dataset, device: torch.device, batch_size: int, shuffle: bool) -> DataLoader:
+#     """ Convert all data in dataset to tensors and wrap dataset in a torch data loader.
+#
+#     Args:
+#         dataset: Dataset to be wrapped into data loader
+#         device: Device to put the tensors on
+#         batch_size: Batch size that the data loader will use for training
+#         shuffle: Whether to shuffle items in dataset.
+#     """
+#     # Map data to torch
+#     for data in dataset.all_data():
+#         if not isinstance(data.processed, torch.Tensor):
+#             data.processed = torch.from_numpy(data.processed.astype(np.float32)).to(device)
+#
+#     # Wrap dataset in data loader
+#     # TODO: See why pin_memory=True was failing
+#     return DataLoader(
+#         dataset, batch_size=batch_size, shuffle=shuffle, pin_memory=False
+#     )
+#
+#
+# def init_model(train_dataset: Dataset, model_args: dict) -> TransformerModel:
+#     """ Initialize a transformer model based on training dataset dimensions and config parameters.
+#
+#     Args:
+#         train_dataset: Dataset containing d_input, d_output_continuous, d_output_discrete and n_bins attributes
+#         model_args: Dictionary containing arguments for TransformerModel.
+#
+#     Returns:
+#         model: Transformer model iwt random weights.
+#     """
+#     # Initialize a transformer model
+#     model = TransformerModel(
+#         d_input=train_dataset.d_input,
+#         d_output=train_dataset.d_output_continuous,
+#         d_output_discrete=train_dataset.d_output_discrete,
+#         nbins=train_dataset.n_bins,
+#         **model_args,
+#     )
+#     return model
 
 
 def train(
@@ -63,6 +63,7 @@ def train(
         num_train_epochs: int,
         max_grad_norm: float,
         optimizer_args,
+        loss_epoch: dict = None,
 ) -> tuple[TransformerModel, TransformerModel, dict]:
     """ Trains a model on train_dataloader, using val_dataloader to select the best_model.
 
@@ -89,7 +90,8 @@ def train(
                                                      total_iters=num_training_steps)
 
     # Initialize structure to keep track of loss
-    loss_epoch = {}
+    if loss_epoch is None:
+        loss_epoch = {}
     for key in ['train', 'val', 'train_continuous', 'train_discrete', 'val_continuous', 'val_discrete']:
         loss_epoch[key] = torch.zeros(num_train_epochs)
         loss_epoch[key][:] = torch.nan

@@ -362,7 +362,8 @@ def save_animation(ani, filename, writer=None, codec='h264', bitrate=None, fps=3
         if dpi is not None:
             kwargs['dpi'] = dpi
 
-        writer = matplotlib.animation.PillowWriter(fps=fps,**kwargs)
+        writer = matplotlib.animation.PillowWriter(fps=fps)
+        #writer = matplotlib.animation.PillowWriter(**kwargs)
     elif writer == 'ffmpeg':
         if codec is not None:
             kwargs['codec'] = codec
@@ -498,3 +499,18 @@ def compute_ylim(h,margin=0.1):
     ylim[0] -= margin*dy
     ylim[1] += margin*dy
     return ylim
+
+
+def set_invalid_ends(data: np.ndarray, isstart: np.ndarray, dt: int) -> None:
+    """ Sets last dt frames at the end of a continuous sequence to be NaN.
+
+    Args:
+        data: Data that was computed using dt, e.g. future motion prediction. (n_features, n_frames, n_agents) float
+        isstart: Indicates whether a frame is the start of a sequence for an agent, (n_frames, n_agents) bool
+        dt: number of frames to set as invalid.
+    """
+    n_agents = data.shape[-1]
+    for i in range(n_agents):
+        starts = np.where(isstart[:, i] == 1)[0]
+        invalids = np.unique(np.concatenate([starts - i - 1 for i in range(dt)]))
+        data[..., invalids, i] = np.nan
