@@ -1,7 +1,12 @@
 import numpy as np
-import torch
 import inspect
 from typing import Callable
+import matplotlib
+import matplotlib.pyplot as plt
+import tqdm
+import torch
+import h5py
+import scipy.io
 
 
 def modrange(x, l, u):
@@ -53,18 +58,18 @@ def boxsum(x, n):
 
 def get_dct_matrix(N):
     """ Get the Discrete Cosine Transform coefficient matrix
-  Copied from https://github.com/dulucas/siMLPe/blob/main/exps/baseline_h36m/train.py
-  Back to MLP: A Simple Baseline for Human Motion Prediction
-  Guo, Wen and Du, Yuming and Shen, Xi and Lepetit, Vincent and Xavier, Alameda-Pineda and Francesc, Moreno-Noguer
-  arXiv preprint arXiv:2207.01567
-  2022
-  Args:
-      N (int): number of time points
+    Copied from https://github.com/dulucas/siMLPe/blob/main/exps/baseline_h36m/train.py
+    Back to MLP: A Simple Baseline for Human Motion Prediction
+    Guo, Wen and Du, Yuming and Shen, Xi and Lepetit, Vincent and Xavier, Alameda-Pineda and Francesc, Moreno-Noguer
+    arXiv preprint arXiv:2207.01567
+    2022
+    Args:
+        N (int): number of time points
 
-  Returns:
-      dct_m: array of shape N x N with the encoding coefficients
-      idct_m: array of shape N x N with the inverse coefficients
-  """
+    Returns:
+        dct_m: array of shape N x N with the encoding coefficients
+        idct_m: array of shape N x N with the inverse coefficients
+    """
     dct_m = np.eye(N)
     for k in np.arange(N):
         for i in np.arange(N):
@@ -145,3 +150,339 @@ def function_args_from_config(config: dict, function: Callable) -> dict:
     """
     function_args = inspect.getfullargspec(function).args[1:]
     return {arg: config[arg] for arg in function_args if arg in config}
+
+
+def allocate_batch_concat(batch,n,device=None):
+    """
+    allocate_batch_concat(batch,n)
+    Allocate for concatenating a bunch of batches in the way that batching in torch concatenates. 
+    Inputs:
+    batch: a single batch
+    n: number of examples to allocate for
+    Output:
+    batch_concat: allocation for a batch of size n*batch.shape[0]
+    """
+    if isinstance(batch, torch.Tensor):
+        if device is None:
+            device = batch.device
+        batch_concat = torch.zeros((n*batch.shape[0], *batch.shape[1:]), dtype=batch.dtype, device=device)
+        if torch.is_floating_point(batch):
+            batch_concat[:] = torch.nan
+    elif isinstance(batch, np.ndarray):
+        batch_concat = np.zeros((n*batch.shape[0], *batch.shape[1:]), dtype=batch.dtype)
+        if np.issubdtype(batch.dtype, np.floating):
+            batch_concat[:] = np.nan
+    elif isinstance(batch, dict):
+        batch_concat = {}
+        for k in batch.keys():
+            batch_concat[k] = allocate_batch_concat(batch[k],n)
+    else:
+        batch_concat = [None,]*n
+    return batch_concat
+
+def set_batch_concat(batch,batch_concat,off):
+    """
+    set_batch_concat(batch,batch_concat,off)
+    Sets a batch starting at off in batch_concat. 
+    Inputs:
+    batch: a single batch
+    batch_concat: the pre-allocated concatenated batch
+    off: the offset to start at
+    Outputs:
+    batch_concat: the updated batch_concat
+    off1: the offset after the batch
+    """
+    if isinstance(batch, torch.Tensor) or isinstance(batch, np.ndarray):
+        off1 = off+batch.shape[0]
+        batch_concat[off:off1] = batch
+    elif isinstance(batch, dict):
+        off1prev = None
+        for k in batch.keys():
+            batch[k],off1 = set_batch_concat(batch[k],batch_concat[k],off)
+            if off1prev is not None:
+                assert off1 == off1prev, 'set_batch_concat: inconsistent batch sizes'
+            off1prev = off1
+    else:
+        batch_concat[off] = batch
+        off1 = off+1
+    return batch_concat,off1
+
+def clip_batch_concat(batch_concat,totallen):
+    """
+    clip_batch_concat(batch_concat,totallen)
+    Clip a batch_concat to a total length of totallen.
+    Inputs:
+    batch_concat: a batch_concat
+    totallen: the total length to clip to
+    Outputs:
+    batch_concat: the clipped batch_concat
+    """
+    if isinstance(batch_concat, torch.Tensor) or isinstance(batch_concat, np.ndarray):
+        return batch_concat[:totallen]
+    elif isinstance(batch_concat, dict):
+        res = {}
+        for k in batch_concat.keys():
+            res[k] = clip_batch_concat(batch_concat[k],totallen)
+        return res
+    else:
+        return batch_concat[:totallen]
+    
+def compare_dicts(old_ex,new_ex,maxerr=None):
+  for k,v in old_ex.items():
+    if not k in new_ex:
+      print(f'Missing key {k}')
+      continue
+
+    v = v.cpu().numpy() if type(v) is torch.Tensor else v
+    newv = new_ex[k].cpu().numpy() if type(new_ex[k]) is torch.Tensor else new_ex[k]
+    
+    err = 0.
+    if type(v) is not type(newv):
+      print(f'Type mismatch for key {k}: {type(v)} vs {type(newv)}')
+    elif type(v) is np.ndarray:
+      if v.shape != newv.shape:
+        print(f'Shape mismatch for key {k}: {v.shape} vs {newv.shape}')
+        continue
+      if v.size == 0:
+        print(f'empty arrays for key {k}')
+      else:
+        err = np.nanmax(np.abs(v-newv))
+        print(f'max diff {k}: {err:e}')
+    elif type(v) is dict:
+      print(f'Comparing dict {k}')
+      compare_dicts(v,newv)
+    else:
+      try:
+        err = np.nanmax(np.abs(v-newv))
+        print(f'max diff {k}: {err:e}')
+      except:
+        print(f'not comparing {k}')
+    if maxerr is not None:
+      assert err < maxerr, f'Error too large for key {k}: {err} >= {maxerr}'
+      
+  missing_keys = [k for k in new_ex.keys() if not k in old_ex]
+  if len(missing_keys) > 0:
+    print(f'Missing keys: {missing_keys}')
+
+  return
+
+def draw_ellipse(x=0,y=0,a=1,b=1,theta=0,ax=None,**kwargs):
+    if ax is None:
+        ax = plt.gca()
+    phi = np.linspace(0,2*np.pi,100)
+    xplot = x + a*np.cos(phi)*np.cos(theta) - b*np.sin(phi)*np.sin(theta)
+    yplot = y + a*np.cos(phi)*np.sin(theta) + b*np.sin(phi)*np.cos(theta)
+    h = ax.plot(xplot,yplot,**kwargs)
+    return h
+
+def cov2ell(S,nsig=2):
+    """
+    cov2ell(S)
+    Convert covariance matrix to ellipse parameters
+    S: ... x 2 x 2 covariance matrix
+    """
+    # val is the eigenvalues of S, ... x 2
+    # U is the eigenvectors, ... x 2 x 2
+    val,vec = np.linalg.eig(S)
+    a = np.sqrt(val[...,0])*nsig
+    b = np.sqrt(val[...,1])*nsig
+    theta = np.arctan2(vec[...,1,0],vec[...,0,0])
+    theta = np.mod(theta+np.pi/2,np.pi)-np.pi/2
+    return a,b,theta
+
+def pre_tile_array(array, drest, newpre_sz):
+    """
+    pre_tile_array(array, drest, newpre_sz)
+    Tile the input array so that it is of size
+    newpre_sz + array.shape[-drest:]
+    """
+    
+    if drest == 0:
+        oldpre_sz = ()
+    else:
+        oldpre_sz = array.shape[:-drest]
+    d_pre_new = len(newpre_sz)
+    d_pre_old = len(oldpre_sz)
+    d_add = d_pre_new - d_pre_old
+    for i in range(d_pre_old):
+        assert newpre_sz[-i-1] == oldpre_sz[-i-1], 'pre_sz mismatch'
+    array = np.tile(array, newpre_sz[:d_add] + (1,) * (d_pre_old+drest))
+    return array
+
+def pad_axis_array(array, npad, ax, **kwargs):
+    """
+    pad_axis_array(array, npad, ax)
+    Pad the input array along the specified axis
+    """
+    if npad == 0:
+        return array
+    if ax < 0:
+        ax = array.ndim + ax
+    return np.pad(array, ((0,)*ax + (0, npad),), **kwargs)
+
+def save_animation(ani, filename, writer=None, codec='h264', bitrate=None, fps=30, dpi=None, optimize=3,
+                   preset='faster',crf=20,video_profile='high',pix_fmt='yuv420p',scale=None,
+                   extra_args=[]):
+    """
+    Creates an optimized animation using matplotlib.
+    
+    Args:
+        fig: matplotlib figure object
+        animation_frames: function that updates the plot for each frame
+        filename: output filename
+        fps: frames per second
+    """
+    
+    if writer is None:
+        # get extension from filename
+        ext = filename.split('.')[-1]
+        if ext == 'gif':
+            writer = 'pillow'
+        else:
+            writer = 'ffmpeg'
+
+    kwargs = {'fps':fps}
+    if writer == 'pillow':
+        if optimize is not None:
+            extra_args += ['-optimize',str(optimize)]
+        if len(extra_args) > 0:
+            kwargs['extra_args'] = extra_args
+        if dpi is not None:
+            kwargs['dpi'] = dpi
+
+        writer = matplotlib.animation.PillowWriter(fps=fps,**kwargs)
+    elif writer == 'ffmpeg':
+        if codec is not None:
+            kwargs['codec'] = codec
+        if bitrate is not None:
+            kwargs['bitrate'] = bitrate
+        if preset is not None:
+            extra_args += ['-preset',preset]
+        if crf is not None:
+            extra_args += ['-crf',str(crf)]
+        if video_profile is not None:
+            extra_args += ['-profile:v',video_profile]
+        if pix_fmt is not None:
+            extra_args += ['-pix_fmt',pix_fmt]
+        if scale is not None:
+            extra_args += ['-vf','scale='+scale]
+        if len(extra_args) > 0:
+            kwargs['extra_args'] = extra_args
+        writer = matplotlib.animation.FFMpegWriter(**kwargs)
+    else:
+        raise ValueError('Unknown writer type '+writer)
+    
+    # number of frames in ani
+    total_frames = ani.save_count
+    
+    def progress_callback(current_frame, total_frames):
+        progress_bar.update(1)
+        progress_bar.refresh()
+    
+    # Save animation with progress bar
+    progress_bar = tqdm.tqdm(total=total_frames, desc='Saving animation', leave=True, position=0)
+    ani.save(
+        filename,
+        writer=writer,
+        progress_callback=progress_callback)
+    progress_bar.close()
+    
+def get_cuda_device():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    return device
+
+def matstruct_to_dict(mat):
+    """
+    d = matstruct_to_dict(mat)
+    Convert Matlab struct read with scipy.io.loadmat to a dict
+    """
+    d = {}
+    for k in mat.dtype.names:
+        if mat[k].size == 1:
+            d[k] = mat[k].flatten()[0]
+        else:
+            d[k] = mat[k]
+    return d
+
+def matdict_to_dict(matdict):
+    """
+    d = matdict_to_dict(matdict)
+    Convert the output from scipy.io.loadmat to a dict
+    """
+    d = {}
+    for k,v in matdict.items():
+        if isinstance(v,np.ndarray):
+            if v.dtype.names is None:
+                d[k] = v
+            else:
+                if v.size == 1:
+                    d[k] = matstruct_to_dict(v)
+                else:
+                    d[k] = []
+                    v = v.flatten()
+                    for i in range(len(v)):
+                        d[k].append(matstruct_to_dict(v[i]))
+        else:
+            d[k] = v
+    return d
+
+
+def hdf5_to_py(A, h5file):
+    if isinstance(A, h5py._hl.dataset.Dataset):
+        if 'Python.Type' in A.attrs and A.attrs['Python.Type'] == b'str':
+            out = u''.join([chr(int(t)) for t in A])
+        elif 'Python.Type' in A.attrs and A.attrs['Python.Type'] in [b'list', b'tuple']:
+            if 'Python.Empty' in A.attrs and A.attrs['Python.Empty'] == 1:
+                out = []
+            else:
+                out = [hdf5_to_py(t, h5file) for t in A[()].flatten().tolist()]
+        elif 'Python.Type' in A.attrs and A.attrs['Python.Type'] == b'bool':
+            out = bool(A[()])
+        elif 'Python.Type' in A.attrs and A.attrs['Python.Type'] == b'int':
+            out = int(A[()])
+        elif 'Python.Type' in A.attrs and A.attrs['Python.Type'] == b'float':
+            out = float(A[()])
+        elif 'Python.numpy.Container' in A.attrs and A.attrs['Python.numpy.Container'] == b'scalar' and A.attrs['Python.Type'] == b'numpy.float64':
+            out = np.array(A[()].flatten())
+        elif 'Python.Type' in A.attrs and A.attrs['Python.Type'] == b'numpy.ndarray' and 'Python.Empty' in A.attrs and A.attrs['Python.Empty'] == 1:
+            out = np.zeros(0)
+        else:
+            out = A[()].T
+    elif isinstance(A,h5py._hl.group.Group):
+        out = {}
+        for key, val in A.items():
+            out[key] = hdf5_to_py(val, h5file)
+    elif isinstance(A,h5py.h5r.Reference):
+        out = hdf5_to_py(h5file[A],h5file)
+    elif isinstance(A,np.ndarray) and A.dtype=='O':
+        out = np.array([hdf5_to_py(x,h5file) for x in A])
+    else:
+        out = A
+    return out
+
+
+def read_matfile(mat_file):
+    """
+    data = read_matfile(mat_file)
+    Read mat_file either using scipy.io.loadmat for old-style mat files, h5py if hdf5 files
+    """
+    try:
+        data = scipy.io.loadmat(mat_file)
+        data = matdict_to_dict(data)
+    except NotImplementedError:
+        data = h5py.File(mat_file, 'r')
+        data = hdf5_to_py(data,data)
+    return data
+
+def compute_ylim(h,margin=0.1):
+    """
+    Compute ylim for a lines
+    """
+    ylim = [np.inf,-np.inf]
+    for line in h:
+        ylim[0] = np.minimum(ylim[0],np.nanmin(line.get_ydata()))
+        ylim[1] = np.maximum(ylim[1],np.nanmax(line.get_ydata()))
+    dy = ylim[1]-ylim[0]
+    ylim[0] -= margin*dy
+    ylim[1] += margin*dy
+    return ylim
