@@ -2,10 +2,8 @@ import sys
 import torch
 from torch.utils.data import DataLoader
 import tqdm
-import numpy as np
 import copy
 
-from apf.dataset import Dataset
 from apf.models import (
     sanity_check_temporal_dep,
     compute_loss_mixed,
@@ -14,55 +12,14 @@ from apf.models import (
 )
 
 
-def to_dataloader(dataset: Dataset, device: torch.device, batch_size: int, shuffle: bool) -> DataLoader:
-    """ Convert all data in dataset to tensors and wrap dataset in a torch data loader.
-
-    Args:
-        dataset: Dataset to be wrapped into data loader
-        device: Device to put the tensors on
-        batch_size: Batch size that the data loader will use for training
-        shuffle: Whether to shuffle items in dataset.
-    """
-    # Map data to torch
-    for data in dataset.inputs + dataset.labels:
-        if not isinstance(data.processed, torch.Tensor):
-            data.processed = torch.from_numpy(data.processed.astype(np.float32)).to(device)
-
-    # Wrap dataset in data loader
-    # TODO: See why pin_memory=True was failing
-    return DataLoader(
-        dataset, batch_size=batch_size, shuffle=shuffle, pin_memory=False
-    )
-
-
-def init_model(train_dataset: Dataset, model_args: dict) -> TransformerModel:
-    """ Initialize a transformer model based on training dataset dimensions and config parameters.
-
-    Args:
-        train_dataset: Dataset containing d_input, d_output_continuous, d_output_discrete and n_bins attributes
-        model_args: Dictionary containing arguments for TransformerModel.
-
-    Returns:
-        model: Transformer model iwt random weights.
-    """
-    # Initialize a transformer model
-    model = TransformerModel(
-        d_input=train_dataset.d_input,
-        d_output=train_dataset.d_output_continuous,
-        d_output_discrete=train_dataset.d_output_discrete,
-        nbins=train_dataset.n_bins,
-        **model_args,
-    )
-    return model
-
-
 def train(
         train_dataloader: DataLoader,
         val_dataloader: DataLoader,
         model: TransformerModel,
         num_train_epochs: int,
         max_grad_norm: float,
-        optimizer_args,
+        optimizer_args: dict,
+        loss_epoch: dict | None = None,
 ) -> tuple[TransformerModel, TransformerModel, dict]:
     """ Trains a model on train_dataloader, using val_dataloader to select the best_model.
 
@@ -74,6 +31,8 @@ def train(
          num_train_epochs: How many times to loop through all examples in the dataset during training.
          max_grad_norm: Threshold for clipping gradients during training.
          optimizer_args: Named arguments used for the AdamW optimizer.
+         loss_epoch: Keeps track of training and validation losses. If provided, morphs this input so that
+            if training is aborted the losses are still available.
 
     Returns:
         model: Model after training on all epochs
@@ -89,7 +48,8 @@ def train(
                                                      total_iters=num_training_steps)
 
     # Initialize structure to keep track of loss
-    loss_epoch = {}
+    if loss_epoch is None:
+        loss_epoch = {}
     for key in ['train', 'val', 'train_continuous', 'train_discrete', 'val_continuous', 'val_discrete']:
         loss_epoch[key] = torch.zeros(num_train_epochs)
         loss_epoch[key][:] = torch.nan
@@ -109,6 +69,7 @@ def train(
     d_discrete = train_dataloader.dataset.d_output_discrete
     d_continuous = train_dataloader.dataset.d_output_continuous
     weight_discrete = d_discrete / (d_discrete + d_continuous)
+    print(f"weight_discrete = {weight_discrete}")
     progress_bar = tqdm.tqdm(range(num_training_steps), file=sys.stdout)
     best_model = model
     best_val_loss = 10000
@@ -141,12 +102,13 @@ def train(
             lr_scheduler.step()
             model.zero_grad()
 
-            # update progress bar
-            stat = {'trainloss': tr_loss.item() / nmask_train, 'lastvalloss': last_val_loss, 'epoch': epoch}
-            stat['train loss discrete'] = tr_loss_discrete.item() / nmask_train
-            stat['train loss continuous'] = tr_loss_continuous.item() / nmask_train
-            progress_bar.set_postfix(stat)
-            progress_bar.update(1)
+        # update progress bar
+        stat = {'trainloss': tr_loss.item() / nmask_train, 'lastvalloss': last_val_loss, 'epoch': epoch}
+        stat['train loss discrete'] = tr_loss_discrete.item() / nmask_train
+        stat['train loss continuous'] = tr_loss_continuous.item() / nmask_train
+        progress_bar.set_postfix(stat)
+            # progress_bar.update(1)
+        progress_bar.update(len(train_dataloader))
 
         # training epoch complete
         loss_epoch['train'][epoch] = tr_loss.item() / nmask_train
@@ -161,8 +123,8 @@ def train(
         if last_val_loss < best_val_loss:
             best_model = copy.deepcopy(model)
 
-        if np.mod(epoch + 1, 5) == 0:
-            train_dataloader.dataset.recompute_chunk_indices()
+        # if np.mod(epoch + 1, 5) == 0:
+        train_dataloader.dataset.recompute_chunk_indices()
 
     print('Done training')
 
