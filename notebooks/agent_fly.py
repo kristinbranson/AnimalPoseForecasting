@@ -19,25 +19,18 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
-import copy
 from torch.utils.data import DataLoader
+import pickle
 
 from apf.io import read_config
 from apf.training import train
 from apf.utils import function_args_from_config
-from apf.models import TransformerModel
-from apf.data import debug_less_data
-from apf.dataset import Zscore, Discretize, Dataset, Data, Fusion, FutureAsInput, OddRoot, Subset
-from apf.dataset import get_post_operations, get_operation, apply_opers_from_data, apply_inverse_operations
+from apf.simulation import simulate
 
-from flyllm.config import DEFAULTCONFIGFILE, posenames, featrelative, featglobal, featthetaglobal
-from flyllm.features import (
-    featglobal, get_sensory_feature_idx, kp2feat, compute_sensory_wrapper, compute_movement, compute_global_velocity,
-    compute_relpose_velocity, compute_relpose_tspred,
-)
+from flyllm.config import DEFAULTCONFIGFILE, posenames
+from flyllm.features import featglobal, get_sensory_feature_idx
+from flyllm.simulation import animate_pose
 
-from experiments.flyllm import load_npz_data
-from experiments.flyllm import Pose, LocalVelocity, GlobalVelocity, Sensory, Velocity
 from experiments.flyllm import make_dataset, initialize_model_wrapper
 # -
 
@@ -89,22 +82,9 @@ plt.plot(loss_epoch['val_discrete'])
 plt.show()
 # -
 
-import pickle
 model_file = "/groups/branson/home/eyjolfsdottire/data/flyllm/model_refactored_250307_fulldata.pkl"
 # pickle.dump(model, open(model_file, "wb"))
 # model = pickle.load(open(model_file, "rb"))
-
-def plot_arena():
-    ARENA_RADIUS_MM = 26.689
-    n_pts = 1000
-    theta = np.arange(0, np.pi*2, np.pi*2 / n_pts)
-    x = np.cos(theta) * ARENA_RADIUS_MM
-    y = np.sin(theta) * ARENA_RADIUS_MM
-    plt.plot(x, y, '-', color=[.8, .8, .8])
-
-
-# +
-from apf.simulation import simulate
 
 gt_track, pred_track = simulate(
     dataset=train_dataset,
@@ -120,6 +100,14 @@ gt_track, pred_track = simulate(
 )
 
 # +
+def plot_arena():
+    ARENA_RADIUS_MM = 26.689
+    n_pts = 1000
+    theta = np.arange(0, np.pi*2, np.pi*2 / n_pts)
+    x = np.cos(theta) * ARENA_RADIUS_MM
+    y = np.sin(theta) * ARENA_RADIUS_MM
+    plt.plot(x, y, '-', color=[.8, .8, .8])
+
 plt.figure()
 plot_arena()
 
@@ -130,9 +118,7 @@ x, y = pred_track[0, :last_frame, :, 0].T
 plt.plot(x, y, '.', markersize=1)
 plt.axis('equal')
 plt.show()
-
-# +
-from flyllm.simulation import animate_pose
+# -
 
 agent_id = 0
 savevidfile = "/groups/branson/home/eyjolfsdottire/data/flyllm/animation_250307.gif"
