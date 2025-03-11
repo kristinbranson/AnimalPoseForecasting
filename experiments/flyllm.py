@@ -1,23 +1,22 @@
+"""Functions for running flyllm experiments
+
+    See example usage in notebooks/agent_fly.py
+"""
+
 import numpy as np
-import matplotlib.pyplot as plt
-import torch
-from torch.utils.data import DataLoader
 from collections import OrderedDict
 
-from apf.io import read_config, load_and_filter_data
+from apf.io import load_and_filter_data
 from apf.dataset import Zscore, Discretize, Data, Dataset, Operation, Fusion, Subset, FutureAsInput, Identity, apply_opers_from_data
-from apf.training import train
-from apf.utils import function_args_from_config, modrange, rotate_2d_points, set_invalid_ends
+from apf.utils import modrange, rotate_2d_points, set_invalid_ends
 from apf.models import initialize_model
 from apf.data import debug_less_data
-from apf.simulation import simulate
 
-from flyllm.config import DEFAULTCONFIGFILE, posenames, featrelative, keypointnames, featangle
+from flyllm.config import featrelative, keypointnames, featangle
 from flyllm.features import (
-    featglobal, get_sensory_feature_idx, kp2feat, compute_sensory_wrapper, compute_global_velocity,
+    kp2feat, compute_sensory_wrapper, compute_global_velocity,
     compute_relpose_velocity, compute_scale_perfly, compute_noise_params, feat2kp
 )
-from flyllm.simulation import animate_pose
 
 
 class Sensory(Operation):
@@ -255,66 +254,3 @@ class DatasetVars:
 def initialize_model_wrapper(config, dataset, device):
     dataset_vars = DatasetVars(dataset)
     return initialize_model(config, dataset_vars, device)
-
-
-def experiment():
-    # Read config
-    # configfile = "/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/config_fly_llm_default.json"
-    configfile = "/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241125.json"
-    config = read_config(
-        configfile,
-        default_configfile=DEFAULTCONFIGFILE,
-        posenames=posenames,
-        featglobal=featglobal,
-        get_sensory_feature_idx=get_sensory_feature_idx,
-    )
-    # config['discretize_epsilon'] = [0.013222, 0.013496, 0.02598117, 0.02930942, 0.02496748]
-
-    # Make datasets
-    train_dataset, flyids, gt_track, gt_pose, gt_velocity = make_dataset(config, 'intrainfile', return_all=True)
-    val_dataset = make_dataset(config, 'invalfile', train_dataset)
-
-    # Wrap into dataloader
-    train_dataloader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True, pin_memory=False)
-    val_dataloader = DataLoader(val_dataset, batch_size=config['batch_size'], shuffle=False, pin_memory=False)
-
-    # Initialize the model
-    device = torch.device(config['device'])
-    model, criterion = initialize_model_wrapper(config, train_dataset, device)
-
-    # Train the model
-    train_args = function_args_from_config(config, train)
-    train_args['num_train_epochs'] = 100
-    model, best_model, loss_epoch = train(train_dataloader, val_dataloader, model, **train_args)
-
-    # Plot the losses
-    idx = np.argmin(loss_epoch['val'])
-    print((idx, loss_epoch['val'][idx]))
-    plt.figure()
-    plt.plot(loss_epoch['train'])
-    plt.plot(loss_epoch['val'])
-    plt.show()
-    plt.plot(idx, loss_epoch['val'][idx], '.g')
-
-
-    # model_file = "/groups/branson/home/eyjolfsdottire/data/flyllm/model_refactored_latestkb_betterbin.pkl"
-    # pickle.dump(model, open(model_file, "wb"))
-    # model = pickle.load(open(model_file, "rb"))
-
-    agent_id = 0
-    pred_track = simulate(
-        train_dataset,
-        model,
-        gt_track,
-        gt_pose,
-        flyids,
-        track_len=1000,
-        burn_in=200,
-        max_contextl=512,
-        agent_id=agent_id,
-        start_frame=1000,
-    )
-
-
-    savevidfile = "/groups/branson/home/eyjolfsdottire/data/flyllm/animation_refactor_kristin_agent0_newbin_pred.gif"
-    ani = animate_pose({'Pred': pred_track.T.copy(), 'True': gt_track.T.copy()}, focusflies=[agent_id], savevidfile=savevidfile)
