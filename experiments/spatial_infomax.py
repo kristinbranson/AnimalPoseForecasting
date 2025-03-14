@@ -2,11 +2,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from apf.dataset import Multi, Zscore, Discretize, Data, Dataset
+from apf.dataset import Zscore, Discretize, Data, Dataset
 from apf.simulation import compare_gt_motion_pred_sim
 from apf.io import load_raw_npz_data
 from apf.training import to_dataloader, init_model, train
-from apf.utils import function_args_from_config
+from apf.utils import function_args_from_config, set_invalid_ends
 from apf.models import TransformerModel
 
 from flyllm.features import compute_global_velocity
@@ -115,21 +115,6 @@ def compute_observation(position: np.ndarray) -> np.ndarray:
     return wh_vals.reshape((-1, n_frames, n_agents))
 
 
-def set_invalid_ends(data: np.ndarray, isstart: np.ndarray, dt: int) -> None:
-    """ Sets last dt frames at the end of a continuous sequence to be NaN.
-
-    Args:
-        data: Data that was computed using dt, e.g. future motion prediction. (n_features, n_frames, n_agents) float
-        isstart: Indicates whether a frame is the start of a sequence for an agent, (n_frames, n_agents) bool
-        dt: number of frames to set as invalid.
-    """
-    n_agents = data.shape[-1]
-    for i in range(n_agents):
-        starts = np.where(isstart[:, i] == 1)[0]
-        invalids = np.unique(np.concatenate([starts - i - 1 for i in range(dt)]))
-        data[..., invalids, i] = np.nan
-
-
 def compute_global_movement(position: np.ndarray, dt: int, isstart: np.ndarray | None = None) -> np.ndarray:
     """ Computes global movement of each agent at each timestep for the given time step, dt.
 
@@ -180,7 +165,7 @@ def experiment(config: dict) -> None:
     # Continuous output
     # motion_data_labels = Data(raw=global_motion.T, operation=motion_zscore)
     # Discrete output
-    motion_data_labels = Data(raw=global_motion.T, operation=Multi([motion_zscore, Discretize()]))
+    motion_data_labels = Data(raw=global_motion.T, operation=Discretize())
     # TODO: Move the roll logic into Data or Dataset?
     motion_data_input = Data(raw=np.roll(global_motion.T, shift=tspred, axis=1), operation=motion_zscore)
     observation_data = Data(raw=observation.T, operation=Zscore())
