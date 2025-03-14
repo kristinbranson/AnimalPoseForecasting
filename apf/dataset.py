@@ -4,9 +4,12 @@ from collections import OrderedDict
 from typing import NamedTuple
 import numpy as np
 import torch
+import logging
 
 from apf.data import fit_discretize_data, discretize_labels, weighted_sample
 from apf.utils import connected_components
+
+LOG = logging.getLogger(__name__)
 
 
 class Operation(ABC):
@@ -168,7 +171,7 @@ class Subset(Operation):
         return data[..., self.include_ids]
 
     def invert(self, data: np.ndarray) -> None:
-        print(f"Operation {self} is not invertible")
+        LOG.error(f"Operation {self} is not invertible")
 
 
 # TODO: Move this to apf/data, and find where I copied it from and use the one from apf/data there as well

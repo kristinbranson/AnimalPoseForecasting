@@ -1,9 +1,12 @@
 import copy
 import numpy as  np
 import torch
+import logging
 
 from apf.dataset import Dataset, Data, get_post_operations, get_operation, apply_inverse_operations, apply_opers_from_data
 from apf.models import TransformerModel
+
+LOG = logging.getLogger(__name__)
 
 
 def simulate(
@@ -92,7 +95,7 @@ def simulate(
         pred_pose[agent_idx, curr_frame] = new_pose
 
         if np.isnan(new_pose).sum() > 0:
-            print(np.isnan(new_pose[0]))
+            LOG.error(f"Predicted pose contains a NaN, aborting at frame {curr_frame}.")
             break
 
         # Map pose to keypoints

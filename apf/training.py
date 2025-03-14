@@ -3,6 +3,7 @@ import torch
 from torch.utils.data import DataLoader
 import tqdm
 import copy
+import logging
 
 from apf.models import (
     sanity_check_temporal_dep,
@@ -10,6 +11,8 @@ from apf.models import (
     mixed_causal_criterion,
     TransformerModel,
 )
+
+LOG = logging.getLogger(__name__)
 
 
 def train(
@@ -69,7 +72,7 @@ def train(
     d_discrete = train_dataloader.dataset.d_output_discrete
     d_continuous = train_dataloader.dataset.d_output_continuous
     weight_discrete = d_discrete / (d_discrete + d_continuous)
-    print(f"weight_discrete = {weight_discrete}")
+    LOG.info(f"weight_discrete = {weight_discrete}")
     progress_bar = tqdm.tqdm(range(num_training_steps), file=sys.stdout)
     best_model = model
     best_val_loss = 10000
@@ -126,6 +129,6 @@ def train(
         # if np.mod(epoch + 1, 5) == 0:
         train_dataloader.dataset.recompute_chunk_indices()
 
-    print('Done training')
+    LOG.info('Done training')
 
     return model, best_model, loss_epoch
