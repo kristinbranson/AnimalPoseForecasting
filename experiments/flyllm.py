@@ -4,12 +4,11 @@
 """
 
 import numpy as np
-from collections import OrderedDict
+import logging
 
 from apf.io import load_and_filter_data
-from apf.dataset import Zscore, Discretize, Data, Dataset, Operation, Fusion, Subset, FutureAsInput, Identity, apply_opers_from_data
+from apf.dataset import Zscore, Discretize, Data, Dataset, Operation, Fusion, Subset, Roll, Identity, apply_opers_from_data
 from apf.utils import modrange, rotate_2d_points, set_invalid_ends
-from apf.models import initialize_model
 from apf.data import debug_less_data
 
 from flyllm.config import featrelative, keypointnames, featangle
@@ -18,12 +17,27 @@ from flyllm.features import (
     compute_relpose_velocity, compute_scale_perfly, compute_noise_params, feat2kp
 )
 
+LOG = logging.getLogger(__name__)
+
 
 class Sensory(Operation):
+    """ Computes sensory features for the flies.
+
+    NOTE: this operation is not invertible.
+    """
     def __init__(self):
+        # Keeps track of which dimensions of the sensory output correspond to what (e.g. wall, otherflies, ...)
         self.idxinfo = None
 
-    def apply(self, Xkp):
+    def apply(self, Xkp: np.ndarray) -> np.ndarray:
+        """ Computes sensory features from keypoints.
+
+        Args:
+            Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array
+
+        Returns:
+            sensory_data: (n_agents,  n_frames, n_sensory_features) float array
+        """
         feats = []
         for flyid in range(Xkp.shape[0]):
             feat, idxinfo = compute_sensory_wrapper(Xkp.T, flyid, returnidx=True)
@@ -31,43 +45,78 @@ class Sensory(Operation):
         self.idxinfo = idxinfo
         return np.array(feats)
 
-    def inverse(self, sensory):
-        print(f"Operation {self} is not invertible")
+    def invert(self, sensory: np.ndarray) -> None:
+        LOG.error(f"Operation {self} is not invertible")
         return None
 
 
 class Pose(Operation):
-    """Includes global and local pose
-
+    """ Computes fly pose from keypoints.
     """
-    # def __init__(self):
-    #     pass
+    def __init__(self):
+        # Keep track of scale_perfly, needed for inverting operation.
+        self.scale_perfly = None
 
-    def apply(self, Xkp, scale_perfly=None, flyid=None):
-        # Compute scale_perfly
-        # Store it for inversibility
-        self.scale_perfly = scale_perfly
+    def apply(self, Xkp: np.ndarray, scale_perfly: np.ndarray = None, flyid: np.ndarray = None):
+        """ Computes pose features from keypoints.
+
+        Args:
+            Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array
+            scale_perfly: Scale of each unique individual in the data. (n_individuals, n_scales) float array
+            flyid: Identity of fly corresponding to Xkp, (n_frames, n_agents) int array
+
+        Returns:
+            pose: (n_agents,  n_frames, n_pose_features) float array
+        """
+        if scale_perfly is not None:
+            self.scale_perfly = scale_perfly
         return kp2feat(Xkp=Xkp.T, scale_perfly=scale_perfly, flyid=flyid).T
 
-    def inverse(self, pose, flyid=None):
+    def invert(self, pose: np.ndarray, flyid: np.ndarray | int = None):
+        """ Computes keypoints from pose features.
+
+        Args:
+            pose:  (n_agents,  n_frames, n_pose_features) float array
+            flyid: Identity of fly corresponding to pose.
+                If pose has a single agent, flyid is an int.
+                If it has multiple agents, it as a (n_frames, n_agents) int array.
+
+        Returns:
+            Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array
+        """
         return feat2kp(pose.T, scale_perfly=self.scale_perfly, flyid=flyid).T
 
 
 class LocalVelocity(Operation):
-    """Velocity and it's inverse
+    """ Computes the relative pose movement from t to t + 1.
     """
-    def apply(self, pose, isstart=None):
+    def apply(self, pose: np.ndarray, isstart: np.ndarray | None = None) -> np.ndarray:
+        """ Compute velocity from pose.
+
+        Args:
+            pose: (n_agents,  n_frames, n_pose_features) float array
+            isstart: Indicates whether a new fly track starts at a given frame for an agent.
+                (n_frames, n_agents) bool array
+
+        Returns:
+            velocity: (n_agents,  n_frames, n_pose_features) float array
+        """
         pose_velocity = np.moveaxis(compute_relpose_velocity(pose.T), 2, 0)
         if isstart is not None:
+            # Set pose deltas that cross individuals to NaN.
             set_invalid_ends(pose_velocity, isstart, dt=1)
         pose_velocity = pose_velocity[0]
         return pose_velocity.T
 
-    def inverse(self, velocity, x0=None):
-        """
-        Params:
-            velocity: n_agents x n_frames x n_features
-            x0
+    def invert(self, velocity: np.ndarray, x0: np.ndarray = None) -> np.ndarray:
+        """ Compute pose from pose velocity and an initial pose.
+
+        Args:
+            velocity: Delta pose (n_agents,  n_frames, n_pose_features) float array
+            x0: Initial pose (n_agents,  n_frames, n_pose_features) float array
+
+        Returns:
+            pose: (n_agents,  n_frames, n_pose_features) float array
         """
         # Note: here we are assuming dt=1
         if x0 is None:
@@ -82,10 +131,26 @@ class LocalVelocity(Operation):
 
 
 class GlobalVelocity(Operation):
+    """ Computes the global movement of a fly,  dfwd, dside, dtehta, from its (x, y, theta) position.
+
+    Args:
+        tspred: A list of dt for which global movement (from t to t+dt) will be computed for.
+    """
     def __init__(self, tspred: list[int]):
         self.tspred = tspred
 
-    def apply(self, position, isstart=None):
+    def apply(self, position: np.ndarray, isstart: np.ndarray | None = None) -> np.ndarray:
+        """ Compute global movement from position.
+
+        Args:
+            position: (n_agents,  n_frames, 3) float array
+            isstart: Indicates whether a new fly track starts at a given frame for an agent.
+                (n_frames, n_agents) bool array
+
+        Returns:
+            velocity: Global pose velocity, flattened over tspred.
+                (n_agents,  n_frames, 3 * len(self.tspred)) float array
+        """
         Xorigin = position[..., :2].T
         Xtheta = position[..., 2].T
         _, n_frames, n_flies = Xorigin.shape
@@ -98,13 +163,18 @@ class GlobalVelocity(Operation):
 
         return movement_global.T
 
-    def inverse(self, velocity, x0=None):
-        """
+    def invert(self, velocity: np.ndarray, x0: np.ndarray | None = None):
+        """ Compute position from global movement and an initial position.
 
-            velocity: n_agents x n_frames x 3
-            x0: n_agents x 3
+        NOTE: This assumes velocity is only given for dt=1
+
+        Args:
+            velocity: Global movmement (n_agents,  n_frames, 3) float array
+            x0: Initial pose (n_agents,  n_frames, n_pose_features) float array
+
+        Returns:
+            pose: (n_agents,  n_frames, n_pose_features) float array
         """
-        # Note: here we are assuming dt=1
         if x0 is None:
             n_agents, _, n_dim = velocity.shape
             x0 = np.zeros((n_agents, n_dim))
@@ -120,34 +190,73 @@ class GlobalVelocity(Operation):
 
 
 class Velocity(Operation):
+    """ Combines global and local velocity.
+    """
     def __init__(self):
+        # Keep track of global and local indices for the pose features
         self.global_inds = np.where(~featrelative)[0]
         self.local_inds = np.where(featrelative)[0]
+        # Use Fusion to apply global vs local operations to the relevant feature dimensions
         self.fusion = Fusion([GlobalVelocity(tspred=[1]), LocalVelocity()], [self.global_inds, self.local_inds])
 
-    def apply(self, pose, isstart=None):
+    def apply(self, pose: np.ndarray, isstart: np.ndarray | None = None):
+        """ Compute global and local velocity from pose.
+
+        Args:
+            pose: (n_agents,  n_frames, n_pose_features) float array
+            isstart: Indicates whether a new fly track starts at a given frame for an agent.
+                (n_frames, n_agents) bool array
+
+        Returns:
+            velocity: (n_agents,  n_frames, n_pose_features) float array
+        """
         return self.fusion.apply(pose, kwargs_per_op={'isstart': isstart})
 
-    def inverse(self, velocity, x0=None):
+    def invert(self, velocity: np.ndarray, x0: np.ndarray | None = None):
+        """ Compute pose from pose velocity and an initial pose.
+
+        Args:
+            velocity: Delta pose (n_agents,  n_frames, n_pose_features) float array
+            x0: Initial pose (n_agents,  n_frames, n_pose_features) float array
+
+        Returns:
+            pose: (n_agents,  n_frames, n_pose_features) float array
+        """
         if x0 is not None:
             kwargs_per_op = [{'x0': x0[..., self.global_inds]}, {'x0': x0[..., self.local_inds]}]
         else:
             kwargs_per_op = None
-        return self.fusion.inverse(velocity, kwargs_per_op)
+        return self.fusion.invert(velocity, kwargs_per_op)
 
 
-def load_npz_data(infile, config):
-    return load_and_filter_data(
-        infile,
+def load_data(
+        config: dict,
+        filename: str,
+        debug: bool = False
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """ Loads the data and computes scale per fly.
+
+    Args:
+        config: Config for loading the data
+        filename: Name of file to read the data from (e.g. 'intrainfile', 'invalfile')
+        debug: Whether to use less data for debugging
+
+    Returns:
+        X: (2, n_keypoints, n_frames, n_agents) float array
+        flyids: Identity of fly individuals (n_frames, n_agents) int array
+        isstart: indicates whether a new track starts at a give frame for each fly, (n_frames, n_agents) bool array
+        isdata: indicates whether data should be used, (n_frames, n_agents) bool array
+            Data can be unused because it is invalid (nans) or because it was filtered on fly type.
+        scale_perfly: Scale of each unique individual in the data. (n_individuals, n_scales) float array
+    """
+    data, scale_perfly = load_and_filter_data(
+        filename,
         config,
         compute_scale_per_agent=compute_scale_perfly,
         compute_noise_params=compute_noise_params,
         keypointnames=keypointnames,
     )
 
-
-def load_data(config, datafile, debug=False):
-    data, scale_perfly = load_npz_data(datafile, config)
     if debug:
         debug_less_data(data, n_frames_per_video=45000, max_n_videos=2)
 
@@ -162,12 +271,38 @@ def load_data(config, datafile, debug=False):
     return Xkp, flyids, isstart, isdata, scale_perfly
 
 
-def make_dataset(config, filename, ref_dataset=None, return_all=False, debug=True):
+def make_dataset(
+        config: dict,
+        filename: str,
+        ref_dataset: Dataset | None = None,
+        return_all: bool = False,
+        debug: bool = True
+) -> Dataset | tuple[Dataset, np.ndarray, Data, Data, Data, Data]:
+    """ Creates a dataset from config, for a given file name and optionally using a reference dataset.
+
+    TODO: Currently this doesn't support different ways of computing the features,
+      should assert that the config matches what is done here
+
+    Args:
+        config: Config for loading the data
+        filename: Name of file to read the data from (e.g. 'intrainfile', 'invalfile')
+        ref_dataset: Dataset to copy postprocessing operations from.
+            When loading validation/test set, provide training set.
+        return_all: Whether to return intermediate variables in addition to Dataset (see returns)
+        debug: Whether to use less data for debugging
+
+    Returns:
+        dataset: Dataset for flyllm experiment.
+        [
+        flyids: Identity of fly individuals (n_frames, n_agents) int array
+        track: Keypoint data
+        pose: Pose data
+        velocity: Velocity data
+        sensory: Sensory data
+        ]
+    """
     # Load data
     Xkp, flyids, isstart, isdata, scale_perfly = load_data(config, config[filename], debug=debug)
-
-    # Currently I don't support different ways of computing the features, I should assert that the
-    # config asks for what I do there
 
     # Compute features
     track = Data('keypoints', Xkp.T, [])
@@ -197,7 +332,7 @@ def make_dataset(config, filename, ref_dataset=None, return_all=False, debug=Tru
         indices_per_op = [discreteidx, continuousidx]
         dataset = Dataset(
             inputs = {
-                'velocity': Zscore()(FutureAsInput(dt=1)(velocity)),
+                'velocity': Zscore()(Roll(dt=1)(velocity)),
                 'pose': Zscore()(Subset(featrelative)(pose)),
                 'sensory': Zscore()(sensory),
             },
@@ -220,37 +355,3 @@ def make_dataset(config, filename, ref_dataset=None, return_all=False, debug=Tru
         return dataset, flyids, track, pose, velocity, sensory
     else:
         return dataset
-
-
-class DatasetVars:
-    def __init__(self, dataset):
-        self.d_input = dataset.d_input
-        self.d_output_continuous = dataset.d_output_continuous
-        self.d_output_discrete = dataset.d_output_discrete
-        self.d_output = self.d_output_continuous + self.d_output_discrete
-        self.discretize_nbins = dataset.n_bins
-
-        self.flatten = False
-        self.discretize = self.d_output_discrete > 0
-
-        # Collect indices for the inputs
-        inds_per_input = {}
-        curr_idx = 0
-        for key, data in dataset.inputs.items():
-            dim = data.array.shape[-1]
-            if key == 'sensory':
-                for sensory_key, lim in data.operations[0].idxinfo.items():
-                    inds_per_input[sensory_key] = [curr_idx + lim[0], curr_idx + lim[1]]
-            else:
-                inds_per_input[key] = [curr_idx, curr_idx + dim]
-            curr_idx += dim
-        self.input_idx = OrderedDict([(key, value) for key, value in inds_per_input.items()])
-        self.input_szs = OrderedDict([(key, (value[1] - value[0],)) for key, value in inds_per_input.items()])
-
-    def get_input_shapes(self):
-        return self.input_idx, self.input_szs
-
-
-def initialize_model_wrapper(config, dataset, device):
-    dataset_vars = DatasetVars(dataset)
-    return initialize_model(config, dataset_vars, device)

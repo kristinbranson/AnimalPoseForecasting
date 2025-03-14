@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from collections import OrderedDict
 from typing import NamedTuple
 import numpy as np
 import torch
@@ -8,25 +9,36 @@ from apf.data import fit_discretize_data, discretize_labels, weighted_sample
 from apf.utils import connected_components
 
 
-
 class Operation(ABC):
+    """ Abstract class for an operation to be applied to data.
+
+    Methods to be implemented by inheriting classes are apply and inverse.
+    """
     @abstractmethod
     def apply(self, data: np.ndarray) -> np.ndarray:
         pass
 
     @abstractmethod
-    def inverse(self, data: np.ndarray) -> np.ndarray:
-        pass
-
-    def get_name(self, curr_name: str) -> str:
+    def invert(self, data: np.ndarray) -> np.ndarray:
         pass
 
     def __call__(self, data, **kwargs):
+        """
+
+        Args:
+            data: Either np.ndarray or Data (defined below)
+            kwargs: Arguments to be sent to the apply operation.
+
+        Returns
+            If input is np.ndarray, returns a np.ndarray processed by the operation,
+            if input is Data, returns a new Data with processed array and this operation appended to operaitons.
+        """
         if isinstance(data, Data):
             return Data(
                 name=f"{data.name}_{self.__class__.__name__.lower()}",
                 array=self.apply(data.array, **kwargs),
-                operations=data.operations + [self])
+                operations=data.operations + [self]
+            )
         elif isinstance(data, np.ndarray):
             return self.apply(data, **kwargs)
         else:
@@ -36,14 +48,19 @@ class Operation(ABC):
 class Data(NamedTuple):
     name: str
     array: np.ndarray
+    # Operations that have been applied to the data (can be later applied in inverse to obtain original data).
     operations: list[Operation] = []
 
 
 class Identity(Operation):
+    """ This operation passes data through without modifications.
+
+    Can be useful in combination with Fusion when a subset of dimensions needs to be operated on and others not.
+    """
     def apply(self, data: np.ndarray):
         return data
 
-    def inverse(self, data: np.ndarray):
+    def invert(self, data: np.ndarray):
         return data
 
 
@@ -82,7 +99,7 @@ class Zscore(Operation):
             self.compute(data)
         return (data - self.mean[None, None, :]) / self.std[None, None, :]
 
-    def inverse(self, data: np.ndarray) -> np.ndarray:
+    def invert(self, data: np.ndarray) -> np.ndarray:
         """ Applies the inverse zscoring to data.
 
         Args:
@@ -116,7 +133,7 @@ class OddRoot(Operation):
         """
         return np.sign(data) * np.abs(data)**(1 / self.root)
 
-    def inverse(self, data: np.ndarray) -> np.ndarray:
+    def invert(self, data: np.ndarray) -> np.ndarray:
         """ Applies the inverse root to data.
 
         Args:
@@ -129,25 +146,42 @@ class OddRoot(Operation):
 
 
 class Subset(Operation):
-    def __init__(self, include_ids):
+    """ Returns the input array with only a subset of feature dimensions.
+
+    NOTE: this operation is not invertible.
+
+    Args:
+        include_ids: Which feature ids to select.
+    """
+    def __init__(self, include_ids: np.ndarray) -> None:
         self.include_ids = include_ids
 
     def apply(self, data: np.ndarray) -> np.ndarray:
+        """ Returns data with a subset of features.
+
+        Args:
+            data: (n_agents,  n_frames, n_features) float array
+
+        Returns:
+            sub_data: data with only the selected feature dimensions (n_agents,  n_frames, n_sub_features) float array
+        """
         return data[..., self.include_ids]
 
-    def inverse(self, data: np.ndarray) -> None:
+    def invert(self, data: np.ndarray) -> None:
         print(f"Operation {self} is not invertible")
 
 
+# TODO: Move this to apf/data, and find where I copied it from and use the one from apf/data there as well
 def labels_discrete_to_continuous(labels_discrete, bin_centers, epsilon=1e-3):
     """ Converts discrete labels to continuous labels by taking the weighted sum of the bin centers.
 
     Copied from flyllm/pose.py
 
-    Parameters:
+    Args:
         labels_discrete: ndarray of size (pre_sz x ) ntimepoints x d_discrete x nbins with the discrete labels.
         epsilon: small number to check that the discrete labels sum to 1. Default is 1e-3.
-    Output:
+
+    Returns:
         continuous: ndarray of size (pre_sz x ) ntimepoints x d_discrete with the continuous version of the labels.
     """
     sz = labels_discrete.shape
@@ -164,7 +198,6 @@ def labels_discrete_to_continuous(labels_discrete, bin_centers, epsilon=1e-3):
     s[isbad] = 1.
 
     # nfeat x nbins
-    # bin_centers = self._discretize_params['bin_medians']
     continuous = np.sum(bin_centers[None, ...] * labels_discrete, axis=-1) / s
     continuous[isbad] = np.nan
     continuous = np.reshape(continuous, szrest + (nfeat,))
@@ -172,14 +205,20 @@ def labels_discrete_to_continuous(labels_discrete, bin_centers, epsilon=1e-3):
 
 
 def sample_discrete_labels(labels_discrete, bin_samples, nsamples=1):
-    """ Copied from flyllm/pose.py
+    """ Samples the bins from probability distribution, and picks a random bin sample from the selected bin.
+
+    Copied from flyllm/pose.py
+
     sample_discrete_labels(labels_discrete, nsamples=1)
     Samples continuous labels from the discrete labels.
-    Parameters:
-    labels_discrete: ndarray of size (pre_sz x ) ntimepoints x d_discrete x nbins with the discrete labels.
-    nsamples: number of samples to take. Default is 1.
-    Output:
-    continuous: ndarray of size nsamples x (pre_sz x ) ntimepoints with the continuous version of the labels."""
+
+    Args:
+        labels_discrete: ndarray of size (pre_sz x ) ntimepoints x d_discrete x nbins with the discrete labels.
+        nsamples: number of samples to take. Default is 1.
+
+    Returns:
+        continuous: ndarray of size nsamples x (pre_sz x ) ntimepoints with the continuous version of the labels.
+    """
     sz = labels_discrete.shape
     nbins = sz[-1]
     nfeat = sz[-2]
@@ -254,7 +293,7 @@ class Discretize(Operation):
         data_flat_discrete = discretize_labels(data_flat, self.bin_edges, soften_to_ends=True)
         return data_flat_discrete.reshape((n_agents, n_frames, -1))
 
-    def inverse(self, data: np.ndarray, do_sampling: bool = True) -> np.ndarray:
+    def invert(self, data: np.ndarray, do_sampling: bool = True) -> np.ndarray:
         """ Unbins the data.
 
         Args:
@@ -278,26 +317,40 @@ class Discretize(Operation):
 
 
 class Fusion(Operation):
+    """ Apply different operations to different parts of the data.
+
+    Args:
+        operations: List of operations to be applied
+        indices_per_op: list of indices to apply each operation to.
+    """
     def __init__(
             self,
             operations: list[Operation],
             indices_per_op: list[np.ndarray],
     ):
-        """Note: no need to keep track of kwargs here as operations are created before this"""
+        assert len(operations) == len(indices_per_op), "List of indices should have same length as list of operations."
+
+        all_indices = np.concatenate(indices_per_op)
+        assert len(all_indices) == max(all_indices) and len(all_indices) == len(np.unique(all_indices)), \
+            "Indices must cover all feature dimensions and each dimension can only be provided to one operation."
+
         self.operations = operations
         self.indices_per_op = indices_per_op
+        # This variable will hold the dimensions of the output corresponding to each operation, used for inverting.
         self.dims_per_op = None
 
-    @property
-    def __name__(self):
-        name = "("
-        for op in self.operations:
-            name += f"{op.__class__.__name__} "
-        name[-1] = ")"
-        return name
+    def apply(self, data: np.ndarray, kwargs_per_op: list[dict] | dict | None = None) -> np.ndarray:
+        """ Applies operation to each subset of data, specified by indices per operation, and concatenates the result.
 
-    def apply(self, data: np.ndarray, kwargs_per_op=None) -> np.ndarray:
-        """
+        Args:
+            data: (n_agents,  n_frames, n_features) float array
+            kwargs_per_op: Optional arguments provided to the operations.
+                If they are a list, the list should have the same length as the list of operations.
+                If they are not a list, the same arguments will be provided to all operations.
+                If None, no arguments will be provided to the operations.
+
+        Returns:
+            fused: (n_agents,  n_frames, n_fused_features) float array
         """
         if kwargs_per_op is None:
             kwargs_per_op = [{} for _ in self.operations]
@@ -308,8 +361,14 @@ class Fusion(Operation):
 
         return np.concatenate(processed, axis=-1)
 
-    def inverse(self, data: np.ndarray, kwargs_per_op=None) -> np.ndarray:
-        """
+    def invert(self, data: np.ndarray, kwargs_per_op=None) -> np.ndarray:
+        """ Inverts subsets of the processed data using the operation inverses.
+
+        Args:
+            data: (n_agents,  n_frames, n_fused_features) float array
+
+        Returns:
+            unfused: (n_agents,  n_frames, n_features) float array
         """
         if kwargs_per_op is None:
             kwargs_per_op = [{} for _ in self.operations]
@@ -322,20 +381,45 @@ class Fusion(Operation):
         count = 0
         for i, indices in enumerate(self.indices_per_op):
             n_dims = self.dims_per_op[i]
-            inverted[..., indices] = self.operations[i].inverse(data[..., count:count + n_dims], **kwargs_per_op[i])
+            inverted[..., indices] = self.operations[i].invert(data[..., count:count + n_dims], **kwargs_per_op[i])
             count += n_dims
 
         return inverted
 
 
-class FutureAsInput(Operation):
-    def __init__(self, dt=1):
+class Roll(Operation):
+    """ Rolls data by delta time.
+
+    This is useful e.g. for providing velocities as input. If we have a pose at time t and pose velocity corresponding
+    to time t + dt, then we roll the data forward by dt makes it so that the value at index t represents velocity of
+    pose from t - dt to t.
+
+    Args:
+        dt: How much to roll the data by (e.g. value used to compute the velocity data).
+    """
+    def __init__(self, dt: int = 1):
         self.dt = dt
 
-    def apply(self, data):
+    def apply(self, data: np.ndarray) -> np.ndarray:
+        """ Rolls data forward by dt.
+
+        Args:
+            data: (n_agents,  n_frames, n_features) float array
+
+        Returns:
+            rolled_data: (n_agents,  n_frames, n_features) float array
+        """
         return np.roll(data, shift=self.dt, axis=1)
 
-    def inverse(self, data):
+    def invert(self, data: np.ndarray) -> np.ndarray:
+        """ Rolls data backwards by dt.
+
+        Args:
+            data: (n_agents,  n_frames, n_features) float array
+
+        Returns:
+            unrolled_data: (n_agents,  n_frames, n_features) float array
+        """
         return np.roll(data, shift=-self.dt, axis=1)
 
 
@@ -351,6 +435,8 @@ class Session:
     duration: int
     agent_id: int
 
+
+### Dataset helper functions
 
 def compute_sessions(datas: list[Data], isstart: np.ndarray) -> list[Session]:
     """ Extracts intervals of data belonging to a unique agent with valid data.
@@ -415,7 +501,12 @@ def compute_chunk_indices(sessions: list[Session], chunk_length: int, start_offs
     return np.concatenate(chunk_indices, axis=0)
 
 
-def get_data_chunk(datas: dict[str, Data], start_frame: int, agent_id: int, duration: int) -> np.ndarray | torch.Tensor:
+def get_data_chunk(
+        datas: dict[str, Data],
+        start_frame: int,
+        agent_id: int,
+        duration: int
+) -> np.ndarray | torch.Tensor:
     """ Extracts and concatenates data for given chunk indices.
 
     Args:
@@ -428,19 +519,26 @@ def get_data_chunk(datas: dict[str, Data], start_frame: int, agent_id: int, dura
         data_chunk: (chunk_length, n_feat_flat), float array
     """
     slices = [data.array[agent_id, start_frame:(start_frame + duration)] for data  in datas.values()]
-    # slices = []
-    # for data in datas:
-    #     slice = data.array[agent_id, start_frame:(start_frame + duration)]
-    #     slices.append(slice.reshape((duration, -1)))
-    # TODO: support both np and torch
     if isinstance(slices[0], np.ndarray):
         return np.concatenate(slices, axis=1)
     else:
         return torch.cat(slices, dim=1)
 
 
-def get_bin_indices(datas: dict[str, Data]):
-    """Returns the indices of features that are binned in the concatenated datas and the number corresponding bins.
+def get_bin_indices(datas: dict[str, Data]) -> tuple[list[np.ndarray], list[int]]:
+    """ Finds data that have been discretized in the last operation applied to them.
+
+    TODO: Perhaps it would be cleaner to store this information in Data (that way it doesn't
+      have to be the last operation that did the binning, and could be done in other ways than
+      using Discretize or Fusion).
+
+    Args:
+        datas: A dictionary of data where keys represent data names.
+
+    Returns:
+        bindices: Indices of feature dimensions that are bins, per data in datas
+        n_bins: number of bins used for binning data in datas (note that this assumes only one Discretize operation
+            if binned within Fusion).
     """
     dims_per_key = [data.array.shape[-1] for data in datas.values()]
     start_per_key = np.cumsum([0] + dims_per_key)
@@ -465,27 +563,38 @@ def get_bin_indices(datas: dict[str, Data]):
     return bindices, n_bins
 
 
-def split_discr_cont(data: np.ndarray, bin_indices):
+def split_discr_cont(data: np.ndarray, bin_indices: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """ Splits data into its discrete and continuous parts.
+
+    Args:
+        data: (n_agents,  n_frames, n_features) float array
+        bin_indices: Indices of feature dimensions that are bineed (obtained from get_bin_indices).
+
+    Returns:
+        discrete_data: (n_agents,  n_frames, n_discrete_features) float array
+        continuous_data: (n_agents,  n_frames, n_continuous_features) float array
+            Note: n_discrete_features + n_continuous_features = n_features
+    """
     is_binned = np.zeros(data.shape[-1], np.bool)
     for inds in bin_indices:
         is_binned[inds] = True
     return data[..., is_binned], data[..., ~is_binned]
 
 
-def slice_from_feat_name(array: np.ndarray, datas: [str, Data], feat_name: str):
-    """
-    Params:
-        array: (..., n_feat)
-    """
-    if feat_name not in datas:
-        return None
-    dims_per_key = [data.array.shape[-1] for data in datas.values()]
-    start_per_key = np.cumsum([0] + dims_per_key)
-    idx = list(datas.keys()).index(feat_name)
-    return array[..., start_per_key[idx]:start_per_key[idx] + dims_per_key[idx]]
+def get_operation(
+        operations: list[Operation], name: str, return_idx: bool = False
+) -> Operation | None | tuple[Operation | None, int | None]:
+    """ Find operation from a list of operation, given its name.
 
+    Args:
+        operations: List of operations to search from.
+        name: Name of operation to find.
+        return_idx: Whether to also return the index of the operation.
 
-def get_operation(operations: list[Operation], name: str, return_idx: bool = False):
+    Returns:
+        operation: Operation corresponding to the requested name, None if not found in the list.
+        idx: If return_idx is True, also returns the index of the operation within the list.
+    """
     for i, oper in enumerate(operations):
         if oper.__class__.__name__.lower() == name.lower():
             if return_idx:
@@ -497,34 +606,63 @@ def get_operation(operations: list[Operation], name: str, return_idx: bool = Fal
 
 
 def get_post_operations(operations: list[Operation], name: str):
+    """ Get a list of operations that come after the operation with the specified name.
+
+    Args:
+        operations: List of operations to search from.
+        name: Name of operation to find.
+
+    Returns:
+         A list of operations following the specified name.
+    """
     _, idx = get_operation(operations, name, return_idx = True)
     if idx is None:
         return None
     return operations[idx + 1:]
 
 
-def apply_operations(data, operations):
+def apply_operations(data: Data, operations: list[Operation]) -> Data:
+    """ Apply a list of operations to data.
+    """
     for oper in operations:
         data = oper(data)
     return data
 
 
 def apply_inverse_operations(data, operations):
+    """ Apply the inverse of operations to data, in reverse order.
+    """
     for oper in reversed(operations):
-        data = oper.inverse(data)
+        data = oper.invert(data)
     return data
 
 
-def apply_opers_from_data(data_from, data_to):
+def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict[str, Data]) -> dict[str, Data]:
+    """ Applies post processing operations from reference datas to datas, for each key.
+
+    Post-key-operations are all operations after the key of each data, for example for 'velocity' it doesn't
+    apply the operation to compute pose from keypoints, but all operations following that (e.g. zscoring).
+
+    This is useful for building a validation set from a training set, or for applying operations with the right
+    parameters to data during simulation.
+
+    TODO: This assumes that they key correspond to the name of the operation used to compute data (e.g. Velocity)
+        as it uses the key to extract post-processing operations. It would be nicer to label the operations themselves
+        so that we can drop this assumption.
+
+    Params:
+        datas_ref: Dictionary of data (e.g. train_dataset.inputs) from which to copy post processing operations.
+        datas: Dictionary of raw data to which post processing operations should be applied to.
+
+    Returns:
+        Post processed datas.
     """
-    I think I can just use this instead of assemble inputs, just need to concatenate the output
-    """
-    assert len(data_from.keys()) == len(data_to.keys()), "The two data collections must have the same keys"
+    assert len(datas_ref.keys()) == len(datas.keys()), "The two data collections must have the same keys"
     processed_data = {}
-    for key in data_from.keys():
-        assert key in data_to, "Expect both data to have all of the same keys"
-        opers = get_post_operations(data_from[key].operations, key)
-        processed_data[key] = apply_operations(data_to[key], opers)
+    for key in datas_ref.keys():
+        assert key in datas, "Expect both data to have all of the same keys"
+        opers = get_post_operations(datas_ref[key].operations, key)
+        processed_data[key] = apply_operations(datas[key], opers)
     return processed_data
 
 
@@ -532,17 +670,14 @@ class Dataset(torch.utils.data.Dataset):
     """ Contains ground truth data and can be supplied to torch's DataLoader to produce chunks of data.
 
     Args:
-        inputs: A list of data inputs. Each data in inputs has the following:
-            raw: (n_agents, n_frames, n_features) float array
-            operation: Operation that shall be applied to that data, e.g. Zscore or Discretize
-            processed: (n_agents, n_frames, n_features[, n_bins) float array
-        labels: A list of data labels. Same format as inputs.
+        inputs: A dictionary of data inputs. Each data in inputs has the following:
+            array: (n_agents, n_frames, n_features) float array.
+            operations: Operations that have been applied to arrive at this data.
+        labels: A dictionary of data labels. Same format as inputs.
         isstart: Indicates whether a frame is the start of a sequence for an agent, (n_frames, n_agents) bool array
         context_length: Number of frames in a data chunk provided by __getitem__
 
-    NOTE: currently assumes that
-        Discrete data in labels are provided last (would be easy to modify)
-        Discrete data in labels all have the same number of bins
+    NOTE: currently assumes that discrete data in labels all have the same number of bins.
     """
     def __init__(
             self,
@@ -557,7 +692,10 @@ class Dataset(torch.utils.data.Dataset):
         self.context_length = context_length
 
         # Compute sessions with continuous valid data per agent
-        self.sessions = compute_sessions(self.all_data(), self.isstart)
+        self.sessions = compute_sessions(
+            datas=list(self.inputs.values()) + list(self.labels.values()),
+            isstart=self.isstart
+        )
 
         # Compute chunking indices
         self.chunk_indices = compute_chunk_indices(self.sessions, self.context_length, start_offset=0)
@@ -567,29 +705,55 @@ class Dataset(torch.utils.data.Dataset):
 
         # Input output dimensions
         self.d_input = sum([data.array.shape[-1] for data in inputs.values()])
-        d_output = sum([data.array.shape[-1] for data in labels.values()])
+        d_output_full = sum([data.array.shape[-1] for data in labels.values()])
         d_discrete = sum([len(inds) for inds in self.label_bin_indices])
-        self.d_output_continuous = d_output - d_discrete
+        self.d_output_continuous = d_output_full - d_discrete
         if len(self.label_n_bins) > 0:
             assert len(np.unique(self.label_n_bins)) == 1
-            self.n_bins = self.label_n_bins[0]
+            self.discretize_nbins = self.label_n_bins[0]
             self.d_output_discrete = d_discrete // self.n_bins
         else:
-            self.n_bins = 0
+            self.discretize_nbins = 0
             self.d_output_discrete = 0
 
-    def all_data(self):
-        return list(self.inputs.values()) + list(self.labels.values())
+        # Variables required to initialize model via apf.models.initialize_model
+        self.d_output = self.d_output_continuous + self.d_output_discrete
+        self.discretize = self.d_output_discrete > 0
+        self.flatten = False
+        self.input_idx = self.input_szs = None
+        self.set_input_indices()
 
-    def recompute_chunk_indices(self, start_offset: int | None = None):
-        """ Computes chunk indices for a given start_offset
+    def set_input_shapes(self):
+        """ Set feature indices of different types of inputs (note that sensory is split into further indices here).
 
-        Args:
-            start_offset: First frame of the first chunk. If None picks a random frame in [0, contex_length).
+        TODO: Handling of sensory here is quite specific, think of a better way to achieve this.
         """
-        if start_offset is None:
-            start_offset = np.random.randint(self.context_length)
-        self.chunk_indices = compute_chunk_indices(self.sessions, self.context_length, start_offset=start_offset)
+        # Collect indices for the inputs
+        inds_per_input = {}
+        curr_idx = 0
+        for key, data in self.inputs.items():
+            dim = data.array.shape[-1]
+            if key == 'sensory':
+                for sensory_key, lim in data.operations[0].idxinfo.items():
+                    inds_per_input[sensory_key] = [curr_idx + lim[0], curr_idx + lim[1]]
+            else:
+                inds_per_input[key] = [curr_idx, curr_idx + dim]
+            curr_idx += dim
+        self.input_idx = OrderedDict([(key, value) for key, value in inds_per_input.items()])
+        self.input_szs = OrderedDict([(key, (value[1] - value[0],)) for key, value in inds_per_input.items()])
+
+    def get_input_shapes(self) -> tuple[OrderedDict[str, tuple[int, int]], OrderedDict[str, int]]:
+        """ Returns the indices and size of inputs.
+
+        input_idx: Start and end index of the different inputs
+        input_szs: Duration of different inputs (end - start)
+        """
+        return self.input_idx, self.input_szs
+
+    def __len__(self) -> int:
+        """ Returns the number of data chunks this dataset can produce.
+        """
+        return self.chunk_indices.shape[0]
 
     def __getitem__(self, idx: int) -> dict[str, np.ndarray | torch.Tensor]:
         """ Returns a data chunk from the dataset.
@@ -632,23 +796,36 @@ class Dataset(torch.utils.data.Dataset):
             chunk['labels_discrete'] = labels_discrete.astype(np.float32)
         return chunk
 
-    def __len__(self) -> int:
-        """ Returns the number of data chunks this dataset can produce.
-        """
-        return self.chunk_indices.shape[0]
+    def recompute_chunk_indices(self, start_offset: int | None = None):
+        """ Computes chunk indices for a given start_offset.
 
-    def split_output_to_labels(self, output):
+        Args:
+            start_offset: First frame of the first chunk. If None picks a random frame in [0, contex_length).
+        """
+        if start_offset is None:
+            start_offset = np.random.randint(self.context_length)
+        self.chunk_indices = compute_chunk_indices(self.sessions, self.context_length, start_offset=start_offset)
+
+    def split_output_by_names(self, output_discr_cont: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """ Splits output by data names (from self.labels) rather than by discrete vs continuous.
+
+        Args:
+            output_discr_cont: Output data split into 'continuous' and 'discrete' keys.
+
+        Returns:
+            output_names: Output data split into dataset.labels.keys().
+        """
         # assemble output to look like original concatenated data (before splitting discrete and continuous)
         n_dim = self.d_output_discrete * self.n_bins + self.d_output_continuous
         is_binned = np.zeros(n_dim, np.bool)
         for inds in self.label_bin_indices:
             is_binned[inds] = True
-        sz = list(output['continuous'].shape[:-1])
+        sz = list(output_discr_cont['continuous'].shape[:-1])
         concated = np.ones(sz + [n_dim]) * np.nan
-        if 'discrete' in output:
-            concated[..., is_binned] = output['discrete'].detach().cpu().numpy().reshape(sz + [-1])
-        if 'continuous' in output:
-            concated[..., ~is_binned] = output['continuous'].detach().cpu().numpy()
+        if 'discrete' in output_discr_cont:
+            concated[..., is_binned] = output_discr_cont['discrete'].detach().cpu().numpy().reshape(sz + [-1])
+        if 'continuous' in output_discr_cont:
+            concated[..., ~is_binned] = output_discr_cont['continuous'].detach().cpu().numpy()
 
         # split concatenated data
         dims_per_key = [data.array.shape[-1] for data in self.labels.values()]

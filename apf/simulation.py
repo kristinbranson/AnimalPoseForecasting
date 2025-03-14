@@ -11,22 +11,40 @@ def simulate(
     model: TransformerModel,
     track: Data, # TODO: embed this in dataset?
     pose: Data, # TODO: embed this in dataset?
-    flyids: np.ndarray, # TODO: embed this in dataset?
+    identities: np.ndarray, # TODO: embed this in dataset?
     track_len: int = 1000,
     burn_in: int = 200,
     max_contextl: int = 512,
-    agent_id: int = 0,
+    agent_idx: int = 0,
     start_frame: int = 1000,
-):
+) -> tuple[np.ndarray, np.ndarray]:
+    """ Simulates an agent given model and some initialization.
+
+    Args:
+        dataset: Dataset that defines which operations need to be applied to the data, also used for burn-in.
+        model: Transformer model used for predicting future motion.
+        track: Track array corresponding to dataset (used for ground truth comparison). TODO: Can we make this optional?
+        pose: Pose array corresponding to dataset (used for ground truth comparison). TODO: Can we make this optional?
+        identities: Maps frame and agent id to a unique individual id. Corresponds to dataset.
+        track_len: How long the total track should be after simulation (including burnin).
+        burn_in: How many frames to use for the initialization.
+        max_contextl: Max number of frames to feed as input to the model. If None, uses the full history.
+        agent_idx: Which agent to use for initialization.
+        start_frame: Which start frame to use for the initialization.
+
+    Returns:
+        gt_track: ground truth 2d track at each frame. Used for first burn_in frames.
+        pred_track: 2d track at each frame based on open loop simulation.
+    """
     # Extract ground truth
-    gt_chunk = dataset.get_chunk(start_frame=start_frame, duration=track_len, agent_id=agent_id)
+    gt_chunk = dataset.get_chunk(start_frame=start_frame, duration=track_len, agent_id=agent_idx)
     gt_input = gt_chunk['input']
 
     gt_track = track.array[:, start_frame:start_frame + track_len]
     gt_pose = pose.array[:, start_frame:start_frame + track_len]
-    flyid = np.unique(flyids[start_frame:start_frame + track_len, agent_id])
-    assert len(flyid) == 1, f"Too many flyids: {flyid}"
-    flyid = flyid[0]
+    agent_identity = np.unique(identities[start_frame:start_frame + track_len, agent_idx])
+    assert len(agent_identity) == 1, f"Too many individual ids: {agent_identity}"
+    agent_identity = agent_identity[0]
 
     # Initialize model input
     device = next(model.parameters()).device
@@ -37,10 +55,9 @@ def simulate(
 
     # Initialize track
     pred_track = copy.deepcopy(gt_track)
-    pred_track[agent_id, curr_frame+1:] = np.nan
+    pred_track[agent_idx, curr_frame + 1:] = np.nan
     pred_pose = copy.deepcopy(gt_pose)
-    pred_pose[agent_id, curr_frame+1:] = np.nan
-
+    pred_pose[agent_idx, curr_frame + 1:] = np.nan
 
     masksizeprev = 0
     model.eval()
@@ -60,7 +77,7 @@ def simulate(
             pred = model.output(model_input[:, frame0:curr_frame, :], mask=mask, is_causal=True)
 
         # Extract velocity from the prediction
-        proc_velocity = dataset.split_output_to_labels(pred)['velocity'][:, -1:, :]
+        proc_velocity = dataset.split_output_by_names(pred)['velocity'][:, -1:, :]
 
         # Invert preprocessing operations to obtain raw velocity
         velocity_operations = dataset.labels['velocity'].operations
@@ -68,11 +85,11 @@ def simulate(
         velocity = apply_inverse_operations(proc_velocity, preproc_opers)
 
         # Apply velocity to current pose (TODO: make this the inverse velocity operation)
-        curr_pose = pred_pose[agent_id, curr_frame-1]
+        curr_pose = pred_pose[agent_idx, curr_frame - 1]
         velocity_op = get_operation(velocity_operations, 'velocity')
         velocity = np.concatenate([velocity, np.zeros_like(velocity)], axis=1)
-        new_pose = velocity_op.inverse(velocity, x0=curr_pose[None, :])[:, -1:, :]
-        pred_pose[agent_id, curr_frame] = new_pose
+        new_pose = velocity_op.invert(velocity, x0=curr_pose[None, :])[:, -1:, :]
+        pred_pose[agent_idx, curr_frame] = new_pose
 
         if np.isnan(new_pose).sum() > 0:
             print(np.isnan(new_pose[0]))
@@ -80,8 +97,8 @@ def simulate(
 
         # Map pose to keypoints
         pose_op = get_operation(velocity_operations, 'pose')
-        keypoints = pose_op.inverse(pred_pose[agent_id, curr_frame, :], flyid)
-        pred_track[agent_id, curr_frame] = keypoints
+        keypoints = pose_op.invert(pred_pose[agent_idx, curr_frame, :], agent_identity)
+        pred_track[agent_idx, curr_frame] = keypoints
 
         # Compute sensory information
         sensory_op = get_operation(dataset.inputs['sensory'].operations, 'sensory')
@@ -89,8 +106,8 @@ def simulate(
 
         # Assemble inputs and apply the same preproc operations to the data as the training data
         inputs = {'velocity': velocity[:1, :1, :],
-                  'pose': pred_pose[agent_id, curr_frame],
-                  'sensory': sensory[agent_id]
+                  'pose': pred_pose[agent_idx, curr_frame],
+                  'sensory': sensory[agent_idx]
                   }
         inputs_proc = apply_opers_from_data(dataset.inputs, inputs)
         curr_in = np.concatenate(list(inputs_proc.values()), axis=-1)

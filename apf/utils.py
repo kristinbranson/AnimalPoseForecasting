@@ -150,10 +150,10 @@ def function_args_from_config(config: dict, function: Callable) -> dict:
 def connected_components(vector: np.ndarray) -> np.ndarray:
     """ Finds connected components of vector.
 
-    Parameters
+    Args:
         vector: boolean vector
 
-    Returns
+    Returns:
         components: n x 2 array containing (start, end) index for n connected components in vector.
     """
     # pad with zeros
@@ -169,6 +169,7 @@ def connected_components(vector: np.ndarray) -> np.ndarray:
 
 def set_invalid_ends(data: np.ndarray, isstart: np.ndarray, dt: int) -> None:
     """ Sets last dt frames at the end of a continuous sequence to be NaN.
+
     Args:
         data: Data that was computed using dt, e.g. future motion prediction. (n_features, n_frames, n_agents) float
         isstart: Indicates whether a frame is the start of a sequence for an agent, (n_frames, n_agents) bool
@@ -179,4 +180,3 @@ def set_invalid_ends(data: np.ndarray, isstart: np.ndarray, dt: int) -> None:
         starts = np.where(isstart[:, i] == 1)[0]
         invalids = np.unique(np.concatenate([starts - i - 1 for i in range(dt)]))
         data[..., invalids, i] = np.nan
-
