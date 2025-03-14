@@ -87,7 +87,6 @@ model_file = "/groups/branson/home/eyjolfsdottire/data/flyllm/model_refactored_2
 # pickle.dump(model, open(model_file, "wb"))
 # model = pickle.load(open(model_file, "rb"))
 
-# +
 gt_track, pred_track = simulate(
     dataset=train_dataset,
     model=model,
@@ -120,8 +119,8 @@ x, y = pred_track[0, :last_frame, :, 0].T
 plt.plot(x, y, '.', markersize=1)
 plt.axis('equal')
 plt.show()
+# -
 
-# +
 agent_id = 0
 savevidfile = "/groups/branson/home/eyjolfsdottire/data/flyllm/animation_250307.gif"
 ani = animate_pose({'Pred': pred_track.T.copy(), 'True': gt_track.T.copy()}, focusflies=[agent_id], savevidfile=savevidfile)

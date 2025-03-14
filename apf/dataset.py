@@ -331,7 +331,7 @@ class Fusion(Operation):
         assert len(operations) == len(indices_per_op), "List of indices should have same length as list of operations."
 
         all_indices = np.concatenate(indices_per_op)
-        assert len(all_indices) == max(all_indices) and len(all_indices) == len(np.unique(all_indices)), \
+        assert len(all_indices) == max(all_indices) + 1 and len(all_indices) == len(np.unique(all_indices)), \
             "Indices must cover all feature dimensions and each dimension can only be provided to one operation."
 
         self.operations = operations
@@ -711,7 +711,7 @@ class Dataset(torch.utils.data.Dataset):
         if len(self.label_n_bins) > 0:
             assert len(np.unique(self.label_n_bins)) == 1
             self.discretize_nbins = self.label_n_bins[0]
-            self.d_output_discrete = d_discrete // self.n_bins
+            self.d_output_discrete = d_discrete // self.discretize_nbins
         else:
             self.discretize_nbins = 0
             self.d_output_discrete = 0
@@ -721,7 +721,7 @@ class Dataset(torch.utils.data.Dataset):
         self.discretize = self.d_output_discrete > 0
         self.flatten = False
         self.input_idx = self.input_szs = None
-        self.set_input_indices()
+        self.set_input_shapes()
 
     def set_input_shapes(self):
         """ Set feature indices of different types of inputs (note that sensory is split into further indices here).
@@ -816,7 +816,7 @@ class Dataset(torch.utils.data.Dataset):
             output_names: Output data split into dataset.labels.keys().
         """
         # assemble output to look like original concatenated data (before splitting discrete and continuous)
-        n_dim = self.d_output_discrete * self.n_bins + self.d_output_continuous
+        n_dim = self.d_output_discrete * self.discretize_nbins + self.d_output_continuous
         is_binned = np.zeros(n_dim, np.bool)
         for inds in self.label_bin_indices:
             is_binned[inds] = True
