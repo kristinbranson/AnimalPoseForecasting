@@ -1,26 +1,24 @@
-import matplotlib.pyplot as plt
 import numpy as np
-import torch
+import logging
 
-from apf.dataset import Zscore, Discretize, Data, Dataset
-from apf.simulation import compare_gt_motion_pred_sim
 from apf.io import load_raw_npz_data
-from apf.training import to_dataloader, init_model, train
-from apf.utils import function_args_from_config, set_invalid_ends
-from apf.models import TransformerModel
-
-from flyllm.features import compute_global_velocity
+from apf.dataset import Dataset, Data, Zscore, Discretize, Operation, Roll, Velocity, apply_opers_from_data
 
 from spatial_infomax.utils.data_loader import HeightMap, load_data
 from spatial_infomax.utils.models import compute_whisker
+
+LOG = logging.getLogger(__name__)
 
 
 def create_npz(session_ids: list[int]) -> dict:
     """ Generates data for the given session_ids in a format that can be saved with np.savez and read by load_npz_data.
 
+    #   Example:
+    #   train_data = create_npz(np.arange(5))
+    #   val_data = create_npz([5])
+
     Note: By default this uses sample_spacing=5 and a smoothing filter
     """
-
     # Per frame data
     X = []
     ids = []
@@ -78,8 +76,8 @@ def load_npz_data(filepath: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
     Returns:
         position: Global position (x, y, theta) of agent at each frame, (3, n_frames, n_agents) float
-        observation: Whisker values for agent at each frame, (n_whisker_angles, n_frames, n_agents) float
         isstart: Indicates whether a frame is the start of a sequence for an agent, (n_frames, n_agents) bool
+        mouseids: Identity of different mice (or same mouse but different trials).
     """
     # load the raw data
     data = load_raw_npz_data(filepath)
@@ -89,151 +87,101 @@ def load_npz_data(filepath: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     feat_ids = np.array([featnames.index(name) for name in ['head_x', 'head_y', 'head_theta']])
     position = data['X'][feat_ids]
 
-    # compute observation
-    observation = compute_observation(position)
-
-    return position, observation, data['isstart']
+    return position, data['isstart'], data['ids']
 
 
-def compute_observation(position: np.ndarray) -> np.ndarray:
-    """ Computes observation for each agent at each frame.
+class Sensory(Operation):
+    """ Computes whisker values for the mouse.
 
-    Args:
-        position: Global position (x, y, theta) of agent at each frame, (3, n_frames, n_agents) float
-
-    Returns
-        observation: Whisker values for agent at each frame, (n_whisker_angles, n_frames, n_agents) float
+    NOTE: this operation is not invertible.
     """
-    heightmap = HeightMap()
+    def __init__(self):
+        self.heightmap = HeightMap()
 
-    _, n_frames, n_agents = position.shape
-    wh_vals, _, _ = compute_whisker(
-        heightmap=heightmap,
-        center=position[:2].reshape((2, n_frames * n_agents)),
-        theta=position[2].reshape((n_frames * n_agents))
-    )
-    return wh_vals.reshape((-1, n_frames, n_agents))
+    def apply(self, position: np.ndarray) -> np.ndarray:
+        """ Computes whisker values from position and heightmap.
+
+        Args:
+            position: (x, y, theta) of agent at each frame, (n_agents, n_frames, 3) float
+
+        Returns:
+            sensory_data: (n_agents,  n_frames, n_whisker_angles) float array
+        """
+        positionT = position.T
+        _, n_frames, n_agents = positionT.shape
+        wh_vals, center_height, end_heights = compute_whisker(
+            heightmap=self.heightmap,
+            center=positionT[:2].reshape((2, n_frames * n_agents)),
+            theta=positionT[2].reshape((n_frames * n_agents))
+        )
+
+        # TODO: Add bw distance to edge for all the whiskers (instead of the current binary representation)
+
+        all_heights = np.concatenate([center_height[None, :], end_heights], axis=0)
+        return all_heights.reshape((-1, n_frames, n_agents)).T
+
+        return wh_vals.reshape((-1, n_frames, n_agents)).T
+
+    def invert(self, sensory: np.ndarray) -> None:
+        LOG.error(f"Operation {self} is not invertible")
+        return None
 
 
-def compute_global_movement(position: np.ndarray, dt: int, isstart: np.ndarray | None = None) -> np.ndarray:
-    """ Computes global movement of each agent at each timestep for the given time step, dt.
-
-    NOTE: If user wishes to predict various time steps into the future this function should be
-        called separately for each dt.
+def make_dataset(
+        config: dict,
+        filename: str,
+        ref_dataset: Dataset | None = None,
+        return_all: bool = False,
+) -> Dataset | tuple[Dataset, np.ndarray, Data, Data, Data]:
+    """ Creates a dataset from config, for a given file name and optionally using a reference dataset.
 
     Args:
-        position: Global position (x, y, theta) of agent at each frame, (3, n_frames, n_agents) float
-        dt: Movement to be computed for this many time steps ahead.
-        isstart: Indicates whether a frame is the start of a sequence for an agent, (n_frames, n_agents) bool
+        config: Config for loading the data
+        filename: Name of file to read the data from (e.g. 'intrainfile', 'invalfile')
+        ref_dataset: Dataset to copy postprocessing operations from.
+            When loading validation/test set, provide training set.
+        return_all: Whether to return intermediate variables in addition to Dataset (see returns)
+        debug: Whether to use less data for debugging
 
     Returns:
-        movement_global: Global displacement (dside, dforward, dtheta) for dt, (3, n_frames, n_agents) float
+        dataset: Dataset for flyllm experiment.
+        [
+        pose: Pose data
+        velocity: Velocity data
+        sensory: Sensory data
+        ]
     """
-    # Compute global velocity
-    dXoriginrel, dtheta = compute_global_velocity(
-        Xorigin=position[:2],
-        Xtheta=position[2],
-        tspred_global=[dt],
-    )
-
-    # concatenate the global (dforward, dsideways, dorientation)
-    movement_global = np.concatenate((dXoriginrel[:, [1, 0], :, :], dtheta[:, None, :, :]), axis=1)
-
-    # reshape it (flatten over tspred)
-    ntspred_global, nglobal, n_frames, n_agents = movement_global.shape
-    movement_global = movement_global.reshape((ntspred_global * nglobal, n_frames, n_agents))
-
-    if isstart is not None:
-        set_invalid_ends(movement_global, isstart, dt)
-
-    return movement_global
-
-
-def experiment(config: dict) -> None:
     # Load the data
-    #   data was created with
-    #   train_data = create_npz(np.arange(5))
-    #   val_data = create_npz([5])
-    position, observation, isstart = load_npz_data(config['intrainfile'])
+    X, isstart, mouseids = load_npz_data(config[filename])
 
     # Compute features
-    tspred = 1
-    global_motion = compute_global_movement(position, dt=tspred, isstart=isstart)
+    pose = Data(name='pose', array=X.T, operations=[])
+    sensory = Sensory()(pose)
+    velocity = Velocity(featrelative=np.zeros(X.shape[0], bool))(pose, isstart=isstart)
 
-    # Wrap into data class with relevant data operations
-    motion_zscore = Zscore()
-    # Continuous output
-    # motion_data_labels = Data(raw=global_motion.T, operation=motion_zscore)
-    # Discrete output
-    motion_data_labels = Data(raw=global_motion.T, operation=Discretize())
-    # TODO: Move the roll logic into Data or Dataset?
-    motion_data_input = Data(raw=np.roll(global_motion.T, shift=tspred, axis=1), operation=motion_zscore)
-    observation_data = Data(raw=observation.T, operation=Zscore())
-
-    # Wrap into dataset
-    train_dataset = Dataset(
-        inputs=[motion_data_input, observation_data],
-        labels=[motion_data_labels],
-        isstart=isstart,
-        context_length=config['contextl'],
-    )
-
-    # Now do the same for validation data and use the dataset operations from the training data
-    val_position, val_observation, val_sessions = load_npz_data(config['invalfile'])
-    val_global_motion = compute_global_movement(val_position, dt=tspred)
-    val_motion_data_labels = Data(raw=val_global_motion.T, operation=motion_data_labels.operation)
-    val_motion_data_input = Data(raw=np.roll(val_global_motion.T, shift=tspred, axis=1),
-                                 operation=motion_data_input.operation)
-    val_observation_data = Data(raw=val_observation.T, operation=observation_data.operation)
-    val_dataset = Dataset(
-        inputs=[val_motion_data_input, val_observation_data],
-        labels=[val_motion_data_labels],
-        isstart=isstart,
-        context_length=config['contextl'],
-    )
-
-    # Map to dataloaders
-    device = torch.device(config['device'])
-    batch_size = config['batch_size']
-    train_dataloader = to_dataloader(train_dataset, device, batch_size, shuffle=True)
-    val_dataloader = to_dataloader(val_dataset, device, batch_size, shuffle=False)
-
-    # Initialize the model
-    model_args = function_args_from_config(config, TransformerModel)
-    model = init_model(train_dataset, model_args).to(device)
-
-    # Train the model
-    train_args = function_args_from_config(config, train)
-    model, best_model, loss_epoch = train(
-        train_dataloader,
-        val_dataloader,
-        model,
-        **train_args,
-    )
-
-    # Plot the losses
-    idx = np.argmin(loss_epoch['val'])
-    print((idx, loss_epoch['val'][idx]))
-    plt.figure()
-    plt.plot(loss_epoch['train'])
-    plt.plot(loss_epoch['val'])
-    plt.plot(idx, loss_epoch['val'][idx], '.g')
-    plt.show()
-
-    # Simulate and compare with ground truth trajectory
-    compare_gt_motion_pred_sim(
-        model=model,
-        motion_operation=val_motion_data_input.operation,
-        motion_labels_operation=val_motion_data_labels.operation,
-        observation_operation=val_observation_data.operation,
-        compute_observation=compute_observation,
-        dataset=val_dataset,
-        position=val_position,
-        agent_id=0,
-        t0=200,
-        track_len=1000,
-        burn_in=55,
-        max_contextl=64,
-        noise_factor=0,
-        bg_img=HeightMap().map,
-    )
+    # Assemble the dataset
+    if ref_dataset is None:
+        # TODO: determine good bin config values
+        bin_config = {'nbins': config['discretize_nbins']}
+        dataset = Dataset(
+            inputs={
+                'velocity': Zscore()(Roll(dt=1)(velocity)),
+                'sensory': Zscore()(sensory),
+            },
+            labels={
+                'velocity': Discretize(**bin_config)(velocity),
+            },
+            isstart=isstart,
+            context_length=config['contextl'],
+        )
+    else:
+        dataset = Dataset(
+            inputs=apply_opers_from_data(ref_dataset.inputs, {'velocity': velocity, 'sensory': sensory}),
+            labels=apply_opers_from_data(ref_dataset.labels, {'velocity': velocity}), #, 'auxiliary': auxiliary}),
+            context_length=config['contextl'],
+            isstart=isstart,
+        )
+    if return_all:
+        return dataset, mouseids, pose, velocity, sensory
+    else:
+        return dataset

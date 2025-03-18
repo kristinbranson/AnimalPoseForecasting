@@ -7,7 +7,9 @@ import torch
 import logging
 
 from apf.data import fit_discretize_data, discretize_labels, weighted_sample
-from apf.utils import connected_components
+from apf.utils import connected_components, modrange, rotate_2d_points, set_invalid_ends
+
+from apf.features import compute_global_velocity, compute_relpose_velocity
 
 LOG = logging.getLogger(__name__)
 
@@ -314,7 +316,7 @@ class Discretize(Operation):
         n_bins = self.bin_centers.shape[-1]
         n_feat = n_bin_feat // n_bins
         if do_sampling:
-            return sample_discrete_labels(data.reshape((n_agents, n_frames, n_feat, n_bins)), self.bin_samples)
+            return sample_discrete_labels(data.reshape((n_agents, n_frames, n_feat, n_bins)), self.bin_samples)[0]
         else:
             return labels_discrete_to_continuous(data.reshape((n_agents, n_frames, n_feat, n_bins)), self.bin_centers)
 
@@ -424,6 +426,162 @@ class Roll(Operation):
             unrolled_data: (n_agents,  n_frames, n_features) float array
         """
         return np.roll(data, shift=-self.dt, axis=1)
+
+
+class LocalVelocity(Operation):
+    """ Computes the relative pose movement from t to t + 1.
+
+    Args:
+        is_angle: Bool vector indicating whether pose index is an angle measurement, used to wrap angles
+            into [-pi, pi] range when inverting the operation.
+    """
+    def __init__(self, is_angle: np.ndarray = None):
+        self.is_angle = is_angle
+
+    def apply(self, pose: np.ndarray, isstart: np.ndarray | None = None) -> np.ndarray:
+        """ Compute velocity from pose.
+
+        Args:
+            pose: (n_agents,  n_frames, n_pose_features) float array
+            isstart: Indicates whether a new fly track starts at a given frame for an agent.
+                (n_frames, n_agents) bool array
+
+        Returns:
+            velocity: (n_agents,  n_frames, n_pose_features) float array
+        """
+        pose_velocity = np.moveaxis(compute_relpose_velocity(pose.T, is_angle=self.is_angle), 2, 0)
+        if isstart is not None:
+            # Set pose deltas that cross individuals to NaN.
+            set_invalid_ends(pose_velocity, isstart, dt=1)
+        pose_velocity = pose_velocity[0]
+        return pose_velocity.T
+
+    def invert(self, velocity: np.ndarray, x0: np.ndarray = None) -> np.ndarray:
+        """ Compute pose from pose velocity and an initial pose.
+
+        Args:
+            velocity: Delta pose (n_agents,  n_frames, n_pose_features) float array
+            x0: Initial pose (n_agents,  n_frames, n_pose_features) float array
+
+        Returns:
+            pose: (n_agents,  n_frames, n_pose_features) float array
+        """
+        # Note: here we are assuming dt=1
+        if x0 is None:
+            n_agents, _, n_features = velocity.shape
+            x0 = np.zeros((n_agents, n_features))
+        velocity = np.concatenate([x0[:, None, :], velocity], axis=1)[:, :-1, :]
+        pose = np.cumsum(velocity, axis=1)
+        if self.is_angle is not None:
+            pose[..., self.is_angle] = modrange(pose[..., self.is_angle], -np.pi, np.pi)
+        return pose
+
+
+class GlobalVelocity(Operation):
+    """ Computes the global movement of an agent,  dfwd, dside, dtehta, from its (x, y, theta) position.
+
+    Args:
+        tspred: A list of dt for which global movement (from t to t+dt) will be computed for.
+    """
+    def __init__(self, tspred: list[int]):
+        self.tspred = tspred
+
+    def apply(self, position: np.ndarray, isstart: np.ndarray | None = None) -> np.ndarray:
+        """ Compute global movement from position.
+
+        Args:
+            position: (n_agents,  n_frames, 3) float array
+            isstart: Indicates whether a new fly track starts at a given frame for an agent.
+                (n_frames, n_agents) bool array
+
+        Returns:
+            velocity: Global pose velocity, flattened over tspred.
+                (n_agents,  n_frames, 3 * len(self.tspred)) float array
+        """
+        Xorigin = position[..., :2].T
+        Xtheta = position[..., 2].T
+        _, n_frames, n_flies = Xorigin.shape
+        dXoriginrel, dtheta = compute_global_velocity(Xorigin, Xtheta, self.tspred)
+        movement_global = np.concatenate((dXoriginrel[:, [1, 0]], dtheta[:, None, :, :]), axis=1)
+        if isstart is not None:
+            for movement, dt in zip(movement_global, self.tspred):
+                set_invalid_ends(movement, isstart, dt=dt)
+        movement_global = movement_global.reshape((-1, n_frames, n_flies))
+
+        return movement_global.T
+
+    def invert(self, velocity: np.ndarray, x0: np.ndarray | None = None):
+        """ Compute position from global movement and an initial position.
+
+        NOTE: This assumes velocity is only given for dt=1
+
+        Args:
+            velocity: Global movmement (n_agents,  n_frames, 3) float array
+            x0: Initial pose (n_agents,  n_frames, n_pose_features) float array
+
+        Returns:
+            pose: (n_agents,  n_frames, n_pose_features) float array
+        """
+        if x0 is None:
+            n_agents, _, n_dim = velocity.shape
+            x0 = np.zeros((n_agents, n_dim))
+
+        d_theta = np.concatenate([x0[:, None, 2], velocity[:, :, 2]], axis=1)
+        theta = modrange(np.cumsum(d_theta, axis=1), -np.pi, np.pi)[:, :-1]
+
+        d_pos_rel = velocity[..., [1, 0]]
+        d_pos = rotate_2d_points(d_pos_rel.transpose((1, 2, 0)), -theta.T).transpose((2, 0, 1))
+        d_pos = np.concatenate([x0[:, None, :2], d_pos], axis=1)
+        pos = np.cumsum(d_pos, axis=1)[:, :-1, :]
+        return np.concatenate([pos, theta[:, :, None]], axis=-1)
+
+
+class Velocity(Operation):
+    """ Combines global and local velocity.
+
+    Args:
+        featrelative: Bool vector indicating whether pose index is a relative feature.
+        featangle: Bool vector indicating whether pose index is an angle feature.
+    """
+    def __init__(self, featrelative: np.ndarray, featangle: np.ndarray = None):
+        # Keep track of global and local indices for the pose features
+        self.global_inds = np.where(~featrelative)[0]
+        self.local_inds = np.where(featrelative)[0]
+        is_angle = featangle[featrelative] if featangle is not None else None
+        # Use Fusion to apply global vs local operations to the relevant feature dimensions
+        self.fusion = Fusion(
+            operations=[GlobalVelocity(tspred=[1]), LocalVelocity(is_angle=is_angle)],
+            indices_per_op=[self.global_inds, self.local_inds]
+        )
+
+    def apply(self, pose: np.ndarray, isstart: np.ndarray | None = None):
+        """ Compute global and local velocity from pose.
+
+        Args:
+            pose: (n_agents,  n_frames, n_pose_features) float array
+            isstart: Indicates whether a new fly track starts at a given frame for an agent.
+                (n_frames, n_agents) bool array
+
+        Returns:
+            velocity: (n_agents,  n_frames, n_pose_features) float array
+        """
+        return self.fusion.apply(pose, kwargs_per_op={'isstart': isstart})
+
+    def invert(self, velocity: np.ndarray, x0: np.ndarray | None = None):
+        """ Compute pose from pose velocity and an initial pose.
+
+        Args:
+            velocity: Delta pose (n_agents,  n_frames, n_pose_features) float array
+            x0: Initial pose (n_agents,  n_frames, n_pose_features) float array
+
+        Returns:
+            pose: (n_agents,  n_frames, n_pose_features) float array
+        """
+        if x0 is not None:
+            kwargs_per_op = [{'x0': x0[..., self.global_inds]}, {'x0': x0[..., self.local_inds]}]
+        else:
+            kwargs_per_op = None
+        return self.fusion.invert(velocity, kwargs_per_op)
 
 
 @dataclass(frozen=True)
@@ -660,11 +818,14 @@ def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict[str, Data]) ->
     Returns:
         Post processed datas.
     """
-    assert len(datas_ref.keys()) == len(datas.keys()), "The two data collections must have the same keys"
+    # assert len(datas_ref.keys()) == len(datas.keys()), "The two data collections must have the same keys"
     processed_data = {}
     for key in datas_ref.keys():
         assert key in datas, "Expect both data to have all of the same keys"
         opers = get_post_operations(datas_ref[key].operations, key)
+        if opers is None:
+            LOG.warning(f"Did not find an operation '{key}', applying all operations")
+            opers = datas_ref[key].operations
         processed_data[key] = apply_operations(datas[key], opers)
     return processed_data
 
@@ -736,7 +897,7 @@ class Dataset(torch.utils.data.Dataset):
         curr_idx = 0
         for key, data in self.inputs.items():
             dim = data.array.shape[-1]
-            if key == 'sensory':
+            if key == 'sensory' and hasattr(data.operations[0], 'idxinfo'):
                 for sensory_key, lim in data.operations[0].idxinfo.items():
                     inds_per_input[sensory_key] = [curr_idx + lim[0], curr_idx + lim[1]]
             else:

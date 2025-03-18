@@ -100,7 +100,10 @@ def simulate(
 
         # Map pose to keypoints
         pose_op = get_operation(velocity_operations, 'pose')
-        keypoints = pose_op.invert(pred_pose[agent_idx, curr_frame, :], agent_identity)
+        if pose_op is None:
+            keypoints = pred_pose[agent_idx, curr_frame, :]
+        else:
+            keypoints = pose_op.invert(pred_pose[agent_idx, curr_frame, :], agent_identity)
         pred_track[agent_idx, curr_frame] = keypoints
 
         # Compute sensory information
@@ -118,4 +121,4 @@ def simulate(
 
         curr_frame += 1
 
-    return gt_track, pred_track
+    return gt_track, pred_track, gt_input, model_input

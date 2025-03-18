@@ -5,6 +5,8 @@ import torch
 import tqdm
 import logging
 
+from apf.utils import modrange, rotate_2d_points, angledist2xy, mod2pi, atleast_4d, compute_npad
+from apf.features import compute_global_velocity, compute_relpose_velocity
 from flyllm.config import (
     posenames, keypointnames, scalenames,
     nglobal, nrelative, nfeatures, nkptouch, nkptouch_other,
@@ -12,7 +14,6 @@ from flyllm.config import (
     featglobal, kpvision_other, kptouch_other, featthetaglobal, kpeye, kptouch,
     SENSORY_PARAMS, PXPERMM
 )
-from apf.utils import modrange, rotate_2d_points, boxsum, angledist2xy, mod2pi, atleast_4d, compute_npad
 
 LOG = logging.getLogger(__name__)
 
@@ -91,71 +92,6 @@ def relpose_angle_to_cos_sin(relpose, discreteidx=[]):
             relpose_cos_sin[csi[0], ...] = np.cos(relpose[relfeati, ...])
             relpose_cos_sin[csi[1], ...] = np.sin(relpose[relfeati, ...])
     return relpose_cos_sin
-
-
-def compute_global_velocity(Xorigin, Xtheta, tspred_global=[1, ]):
-    """
-    compute_global_velocity(Xorigin,Xtheta,tspred_global=[1,])
-    compute the movement from t to t+tau for all tau in tspred_global
-    Xorigin is the centroid position of the fly, shape = (2,T,nflies)
-    Xtheta is the orientation of the fly, shape = (T,nflies)
-    returns dXoriginrel,dtheta
-    dXoriginrel[i,:,t,fly] is the global position for fly at time t+tspred_global[i] in the coordinate system of the fly at time t
-    shape = (ntspred_global,2,T,nflies)
-    dtheta[i,t,fly] is the total change in orientation for fly at time t+tspred_global[i] from time t. this sums per-frame dthetas,
-    so it could have a value outside [-pi,pi]. shape = (ntspred_global,T,nflies)
-    """
-
-    T = Xorigin.shape[1]
-    nflies = Xorigin.shape[2]
-    ntspred_global = len(tspred_global)
-
-    # global velocity
-    # dXoriginrel[tau,:,t,fly] is the global position for fly at time t+tau in the coordinate system of the fly at time t
-    dXoriginrel = np.zeros((ntspred_global, 2, T, nflies), dtype=Xorigin.dtype)
-    dXoriginrel[:] = np.nan
-    # dtheta[tau,t,fly] is the change in orientation for fly at time t+tau from time t
-    dtheta = np.zeros((ntspred_global, T, nflies), dtype=Xtheta.dtype)
-    dtheta[:] = np.nan
-    # dtheta1[t,fly] is the change in orientation for fly from frame t to t+1
-    dtheta1 = modrange(Xtheta[1:, :] - Xtheta[:-1, :], -np.pi, np.pi)
-
-    for i, toff in enumerate(tspred_global):
-        # center and rotate absolute position around position toff frames previous
-        dXoriginrel[i, :, :-toff, :] = rotate_2d_points(
-            (Xorigin[:, toff:, :] - Xorigin[:, :-toff, :]).transpose((1, 0, 2)), Xtheta[:-toff, :]).transpose((1, 0, 2))
-        # compute total change in global orientation in toff frame intervals
-        dtheta[i, :-toff, :] = boxsum(dtheta1[None, ...], toff)
-
-    return dXoriginrel, dtheta
-
-
-def compute_relpose_velocity(relpose, tspred_dct=[]):
-    """
-    compute_relpose_velocity(relpose,tspred_dct=[])
-    compute the relative pose movement from t to t+tau for all tau in tspred_dct
-    relpose is the relative pose features, shape = (nrelative,T,nflies)
-    outputs drelpose, shape = (nrelative,T,ntspred_dct+1,nflies)
-    """
-
-    ntspred_dct = len(tspred_dct)
-    T = relpose.shape[1]
-    nflies = relpose.shape[2]
-
-    # drelpose1[:,f,fly] is the change in pose for fly from frame t to t+1
-    drelpose1 = relpose[:, 1:, :] - relpose[:, :-1, :]
-    drelpose1[featangle[featrelative], :, :] = modrange(drelpose1[featangle[featrelative], :, :], -np.pi, np.pi)
-
-    # drelpose[:,tau,t,fly] is the change in pose for fly at time t+tau from time t
-    drelpose = np.zeros((nrelative, T, ntspred_dct + 1, nflies), dtype=relpose.dtype)
-    drelpose[:] = np.nan
-    drelpose[:, :-1, 0, :] = drelpose1
-
-    for i, toff in enumerate(tspred_dct):
-        # compute total change in relative pose in toff frame intervals
-        drelpose[:, :-toff, i + 1, :] = boxsum(drelpose1, toff)
-
-    return drelpose
 
 
 def compute_relpose_tspred(relposein, tspred_dct=[], discreteidx=[]):
@@ -572,7 +508,7 @@ def compute_movement(
         relpose_rep = np.zeros((0, T, ntspred_global + 1, nflies), dtype=relpose.dtype)
         relpose_init = np.zeros(0, ninit, nflies, dtype=relpose.dtype)
     elif compute_pose_vel:
-        relpose_rep = compute_relpose_velocity(relpose, tspred_dct)
+        relpose_rep = compute_relpose_velocity(relpose, tspred_dct, is_angle=featangle[featrelative])
         relpose_init = relpose[:,:ninit]
     else:
         relpose_rep = compute_relpose_tspred(relpose, tspred_dct, discreteidx=discreteidx)
