@@ -46,20 +46,6 @@ config = read_config(
 
 train_dataset, flyids, track, pose, velocity, sensory = make_dataset(config, 'intrainfile', return_all=True, debug=True)
 
-# +
-op = train_dataset.labels['velocity'].operations[-1].operations[0]
-
-
-i = 0
-n_bins = op.bin_centers.shape[-1]
-counts = train_dataset.labels['velocity'].array[0, :, i*n_bins:(i+1)*n_bins].sum(0)
-plt.plot(op.bin_centers[i][:-1], counts[:-1], '.')
-plt.show()
-# -
-
-plt.plot(op.bin_centers[2], '.')
-plt.show()
-
 val_dataset = make_dataset(config, 'invalfile', train_dataset, debug=True)
 
 # Wrap into dataloader

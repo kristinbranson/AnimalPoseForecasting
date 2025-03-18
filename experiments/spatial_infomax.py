@@ -115,12 +115,10 @@ class Sensory(Operation):
             theta=positionT[2].reshape((n_frames * n_agents))
         )
 
-        # TODO: Add bw distance to edge for all the whiskers (instead of the current binary representation)
-
         all_heights = np.concatenate([center_height[None, :], end_heights], axis=0)
         return all_heights.reshape((-1, n_frames, n_agents)).T
 
-        return wh_vals.reshape((-1, n_frames, n_agents)).T
+        # return wh_vals.reshape((-1, n_frames, n_agents)).T
 
     def invert(self, sensory: np.ndarray) -> None:
         LOG.error(f"Operation {self} is not invertible")
@@ -162,7 +160,8 @@ def make_dataset(
     # Assemble the dataset
     if ref_dataset is None:
         # TODO: determine good bin config values
-        bin_config = {'nbins': config['discretize_nbins']}
+        bin_config = {'nbins': config['discretize_nbins'],
+                      'bin_epsilon': config['discretize_epsilon']}
         dataset = Dataset(
             inputs={
                 'velocity': Zscore()(Roll(dt=1)(velocity)),
