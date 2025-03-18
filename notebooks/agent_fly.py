@@ -57,6 +57,9 @@ plt.plot(op.bin_centers[i][:-1], counts[:-1], '.')
 plt.show()
 # -
 
+plt.plot(op.bin_centers[2], '.')
+plt.show()
+
 val_dataset = make_dataset(config, 'invalfile', train_dataset, debug=True)
 
 # Wrap into dataloader
