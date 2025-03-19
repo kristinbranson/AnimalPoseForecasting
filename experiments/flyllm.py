@@ -130,7 +130,6 @@ def load_data(
     return Xkp, flyids, isstart, isdata, scale_perfly
 
 
-
 def make_dataset(
         config: dict,
         filename: str,
