@@ -12,9 +12,9 @@ LOG = logging.getLogger(__name__)
 def simulate(
     dataset: Dataset,
     model: TransformerModel,
-    track: Data, # TODO: embed this in dataset?
-    pose: Data, # TODO: embed this in dataset?
-    identities: np.ndarray, # TODO: embed this in dataset?
+    track: Data,  # TODO: embed this in dataset?
+    pose: Data,  # TODO: embed this in dataset?
+    identities: np.ndarray,  # TODO: embed this in dataset?
     track_len: int = 1000,
     burn_in: int = 200,
     max_contextl: int = 512,
@@ -87,7 +87,7 @@ def simulate(
         preproc_opers = get_post_operations(velocity_operations, 'velocity')
         velocity = apply_inverse_operations(proc_velocity, preproc_opers)
 
-        # Apply velocity to current pose (TODO: make this the inverse velocity operation)
+        # Apply velocity to current pose
         curr_pose = pred_pose[agent_idx, curr_frame - 1]
         velocity_op = get_operation(velocity_operations, 'velocity')
         velocity = np.concatenate([velocity, np.zeros_like(velocity)], axis=1)
@@ -100,7 +100,10 @@ def simulate(
 
         # Map pose to keypoints
         pose_op = get_operation(velocity_operations, 'pose')
-        keypoints = pose_op.invert(pred_pose[agent_idx, curr_frame, :], agent_identity)
+        if pose_op is None:
+            keypoints = pred_pose[agent_idx, curr_frame, :]
+        else:
+            keypoints = pose_op.invert(pred_pose[agent_idx, curr_frame, :], agent_identity)
         pred_track[agent_idx, curr_frame] = keypoints
 
         # Compute sensory information
