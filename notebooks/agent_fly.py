@@ -44,7 +44,7 @@ config = read_config(
     get_sensory_feature_idx=get_sensory_feature_idx,
 )
 
-train_dataset, flyids, track, pose, velocity, sensory = make_dataset(config, 'intrainfile', return_all=True, debug=False)
+train_dataset, flyids, track, pose, velocity, sensory = make_dataset(config, 'intrainfile', return_all=True, debug=True)
 
 val_dataset = make_dataset(config, 'invalfile', train_dataset, debug=True)
 

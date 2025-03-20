@@ -115,10 +115,9 @@ class Sensory(Operation):
             theta=positionT[2].reshape((n_frames * n_agents))
         )
 
-        # all_heights = np.concatenate([center_height[None, :], end_heights], axis=0)
-        # return all_heights.reshape((-1, n_frames, n_agents)).T
-
-        return wh_vals.reshape((-1, n_frames, n_agents)).T
+        all_heights = np.concatenate([center_height[None, :], end_heights], axis=0)
+        return all_heights.reshape((-1, n_frames, n_agents)).T
+        # return wh_vals.reshape((-1, n_frames, n_agents)).T
 
     def invert(self, sensory: np.ndarray) -> None:
         LOG.error(f"Operation {self} is not invertible")

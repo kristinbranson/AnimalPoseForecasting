@@ -39,7 +39,7 @@ config = read_config(
     configfile,
     default_configfile=DEFAULTCONFIGFILE,
 )
-config['discretize_epsilon'] = [0.2, 0.2, .01]  # found this empirically for bin sums to look roughly gaussian
+config['discretize_epsilon'] = [0.2, 0.2, .01] # found this empirically for bin sums to look roughtly gaussian
 # -
 
 train_dataset, mouseids, pose, velocity, sensory = make_dataset(config, 'intrainfile', return_all=True)
@@ -74,9 +74,10 @@ plt.plot(idx, loss_epoch['val'][idx], '.g')
 
 model_file = "/groups/branson/home/eyjolfsdottire/data/flyllm/model_refactored_250318_spatialinfomax.pkl"
 # pickle.dump(model, open(model_file, "wb"))
-# model = pickle.load(open(model_file, "rb"))
+model = pickle.load(open(model_file, "rb"))
 
 # +
+# Simulate
 session = train_dataset.sessions[2]
 burn_in = config['contextl'] 
 
@@ -95,7 +96,6 @@ gt_track, pred_track = simulate(
 
 # +
 plt.figure()
-
 plt.imshow(sensory.operations[0].heightmap.map, cmap='gray')
 
 last_frame = None
@@ -107,3 +107,40 @@ plt.plot(x[:burn_in], y[:burn_in], '.g', markersize=3)
 plt.axis('equal')
 plt.show()
 # -
+
+# Simulate multiple
+preds = []
+for i in range(100):
+    print(i)
+    gt_track, pred_track = simulate(
+        dataset=train_dataset,
+        model=model,
+        track=pose,
+        pose=pose,
+        identities=mouseids,
+        track_len=session.duration,
+        burn_in=burn_in,
+        max_contextl=config['contextl'],
+        agent_idx=0,
+        start_frame=session.start_frame,
+    )
+    preds.append(pred_track)
+
+# +
+plt.figure(figsize=(20, 20))
+plt.imshow(sensory.operations[0].heightmap.map, cmap='gray')
+
+for pred_track in preds:
+    x, y = pred_track[0, :, :2].T
+    plt.plot(x, y, '.', markersize=1)
+
+plt.axis('equal')
+plt.axis('off')
+plt.show()
+# -
+
+
+
+
+
+
