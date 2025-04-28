@@ -182,14 +182,14 @@ def make_dataset(
     if ref_dataset is None:
         # velocity = OddRoot(5)(velocity)
 
-        discreteidx = config['discreteidx']
-        continuousidx = np.setdiff1d(np.arange(velocity.array.shape[-1]), discreteidx)
-        indices_per_op = [discreteidx, continuousidx]
-
-        # Need to zscore before binning, otherwise bin_epsilon values need to be divided by zscore stds
-        zscored_velocity = Zscore()(velocity)
-        bin_config = {'nbins': config['discretize_nbins'],
-                      'bin_epsilon': config['discretize_epsilon'] / zscored_velocity.operations[-1].std[discreteidx]}
+        # discreteidx = config['discreteidx']
+        # continuousidx = np.setdiff1d(np.arange(velocity.array.shape[-1]), discreteidx)
+        # indices_per_op = [discreteidx, continuousidx]
+        #
+        # # Need to zscore before binning, otherwise bin_epsilon values need to be divided by zscore stds
+        # zscored_velocity = Zscore()(velocity)
+        # bin_config = {'nbins': config['discretize_nbins'],
+        #               'bin_epsilon': config['discretize_epsilon'] / zscored_velocity.operations[-1].std[discreteidx]}
 
         dataset = Dataset(
             inputs={
@@ -198,7 +198,8 @@ def make_dataset(
                 'sensory': Zscore()(sensory),
             },
             labels={
-                'velocity': Fusion([Discretize(**bin_config), Identity()], indices_per_op)(zscored_velocity),
+                # 'velocity': Fusion([Discretize(**bin_config), Identity()], indices_per_op)(zscored_velocity),
+                'velocity': Zscore()(velocity),
                 # 'velocity': Fusion([Discretize(**bin_config), Zscore()], indices_per_op)(velocity),
                 # 'auxiliary': Discretize()(auxiliary)
             },
