@@ -245,6 +245,39 @@ class PositionalEncoding(torch.nn.Module):
         return self.dropout(x)
 
 
+class TimeEmbedding(torch.nn.Module):
+
+    def __init__(self, nwave: int, d_model: int, max_t: int = 1000):
+        super().__init__()
+
+        pe = torch.zeros(max_t, nwave)
+        position = torch.arange(max_t).unsqueeze(1)
+
+        # compute sine and cosine waves at different frequencies
+        # pe[0,:,i] will have a different value for each word (or whatever)
+        # will be sines for even i, cosines for odd i,
+        # exponentially decreasing frequencies with i
+        div_term = torch.exp(torch.arange(0, nwave, 2) * (-math.log(10000.0) / nwave))
+        nsinwave = int(np.ceil(nwave / 2))
+        ncoswave = nwave - nsinwave
+        pe[:, 0:nwave:2] = torch.sin(position * div_term[:nsinwave])
+        pe[:, 1:nwave:2] = torch.cos(position * div_term[:ncoswave])
+
+        self.linear = torch.nn.Linear(nwave, d_model)
+        self.silu = torch.nn.SiLU()
+
+        # buffers will be saved with model parameters, but are not model parameters
+        self.register_buffer('pe', pe)
+
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        """
+    Args:
+      t: Tensor, shape [batch_size, seq_len]
+    """
+        # add positional encoding
+        return self.silu(self.linear(self.pe[t, :]))
+
+
 class TransformerBestStateModel(torch.nn.Module):
 
     def __init__(self, d_input: int, d_output: int,
@@ -442,7 +475,159 @@ class myTransformerEncoderLayer(torch.nn.TransformerEncoderLayer):
         self.need_weights = need_weights
 
 
+class myTransformerDiffusionEncoderLayer(torch.nn.TransformerEncoderLayer):
+
+    def __init__(self, *args, need_weights=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.need_weights = need_weights
+
+    def _sa_block(self, x: torch.Tensor,
+                  attn_mask: typing.Optional[torch.Tensor],
+                  key_padding_mask: typing.Optional[torch.Tensor],
+                  is_causal: bool = False) -> torch.Tensor:
+        x = self.self_attn(x, x, x,
+                           attn_mask=attn_mask,
+                           key_padding_mask=key_padding_mask,
+                           need_weights=self.need_weights,
+                           is_causal=is_causal)[0]
+        return self.dropout1(x)
+
+    def set_need_weights(self, need_weights):
+        self.need_weights = need_weights
+
+
 class TransformerModel(torch.nn.Module):
+
+    def __init__(self, d_input: int, d_output: int,
+                 d_model: int = 2048, nhead: int = 8, d_hid: int = 512,
+                 nlayers: int = 12, dropout: float = 0.1,
+                 ntokens_per_timepoint: int = 1,
+                 input_idx=None, input_szs=None, embedding_types=None, embedding_params=None,
+                 d_output_discrete=None, nbins=None, variational=False, n_variational=None,
+                 ):
+        super().__init__()
+        self.model_type = 'Transformer'
+
+        self.is_mixed = nbins is not None
+        if self.is_mixed:
+            self.d_output_continuous = d_output
+            self.d_output_discrete = d_output_discrete
+            self.nbins = nbins
+            d_output = self.d_output_continuous + self.d_output_discrete * self.nbins
+
+        # frequency-based representation of word position with dropout
+        self.pos_encoder = PositionalEncoding(d_model, dropout, ntokens_per_timepoint=ntokens_per_timepoint)
+
+        # create self-attention + feedforward network module
+        # d_model: number of input features
+        # nhead: number of heads in the multiheadattention models
+        # dhid: dimension of the feedforward network model
+        # dropout: dropout value
+        encoder_layers = myTransformerEncoderLayer(d_model, nhead, d_hid, dropout, batch_first=True)
+
+        # stack of nlayers self-attention + feedforward layers
+        # nlayers: number of sub-encoder layers in the encoder
+        self.transformer_encoder = torch.nn.TransformerEncoder(encoder_layers, nlayers)
+
+        # encoder and decoder are currently not tied together, but maybe they should be?
+        # fully-connected layer from input size to d_model
+
+        if input_idx is not None:
+            self.encoder = ObsEmbedding(d_model=d_model, input_idx=input_idx, input_szs=input_szs,
+                                        embedding_types=embedding_types, embedding_params=embedding_params)
+        else:
+            self.encoder = torch.nn.Linear(d_input, d_model)
+
+        # fully-connected layer from d_model to input size
+        if variational:
+            if n_variational is None:
+                # This way, the hidden state ends up being approximately 50% regular and 50% variational
+                self.n_sub = d_model // 3
+            else:
+                self.n_sub = n_variational
+
+            # self.decoder1 = torch.nn.Linear(d_model - self.n_sub, d_model // 2)
+            # self.decoder2 = torch.nn.Linear(d_model // 2, d_output)
+            self.decoder = torch.nn.Linear(d_model - self.n_sub, d_output)
+        else:
+            self.decoder = torch.nn.Linear(d_model, d_output)
+
+        # store hyperparameters
+        self.d_model = d_model
+        self.variational = variational
+
+        self.init_weights()
+
+    def init_weights(self) -> None:
+        pass
+
+    def forward(self, src: torch.Tensor, mask: torch.Tensor = None, is_causal: bool = False) -> torch.Tensor:
+        """
+        Args:
+          src: Tensor, shape [seq_len,batch_size,dinput]
+          src_mask: Tensor, shape [seq_len,seq_len]
+        Returns:
+          output Tensor of shape [seq_len, batch_size, ntoken]
+        """
+
+        # project input into d_model space, multiple by sqrt(d_model) for reasons?
+        src = self.encoder(src) * math.sqrt(self.d_model)
+
+        # add in the positional encoding of where in the sentence the words occur
+        # it is weird to me that these are added, but I guess it would be almost
+        # the same to have these be combined in a single linear layer
+        src = self.pos_encoder(src)
+
+        # main transformer layers
+        hidden = self.transformer_encoder(src, mask=mask, is_causal=is_causal)
+
+        output = {}
+        if self.variational:
+            # do the variational re-parameterization trick
+
+            # mu = hidden[..., : self.d_model // 2]
+            # logvar = hidden[..., self.d_model // 2:]
+
+            mu = hidden[..., self.d_model - self.n_sub*2 : self.d_model - self.n_sub]
+            logvar = hidden[..., self.d_model - self.n_sub:]
+            std = torch.exp(0.5 * logvar)
+            eps = torch.randn_like(std)
+
+            # new_hidden = mu + eps * std
+            new_hidden = torch.concatenate((hidden[..., :self.d_model - self.n_sub*2], mu + eps * std), dim=-1)
+
+            output['mu'] = mu
+            output['logvar'] = logvar
+
+            prediction = self.decoder(new_hidden)
+            # prediction = self.decoder2(self.decoder1(new_hidden))
+        else:
+            # project back to d_input space
+            prediction = self.decoder(hidden)
+
+        if self.is_mixed:
+            output['continuous'] = prediction[..., :self.d_output_continuous]
+            output['discrete'] = prediction[..., self.d_output_continuous:].reshape(
+                prediction.shape[:-1] + (self.d_output_discrete, self.nbins))
+        else:
+            output['continuous'] = prediction
+
+        return output
+
+    def set_need_weights(self, need_weights):
+        for layer in self.transformer_encoder.layers:
+            layer.set_need_weights(need_weights)
+
+    def output(self, *args, **kwargs):
+
+        output = self.forward(*args, **kwargs)
+        if self.is_mixed:
+            output['discrete'] = torch.softmax(output['discrete'], dim=-1)
+
+        return output
+
+
+class TransformerModelOriginal(torch.nn.Module):
 
     def __init__(self, d_input: int, d_output: int,
                  d_model: int = 2048, nhead: int = 8, d_hid: int = 512,
@@ -539,6 +724,100 @@ class TransformerModel(torch.nn.Module):
             output['discrete'] = torch.softmax(output['discrete'], dim=-1)
 
         return output
+
+
+class TransformerDiffusionModel(torch.nn.Module):
+
+    def __init__(self, d_input: int, d_output: int,
+                 d_model: int = 2048, nhead: int = 8, d_hid: int = 512,
+                 nlayers: int = 12, dropout: float = 0.1,
+                 ntokens_per_timepoint: int = 1,
+                 input_idx=None, input_szs=None, embedding_types=None, embedding_params=None,
+                 max_t: int = 1000, nwave: int = 32,
+                 ):
+        super().__init__()
+        self.model_type = 'Transformer'
+
+        # frequency-based representation of word position with dropout
+        self.pos_encoder = PositionalEncoding(d_model, dropout, ntokens_per_timepoint=ntokens_per_timepoint)
+
+        self.time_embedder = TimeEmbedding(nwave=nwave, d_model=nwave*2, max_t=max_t)
+        self.time_to_src = torch.nn.Linear(nwave*2, d_model)
+        self.time_to_hidden = torch.nn.Linear(nwave*2, d_model)
+        self.silu = torch.nn.SiLU()
+
+        # create self-attention + feedforward network module
+        # d_model: number of input features
+        # nhead: number of heads in the multiheadattention models
+        # dhid: dimension of the feedforward network model
+        # dropout: dropout value
+        encoder_layers = myTransformerDiffusionEncoderLayer(d_model, nhead, d_hid, dropout, batch_first=True)
+
+        # stack of nlayers self-attention + feedforward layers
+        # nlayers: number of sub-encoder layers in the encoder
+        self.transformer_encoder = torch.nn.TransformerEncoder(encoder_layers, nlayers)
+
+        # encoder and decoder are currently not tied together, but maybe they should be?
+        # fully-connected layer from input size to d_model
+
+        if input_idx is not None:
+            self.encoder = ObsEmbedding(d_model=d_model, input_idx=input_idx, input_szs=input_szs,
+                                        embedding_types=embedding_types, embedding_params=embedding_params)
+        else:
+            self.encoder = torch.nn.Linear(d_input, d_model)
+
+        # fully-connected layer from d_model to input size
+        self.decoder = torch.nn.Linear(d_model, d_output)
+
+        # store hyperparameters
+        self.d_model = d_model
+
+        self.init_weights()
+
+    def init_weights(self) -> None:
+        pass
+
+    def forward(self, src: torch.Tensor, t_noise: torch.Tensor = None, mask: torch.Tensor = None, is_causal: bool = False) -> dict[str, torch.Tensor]:
+        """
+    Args:
+      src: [seq_len,batch_size,dinput]
+      noisy_output:
+      mask: [seq_len,seq_len]
+      is_causal: Whether the model is causal
+
+    Returns:
+      output Tensor of shape [seq_len, batch_size, ntoken]
+    """
+
+        # project input into d_model space, multiple by sqrt(d_model) for reasons?
+        src = self.encoder(src) * math.sqrt(self.d_model)
+
+        # add in the positional encoding of where in the sentence the words occur
+        # it is weird to me that these are added, but I guess it would be almost
+        # the same to have these be combined in a single linear layer
+        src = self.pos_encoder(src)
+
+        if t_noise is None:
+            t_noise = torch.zeros((src.shape[0],)).long().to(src.device)
+
+        t_emb = self.time_embedder(t_noise)
+        src = self.silu(self.time_to_src(t_emb))[:, None, :] + src
+
+        # main transformer layers
+        hidden = self.transformer_encoder(src, mask=mask, is_causal=is_causal)
+        hidden = self.silu(self.time_to_hidden(t_emb))[:, None, :] + hidden
+
+        # # project back to d_input space
+        output = self.decoder(hidden)
+
+        return {'continuous': output}
+
+    def set_need_weights(self, need_weights):
+        for layer in self.transformer_encoder.layers:
+            layer.set_need_weights(need_weights)
+
+    def output(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
 
 
 class ObsEmbedding(torch.nn.Module):
@@ -1013,8 +1292,10 @@ def initialize_model(config, train_dataset, device):
         'nhead': config['nhead'],
         'd_hid': config['d_hid'],
         'nlayers': config['nlayers'],
-        'dropout': config['dropout']
+        'dropout': config['dropout'],
     }
+    if 'variational' in config:
+        MODEL_ARGS['variational'] = config['variational']
     if config['modelstatetype'] is not None:
         MODEL_ARGS['nstates'] = config['nstates']
         assert config['obs_embedding'] == False, 'Not implemented'
@@ -1045,7 +1326,14 @@ def initialize_model(config, train_dataset, device):
         model = TransformerBestStateModel(d_input, d_output, **MODEL_ARGS).to(device)
         criterion = min_causal_criterion
     else:
-        model = TransformerModel(d_input, d_output, **MODEL_ARGS).to(device)
+        if 'labels' in train_dataset.inputs:
+            if 'max_t' in config:
+                MODEL_ARGS['max_t'] = config['max_t']
+            if 'nwave' in config:
+                MODEL_ARGS['nwave'] = config['nwave']
+            model = TransformerDiffusionModel(d_input, d_output, **MODEL_ARGS).to(device)
+        else:
+            model = TransformerModel(d_input, d_output, **MODEL_ARGS).to(device)
 
         if train_dataset.discretize:
             # Before refactor this was: config['weight_discrete'] = len(config['discreteidx']) / nfeatures

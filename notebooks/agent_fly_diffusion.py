@@ -15,7 +15,7 @@
 # +
 # %load_ext autoreload
 # %autoreload 2
-    
+
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
@@ -23,7 +23,7 @@ from torch.utils.data import DataLoader
 import pickle
 
 from apf.io import read_config
-from apf.training import train
+from apf.training import train, train_diffusion
 from apf.utils import function_args_from_config
 from apf.simulation import simulate
 from apf.models import initialize_model
@@ -32,7 +32,8 @@ from flyllm.config import DEFAULTCONFIGFILE, posenames
 from flyllm.features import featglobal, get_sensory_feature_idx
 from flyllm.simulation import animate_pose
 
-from experiments.flyllm import make_dataset
+from experiments.flyllm import make_dataset, make_diffusion_dataset
+
 # -
 
 configfile = "/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241125.json"
@@ -51,14 +52,11 @@ config = read_config(
 # -
 config['discreteidx'] = np.array([])
 
+train_dataset, flyids, track, pose, velocity, sensory = make_diffusion_dataset(config, 'intrainfile', return_all=True, debug=False)
+
+val_dataset = make_diffusion_dataset(config, 'invalfile', train_dataset, debug=False)
 
 
-
-train_dataset, flyids, track, pose, velocity, sensory = make_dataset(config, 'intrainfile', return_all=True, debug=False)
-
-train_dataset.label_n_bins
-
-val_dataset = make_dataset(config, 'invalfile', train_dataset, debug=True)
 
 # +
 # for i in range(5):
@@ -81,29 +79,27 @@ val_dataloader = DataLoader(val_dataset, batch_size=config['batch_size'], shuffl
 # Initialize the model
 device = torch.device(config['device'])
 
-# config['variational'] = True
+max_noise_T = 100
+config['max_t'] = max_noise_T
+config['nwave'] = 32
 # -
 
 model, criterion = initialize_model(config, train_dataset, device)
 
+# +
+# train_args['optimizer_args']['lr'] /= 2
+# -
+
 # Train the model
 train_args = function_args_from_config(config, train)
-train_args['num_train_epochs'] = 500
+train_args['num_train_epochs'] = 200
 # train_args['optimizer_args']['lr'] *= 0.1
 init_loss_epoch = {}
-model, best_model, loss_epoch = train(train_dataloader, val_dataloader, model, loss_epoch=init_loss_epoch, **train_args)
-# train_args
-
-# +
-# Things I'd like to try:
-
-# VAE
-# - using a much smaller hidden state vector, and a multilayer decoder
-# - assigning only a subset of the hidden state as variational 
-
-# Other
-# - can I have a state vector from which we take the argmax before continuing? 
-# -
+model, best_model, loss_epoch = train_diffusion(
+    train_dataloader, val_dataloader, model, 
+    loss_epoch=init_loss_epoch, max_noise_T=max_noise_T,
+    **train_args
+)
 
 loss_epoch = init_loss_epoch
 
@@ -135,37 +131,55 @@ plt.plot(loss_epoch['train'] - loss_epoch['train_continuous'])
 plt.plot(loss_epoch['val'] - loss_epoch['val_continuous'])
 plt.title('KLD')
 plt.show()
-# -
 
-model_file = "/groups/branson/home/eyjolfsdottire/data/flyllm/model_refactored_250307_fulldata.pkl"
-# model_file = "/groups/branson/home/eyjolfsdottire/data/flyllm/model_refactored_250307.pkl"
-# model_file = "/groups/branson/home/eyjolfsdottire/data/flyllm/model_continuous_250428.pkl"
+# +
+model_file = "/groups/branson/home/eyjolfsdottire/data/flyllm/model_diffusion_250528.pkl"
 # pickle.dump(model, open(model_file, "wb"))
 model = pickle.load(open(model_file, "rb"))
 
+# torch.save(model, model_file)
+# -
+
+# from diffusers import DDPMScheduler
+# noise_scheduler = DDPMScheduler(num_train_timesteps=1000, beta_schedule="squaredcos_cap_v2")
+noise_scheduler = DDPMScheduler(num_train_timesteps=max_noise_T, prediction_type='sample',
+                                beta_schedule="linear",
+                                beta_start=0.0001, beta_end=0.02 * (1000 / max_noise_T), clip_sample=False)
+
+
+# +
+from apf.simulation import simulate_diffusion
+import time
+
+t0 = time.time()
+
 agent_idx = 4
-model.variational = False
-gt_track, pred_track = simulate(
+gt_track, pred_track = simulate_diffusion(
     dataset=train_dataset,
     model=model,
     track=track,
     pose=pose,
     identities=flyids,
     track_len=4000 + config['contextl'] + 1,
-    burn_in= 800, #config['contextl'] * 2,
+    burn_in=800,  # config['contextl'] * 2,
     max_contextl=config['contextl'],
     agent_idx=agent_idx,
     start_frame=512,
+    max_noise_T=max_noise_T,
 )
+
+print(time.time() - t0)
+
 
 # +
 def plot_arena():
     ARENA_RADIUS_MM = 26.689
     n_pts = 1000
-    theta = np.arange(0, np.pi*2, np.pi*2 / n_pts)
+    theta = np.arange(0, np.pi * 2, np.pi * 2 / n_pts)
     x = np.cos(theta) * ARENA_RADIUS_MM
     y = np.sin(theta) * ARENA_RADIUS_MM
     plt.plot(x, y, '-', color=[.8, .8, .8])
+
 
 plt.figure()
 plot_arena()
@@ -184,15 +198,10 @@ plt.show()
 # -
 
 
-
-
-
-train_dataset.labels['velocity'].operations
-val_dataset.labels['velocity'].operations
-
 agent_id = agent_idx
-savevidfile = "/groups/branson/home/eyjolfsdottire/data/flyllm/animation_250528_continuous_agent4.gif"
-ani = animate_pose({'Pred': pred_track.T[:, :, 790:].copy(), 'True': gt_track.T[:, :, 790:].copy()}, focusflies=[agent_id], savevidfile=savevidfile)
+savevidfile = "/groups/branson/home/eyjolfsdottire/data/flyllm/animation_250528_diffusion_agent4_t100_t0_790.gif"
+ani = animate_pose({'Pred': pred_track.T[:, :, 790:].copy(), 'True': gt_track.T[:, :, 790:].copy()}, focusflies=[agent_id],
+                   savevidfile=savevidfile)#, contextl=config['contextl'])
 
 model.encoder.encoder_dict
 'velocity': Linear
@@ -200,15 +209,6 @@ model.encoder.encoder_dict
 'wall_touch': ResNet1d
 'other_flies_vision': ResNet2d
 'other_flies_touch': ResNet1d
-
-pred_track.T[:, :, 770:].shape
-
-
-
-
-
-
-
 
 
 class TransformerModel(torch.nn.Module):
@@ -278,12 +278,12 @@ class TransformerModel(torch.nn.Module):
 
     def forward(self, src: torch.Tensor, mask: torch.Tensor = None, is_causal: bool = False) -> torch.Tensor:
         """
-        Args:
-          src: Tensor, shape [seq_len,batch_size,dinput]
-          src_mask: Tensor, shape [seq_len,seq_len]
-        Returns:
-          output Tensor of shape [seq_len, batch_size, ntoken]
-        """
+  Args:
+    src: Tensor, shape [seq_len,batch_size,dinput]
+    src_mask: Tensor, shape [seq_len,seq_len]
+  Returns:
+    output Tensor of shape [seq_len, batch_size, ntoken]
+  """
 
         # project input into d_model space, multiple by sqrt(d_model) for reasons?
         src = self.encoder(src) * math.sqrt(self.d_model)
@@ -303,13 +303,13 @@ class TransformerModel(torch.nn.Module):
             # mu = hidden[..., : self.d_model // 2]
             # logvar = hidden[..., self.d_model // 2:]
 
-            mu = hidden[..., self.d_model - self.n_sub*2 : self.d_model - self.n_sub]
+            mu = hidden[..., self.d_model - self.n_sub * 2: self.d_model - self.n_sub]
             logvar = hidden[..., self.d_model - self.n_sub:]
             std = torch.exp(0.5 * logvar)
             eps = torch.randn_like(std)
 
             # new_hidden = mu + eps * std
-            new_hidden = torch.concatenate((hidden[..., :self.d_model - self.n_sub*2], mu + eps * std), dim=-1)
+            new_hidden = torch.concatenate((hidden[..., :self.d_model - self.n_sub * 2], mu + eps * std), dim=-1)
 
             output['mu'] = mu
             output['logvar'] = logvar

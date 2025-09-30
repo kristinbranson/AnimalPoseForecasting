@@ -17,6 +17,32 @@ from flyllm.config import (
 
 LOG = logging.getLogger(__name__)
 
+# TEMPORARY: overwrite keypointnames to use the 21 keypoint convention
+keypointnames = [
+    'antennae_midpoint',
+    'right_eye',
+    'left_eye',
+    'left_front_thorax',
+    'right_front_thorax',
+    'base_thorax',
+    'tip_abdomen',
+    'right_middle_femur_base',
+    'right_middle_femur_tibia_joint',
+    'left_middle_femur_base',
+    'left_middle_femur_tibia_joint',
+    'right_front_leg_tip',
+    'right_middle_leg_tip',
+    'right_back_leg_tip',
+    'left_back_leg_tip',
+    'left_middle_leg_tip',
+    'left_front_leg_tip',
+    'wing_right',
+    'wing_right_outer',
+    'wing_left',
+    'wing_left_outer'
+]
+
+
 
 """ Pose features
 """
@@ -1044,9 +1070,9 @@ def feat2kp(Xfeat, scale_perfly, flyid=None):
     # thorax
     thorax_width = scale_perfly[scalenames.index('thorax_width'), flyid].reshape((T, nflies))
     thorax_length = scale_perfly[scalenames.index('thorax_length'), flyid].reshape((T, nflies))
-    Xkpn[keypointnames.index('left_front_thorax'), 0, ...] = -thorax_width / 2.
+    Xkpn[keypointnames.index('left_front_thorax'), 0, ...] = thorax_width / 2.
     Xkpn[keypointnames.index('left_front_thorax'), 1, ...] = 0.
-    Xkpn[keypointnames.index('right_front_thorax'), 0, ...] = thorax_width / 2.
+    Xkpn[keypointnames.index('right_front_thorax'), 0, ...] = -thorax_width / 2.
     Xkpn[keypointnames.index('right_front_thorax'), 1, ...] = 0.
     Xkpn[keypointnames.index('base_thorax'), 0, ...] = 0.
     Xkpn[keypointnames.index('base_thorax'), 1, ...] = -thorax_length

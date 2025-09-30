@@ -88,6 +88,10 @@ class Pose(Operation):
         return feat2kp(pose.T, scale_perfly=self.scale_perfly, flyid=flyid).T
 
 
+class Labels(Identity):
+    pass
+
+
 def load_data(
         config: dict,
         filename: str,
@@ -182,14 +186,21 @@ def make_dataset(
     if ref_dataset is None:
         # velocity = OddRoot(5)(velocity)
 
-        # discreteidx = config['discreteidx']
-        # continuousidx = np.setdiff1d(np.arange(velocity.array.shape[-1]), discreteidx)
-        # indices_per_op = [discreteidx, continuousidx]
+        discreteidx = config['discreteidx']
+        continuousidx = np.setdiff1d(np.arange(velocity.array.shape[-1]), discreteidx)
+        indices_per_op = [discreteidx, continuousidx]
         #
         # # Need to zscore before binning, otherwise bin_epsilon values need to be divided by zscore stds
-        # zscored_velocity = Zscore()(velocity)
-        # bin_config = {'nbins': config['discretize_nbins'],
-        #               'bin_epsilon': config['discretize_epsilon'] / zscored_velocity.operations[-1].std[discreteidx]}
+        zscored_velocity = Zscore()(velocity)
+        if len(discreteidx) == 0:
+            bin_config = {'nbins': 10,
+                          'bin_epsilon': 0}
+        else:
+            bin_config = {'nbins': config['discretize_nbins'],
+                          'bin_epsilon': config['discretize_epsilon'] / zscored_velocity.operations[-1].std[discreteidx]}
+
+        # TODO for diffusion: don't roll velocity, during training, we will add noise to the velocity dimensions of
+        #   the inputs. But, we want non-noisy velocity to be available to future frames.... hmmmm....
 
         dataset = Dataset(
             inputs={
@@ -198,8 +209,8 @@ def make_dataset(
                 'sensory': Zscore()(sensory),
             },
             labels={
-                # 'velocity': Fusion([Discretize(**bin_config), Identity()], indices_per_op)(zscored_velocity),
-                'velocity': Zscore()(velocity),
+                'velocity': Fusion([Discretize(**bin_config), Identity()], indices_per_op)(zscored_velocity),
+                # 'velocity': Zscore()(velocity),
                 # 'velocity': Fusion([Discretize(**bin_config), Zscore()], indices_per_op)(velocity),
                 # 'auxiliary': Discretize()(auxiliary)
             },
@@ -210,6 +221,83 @@ def make_dataset(
         dataset = Dataset(
             inputs=apply_opers_from_data(ref_dataset.inputs, {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
             labels=apply_opers_from_data(ref_dataset.labels, {'velocity': velocity}), #, 'auxiliary': auxiliary}),
+            context_length=config['contextl'],
+            isstart=isstart,
+        )
+    if return_all:
+        return dataset, flyids, track, pose, velocity, sensory
+    else:
+        return dataset
+
+
+def make_diffusion_dataset(
+        config: dict,
+        filename: str,
+        ref_dataset: Dataset | None = None,
+        return_all: bool = False,
+        debug: bool = True
+) -> Dataset | tuple[Dataset, np.ndarray, Data, Data, Data, Data]:
+    """ Creates a dataset from config, for a given file name and optionally using a reference dataset.
+
+    TODO: Currently this doesn't support different ways of computing the features,
+      should assert that the config matches what is done here
+
+    Args:
+        config: Config for loading the data
+        filename: Name of file to read the data from (e.g. 'intrainfile', 'invalfile')
+        ref_dataset: Dataset to copy postprocessing operations from.
+            When loading validation/test set, provide training set.
+        return_all: Whether to return intermediate variables in addition to Dataset (see returns)
+        debug: Whether to use less data for debugging
+
+    Returns:
+        dataset: Dataset for flyllm experiment.
+        [
+        flyids: Identity of fly individuals (n_frames, n_agents) int array
+        track: Keypoint data
+        pose: Pose data
+        velocity: Velocity data
+        sensory: Sensory data
+        ]
+    """
+    # Load data
+    Xkp, flyids, isstart, isdata, scale_perfly = load_data(config, config[filename], debug=debug)
+
+    # Compute features
+    track = Data('keypoints', Xkp.T, [])
+    sensory = Sensory()(track)
+    pose = Pose()(track, scale_perfly=scale_perfly, flyid=flyids)
+    pose.array[isdata.T == 0] = np.nan
+    sensory.array[isdata.T == 0] = np.nan
+    velocity = Velocity(featrelative=featrelative, featangle=featangle)(pose, isstart=isstart)
+    velocity_labels = Labels()(velocity)
+
+    # Assemble the dataset
+    if ref_dataset is None:
+        # TODO for diffusion: don't roll velocity, during training, we will add noise to the velocity dimensions of
+        #   the inputs. But, we want non-noisy velocity to be available to future frames.... hmmmm....
+
+        dataset = Dataset(
+            inputs={
+                'velocity': Zscore()(Roll(dt=1)(velocity)),
+                'pose': Zscore()(Subset(featrelative)(pose)),
+                'sensory': Zscore()(sensory),
+                'labels': Zscore()(velocity_labels),
+            },
+            labels={
+                'velocity': Zscore()(velocity),
+            },
+            context_length=config['contextl'],
+            isstart=isstart,
+        )
+    else:
+        dataset = Dataset(
+            inputs=apply_opers_from_data(ref_dataset.inputs,
+                                         {'velocity': velocity,
+                                               'pose': pose,
+                                               'sensory': sensory,
+                                               'labels': velocity}),
+            labels=apply_opers_from_data(ref_dataset.labels, {'velocity': velocity}),
             context_length=config['contextl'],
             isstart=isstart,
         )
