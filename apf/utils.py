@@ -1,11 +1,14 @@
 import numpy as np
 import torch
+import inspect
+from typing import Callable
 import matplotlib
 import matplotlib.pyplot as plt
 import tqdm
 import torch
 import h5py
 import scipy.io
+
 
 def modrange(x, l, u):
     return np.mod(x - l, u - l) + l
@@ -141,6 +144,48 @@ def unzscore(x, mu, sig):
 
 def zscore(x, mu, sig):
     return (x - mu) / sig
+
+
+def function_args_from_config(config: dict, function: Callable) -> dict:
+    """ Returns a subset of entries from config that correspond to parameters to function.
+    """
+    function_args = inspect.getfullargspec(function).args[1:]
+    return {arg: config[arg] for arg in function_args if arg in config}
+
+
+def connected_components(vector: np.ndarray) -> np.ndarray:
+    """ Finds connected components of vector.
+
+    Args:
+        vector: boolean vector
+
+    Returns:
+        components: n x 2 array containing (start, end) index for n connected components in vector.
+    """
+    # pad with zeros
+    padded = np.zeros(len(vector) + 2, bool)
+    padded[1:-1] = vector > 0
+
+    indices = np.where(np.diff(padded))[0]
+    starts = indices[0:-1:2]
+    ends = indices[1::2]
+
+    return np.hstack([starts[:, None], ends[:, None]])
+
+
+def set_invalid_ends(data: np.ndarray, isstart: np.ndarray, dt: int) -> None:
+    """ Sets last dt frames at the end of a continuous sequence to be NaN.
+
+    Args:
+        data: Data that was computed using dt, e.g. future motion prediction. (n_features, n_frames, n_agents) float
+        isstart: Indicates whether a frame is the start of a sequence for an agent, (n_frames, n_agents) bool
+        dt: number of frames to set as invalid.
+    """
+    n_agents = data.shape[-1]
+    for i in range(n_agents):
+        starts = np.where(isstart[:, i] == 1)[0]
+        invalids = np.unique(np.concatenate([starts - i - 1 for i in range(dt)]))
+        data[..., invalids, i] = np.nan
 
 def allocate_batch_concat(batch,n,device=None):
     """

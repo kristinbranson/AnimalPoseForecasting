@@ -522,7 +522,7 @@ def main(configfile, loadmodelfile=None, restartmodelfile=None):
     example = train_dataset[0]
     d_input = example['input'].shape[-1]
     d_output = train_dataset.d_output
-    outnames = train_dataset.get_outnames()
+    outnames = train_dataset.get_feature_names()
 
     train_dataloader = torch.utils.data.DataLoader(train_dataset,
                                                    batch_size=config['batch_size'],

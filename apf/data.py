@@ -35,9 +35,9 @@ def chunk_data(data, contextl, reparamfun, npad=1):
 
     # X is nkeypts x 2 x T x n_agents
     nkeypoints = data['X'].shape[0]
-    T = data['X'].shape[2]
-    max_n_agents = data['X'].shape[3]
-    assert T > 2 * contextlpad, 'Assumption that data has more frames than 2*(contextl+1) is incorrect, code will fail'
+    T = data['X'].shape[-2]
+    max_n_agents = data['X'].shape[-1]
+    assert T > 2 * contextlpad, f'Assumption that data has more frames than 2*(contextl+1) is incorrect, code will fail, T = {T}, contextl={contextl}'
 
     # last possible start frame = T - contextl
     maxt0 = canstart.shape[0] - 1
@@ -72,8 +72,12 @@ def chunk_data(data, contextl, reparamfun, npad=1):
             t1 = t0 + contextlpad - 1
             id = data['ids'][t0, agent_num]
             xcurr = reparamfun(data['X'][..., t0:t1 + 1, :], id, agent_num, npad=npad)
-            xcurr['metadata'] = {'flynum': agent_num, 'id': id, 't0': t0, 'videoidx': data['videoidx'][t0, 0],
-                                 'frame0': data['frames'][t0, 0]}
+            metadata = {'flynum': agent_num, 'id': id, 't0': t0, 'frame0': data['frames'][t0, 0]}
+            if 'videoidx' in data:
+                metadata['videoidx'] = data['videoidx'][t0, 0]
+            else:
+                metadata['sessionidx'] = data['sessionids'][id]
+            xcurr['metadata'] = metadata
             xcurr['categories'] = data['y'][:, t0:t1 + 1, agent_num].astype(np.float32)
             X.append(xcurr)
             if t0 + contextl >= maxt0curr:
@@ -123,6 +127,7 @@ def process_test_data(data,reparamfun,npad=1,minnframes=None):
 
     return X
 
+
 def select_bin_edges(movement, nbins, bin_epsilon, outlierprct=0, feati=None):
     n = movement.shape[0]
     lims = np.percentile(movement, [outlierprct, 100 - outlierprct])
@@ -136,7 +141,7 @@ def select_bin_edges(movement, nbins, bin_epsilon, outlierprct=0, feati=None):
         return bin_edges
 
     if bin_epsilon <= 0:
-        bin_prctiles = np.linspace(outlierprct,100-outlierprct,nbins+1)
+        bin_prctiles = np.linspace(outlierprct, 100 - outlierprct, nbins + 1)
         bin_edges = np.percentile(movement, bin_prctiles)
         return bin_edges
 
@@ -187,41 +192,56 @@ def weighted_sample(w, nsamples=0):
 
 
 def fit_discretize_labels(data, featidx, nbins=50, bin_epsilon=None, outlierprct=.001, fracsample=None, nsamples=None):
+    return fit_discretize_data(
+        data=np.concatenate([example['labels'][:, featidx] for example in data], axis=0),
+        nbins=nbins,
+        bin_epsilon=bin_epsilon,
+        outlierprct=outlierprct,
+        fracsample=fracsample,
+        nsamples=nsamples,
+    )
+
+
+def fit_discretize_data(data, nbins=50, bin_epsilon=None, outlierprct=.001, fracsample=None, nsamples=None):
+    """
+    Args:
+        data: n_frames x n_feat, float
+        ...
+    """
     # compute percentiles
-    nfeat = len(featidx)
+    nfeat = data.shape[1]
     prctiles_compute = np.linspace(0, 100, nbins + 1)
     prctiles_compute[0] = outlierprct
     prctiles_compute[-1] = 100 - outlierprct
-    movement = np.concatenate([example['labels'][:, featidx] for example in data], axis=0)
-    dtype = movement.dtype
+    dtype = data.dtype
 
     # bin_edges is nfeat x nbins+1
     if bin_epsilon is not None:
         bin_edges = np.zeros((nfeat, nbins + 1), dtype=dtype)
         for feati in range(nfeat):
-            bin_edges[feati, :] = select_bin_edges(movement[:, feati], nbins, bin_epsilon[feati],
+            bin_edges[feati, :] = select_bin_edges(data[:, feati], nbins, bin_epsilon[feati],
                                                    outlierprct=outlierprct, feati=feati)
     else:
-        bin_edges = np.percentile(movement, prctiles_compute, axis=0)
+        bin_edges = np.percentile(data, prctiles_compute, axis=0)
         bin_edges = bin_edges.astype(dtype).T
 
-    binnum = np.zeros(movement.shape, dtype=int)
+    binnum = np.zeros(data.shape, dtype=int)
     for i in range(nfeat):
-        binnum[:, i] = np.digitize(movement[:, i], bin_edges[i, :])
+        binnum[:, i] = np.digitize(data[:, i], bin_edges[i, :])
     binnum = np.minimum(np.maximum(0, binnum - 1), nbins - 1)
 
     if nsamples is None:
         if fracsample is None:
             fracsample = 1 / nbins / 5
-        nsamples = int(np.round(fracsample * movement.shape[0]))
+        nsamples = int(np.round(fracsample * data.shape[0]))
 
     # for each bin, approximate the distribution
-    samples = np.zeros((nsamples, nfeat, nbins), movement.dtype)
-    bin_means = np.zeros((nfeat, nbins), movement.dtype)
-    bin_medians = np.zeros((nfeat, nbins), movement.dtype)
+    samples = np.zeros((nsamples, nfeat, nbins), data.dtype)
+    bin_means = np.zeros((nfeat, nbins), data.dtype)
+    bin_medians = np.zeros((nfeat, nbins), data.dtype)
     for i in range(nfeat):
         for j in range(nbins):
-            movementcurr = torch.tensor(movement[binnum[:, i] == j, i])
+            movementcurr = torch.tensor(data[binnum[:, i] == j, i])
             if movementcurr.shape[0] == 0:
                 bin_means[i, j] = (bin_edges[i, j] + bin_edges[i, j + 1]) / 2.
                 bin_medians[i, j] = bin_means[i, j]
@@ -237,7 +257,6 @@ def fit_discretize_labels(data, featidx, nbins=50, bin_epsilon=None, outlierprct
 
 
 def discretize_labels(movement, bin_edges, soften_to_ends=False):
-
     szrest = movement.shape[:-1]
     n = int(np.prod(szrest))
     movement = movement.reshape((n, -1))
@@ -273,7 +292,7 @@ def discretize_labels(movement, bin_edges, soften_to_ends=False):
         # d[:,-1] = True
         # d[:,1:-1] = movement[:,i,None] <= bin_edges[None,1:-1,i]
         # labels[:,:,i] = (d[:,:-1] == False) & (d[:,1:] == True)
-        
+
     labels = labels.reshape(szrest + (nfeat, nbins))
 
     return labels

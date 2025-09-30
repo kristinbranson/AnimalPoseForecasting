@@ -291,11 +291,10 @@ def clean_intermediate_results(savedir):
 
 def compute_scale_all_agents(data, compute_scale_per_agent):
     maxid = np.max(data['ids'])
-    max_n_agents = data['X'].shape[3]
+    max_n_agents = data['X'].shape[-1]
     scale_per_agent = None
 
     for agent_num in range(max_n_agents):
-
         idscurr = np.unique(data['ids'][data['ids'][:, agent_num] >= 0, agent_num])
         for id in idscurr:
             idx = data['ids'][:, agent_num] == id
@@ -310,14 +309,14 @@ def compute_scale_all_agents(data, compute_scale_per_agent):
     return scale_per_agent
 
 
-def load_and_filter_data(infile, config, compute_scale_per_agent, compute_noise_params=None, keypointnames=None):
+def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_noise_params=None, keypointnames=None):
     # load data
     LOG.info(f"loading raw data from {infile}...")
     data = load_raw_npz_data(infile)
     LOG.info(f"loaded data with X.shape {data['X'].shape}")
 
     # compute noise parameters
-    if (len(config['discreteidx']) > 0) and config['discretize_epsilon'] is None:
+    if type(config['discreteidx']) == list and (len(config['discreteidx']) > 0) and config['discretize_epsilon'] is None:
         if (config['all_discretize_epsilon'] is None):
             assert compute_noise_params is not None, \
                 "Need 'compute_noise_params' to compute 'all_discrete_epsilon'"
@@ -360,6 +359,9 @@ def load_and_filter_data(infile, config, compute_scale_per_agent, compute_noise_
         LOG.info(f"After flip augmentation nids {nidspre} -> {nidspost}, nframes {nframespre} -> {nframespost}")
 
     # compute scale parameters
+    if compute_scale_per_agent is None:
+        return data, None
+
     LOG.info('computing scale parameters...')
     scale_per_agent = compute_scale_all_agents(data, compute_scale_per_agent)
 

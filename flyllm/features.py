@@ -6,6 +6,8 @@ import tqdm
 import logging
 from scipy.stats import circmean, circstd
 
+from apf.utils import modrange, rotate_2d_points, angledist2xy, mod2pi, atleast_4d, compute_npad
+from apf.features import compute_global_velocity, compute_relpose_velocity
 from flyllm.config import (
     posenames, keypointnames, scalenames,
     nglobal, nrelative, nfeatures, nkptouch, nkptouch_other,
@@ -13,7 +15,6 @@ from flyllm.config import (
     featglobal, kpvision_other, kptouch_other, featthetaglobal, kpeye, kptouch,
     SENSORY_PARAMS, PXPERMM
 )
-from apf.utils import modrange, rotate_2d_points, boxsum, angledist2xy, mod2pi, atleast_4d, compute_npad
 
 LOG = logging.getLogger(__name__)
 
@@ -94,71 +95,6 @@ def relpose_angle_to_cos_sin(relpose, discreteidx=[]):
     return relpose_cos_sin
 
 
-def compute_global_velocity(Xorigin, Xtheta, tspred_global=[1, ]):
-    """
-    compute_global_velocity(Xorigin,Xtheta,tspred_global=[1,])
-    compute the movement from t to t+tau for all tau in tspred_global
-    Xorigin is the centroid position of the fly, shape = (2,T,nflies)
-    Xtheta is the orientation of the fly, shape = (T,nflies)
-    returns dXoriginrel,dtheta
-    dXoriginrel[i,:,t,fly] is the global position for fly fly at time t+tspred_global[i] in the coordinate system of the fly at time t
-    shape = (ntspred_global,2,T,nflies)
-    dtheta[i,t,fly] is the total change in orientation for fly fly at time t+tspred_global[i] from time t. this sums per-frame dthetas,
-    so it could have a value outside [-pi,pi]. shape = (ntspred_global,T,nflies)
-    """
-
-    T = Xorigin.shape[1]
-    nflies = Xorigin.shape[2]
-    ntspred_global = len(tspred_global)
-
-    # global velocity
-    # dXoriginrel[tau,:,t,fly] is the global position for fly fly at time t+tau in the coordinate system of the fly at time t
-    dXoriginrel = np.zeros((ntspred_global, 2, T, nflies), dtype=Xorigin.dtype)
-    dXoriginrel[:] = np.nan
-    # dtheta[tau,t,fly] is the change in orientation for fly fly at time t+tau from time t
-    dtheta = np.zeros((ntspred_global, T, nflies), dtype=Xtheta.dtype)
-    dtheta[:] = np.nan
-    # dtheta1[t,fly] is the change in orientation for fly from frame t to t+1
-    dtheta1 = modrange(Xtheta[1:, :] - Xtheta[:-1, :], -np.pi, np.pi)
-
-    for i, toff in enumerate(tspred_global):
-        # center and rotate absolute position around position toff frames previous
-        dXoriginrel[i, :, :-toff, :] = rotate_2d_points(
-            (Xorigin[:, toff:, :] - Xorigin[:, :-toff, :]).transpose((1, 0, 2)), Xtheta[:-toff, :]).transpose((1, 0, 2))
-        # compute total change in global orientation in toff frame intervals
-        dtheta[i, :-toff, :] = boxsum(dtheta1[None, ...], toff)
-
-    return dXoriginrel, dtheta
-
-
-def compute_relpose_velocity(relpose, tspred_dct=[]):
-    """
-    compute_relpose_velocity(relpose,tspred_dct=[])
-    compute the relative pose movement from t to t+tau for all tau in tspred_dct
-    relpose is the relative pose features, shape = (nrelative,T,nflies)
-    outputs drelpose, shape = (nrelative,T,ntspred_dct+1,nflies)
-    """
-
-    ntspred_dct = len(tspred_dct)
-    T = relpose.shape[1]
-    nflies = relpose.shape[2]
-
-    # drelpose1[:,f,fly] is the change in pose for fly from frame t to t+1
-    drelpose1 = relpose[:, 1:, :] - relpose[:, :-1, :]
-    drelpose1[featangle[featrelative], :, :] = modrange(drelpose1[featangle[featrelative], :, :], -np.pi, np.pi)
-
-    # drelpose[:,tau,t,fly] is the change in pose for fly fly at time t+tau from time t
-    drelpose = np.zeros((nrelative, T, ntspred_dct + 1, nflies), dtype=relpose.dtype)
-    drelpose[:] = np.nan
-    drelpose[:, :-1, 0, :] = drelpose1
-
-    for i, toff in enumerate(tspred_dct):
-        # compute total change in relative pose in toff frame intervals
-        drelpose[:, :-toff, i + 1, :] = boxsum(drelpose1, toff)
-
-    return drelpose
-
-
 def compute_relpose_tspred(relposein, tspred_dct=[], discreteidx=[]):
     """
     compute_relpose_tspred(relpose,tspred_dct=[])
@@ -192,7 +128,7 @@ def compute_scale_perfly(Xkp: np.ndarray) -> np.ndarray:
         Xkp: n_keypoints x 2 x T [x n_flies]
 
     Returns:
-        scale_perfly: n_scales x n_flies
+        scale_perfly: n_scales x n_total_flies
     """
     if np.ndim(Xkp) >= 4:
         n_flies = Xkp.shape[3]
@@ -278,7 +214,7 @@ def kp2feat(
 
     Args:
         Xkp: n_keypoints x 2 [x T [x n_flies]]
-        scale_perfly: n_scales x n_flies
+        scale_perfly: n_scales x n_total_flies
         flyid: n_flies
         return_scale: If True, returns the scale_perfly and flyid along with the feature array.
 
@@ -564,7 +500,7 @@ def compute_movement(
     lastT = T - np.max(tspred_all)
 
     # global velocity
-    # dXoriginrel[tau,:,t,fly] is the global position for fly fly at time t+tau in the coordinate system of the fly at time t
+    # dXoriginrel[tau,:,t,fly] is the global position for fly at time t+tau in the coordinate system of the fly at time t
     dXoriginrel, dtheta = compute_global_velocity(Xorigin, Xtheta, tspred_global)
 
     ninit = 2
@@ -573,7 +509,7 @@ def compute_movement(
         relpose_rep = np.zeros((0, T, ntspred_global + 1, nflies), dtype=relpose.dtype)
         relpose_init = np.zeros(0, ninit, nflies, dtype=relpose.dtype)
     elif compute_pose_vel:
-        relpose_rep = compute_relpose_velocity(relpose, tspred_dct)
+        relpose_rep = compute_relpose_velocity(relpose, tspred_dct, is_angle=featangle[featrelative])
         relpose_init = relpose[:,:ninit]
     else:
         relpose_rep = compute_relpose_tspred(relpose, tspred_dct, discreteidx=discreteidx)
@@ -737,9 +673,11 @@ def compute_sensory(xeye_main, yeye_main, theta_main,
     ytouch_main = np.reshape(ytouch_main, (npts_touch, T))
 
     # don't deal with missing data :)
-    assert (np.any(np.isnan(xeye_main)) == False)
-    assert (np.any(np.isnan(yeye_main)) == False)
-    assert (np.any(np.isnan(theta_main)) == False)
+    # assert (np.any(np.isnan(xeye_main)) == False)
+    # assert (np.any(np.isnan(yeye_main)) == False)
+    # assert (np.any(np.isnan(theta_main)) == False)
+    if np.any(np.isnan(xeye_main)):
+        LOG.warning(f"{np.isnan(xeye_main).sum()} / {T} is nan")
 
     # vision bin size
     step = 2. * np.pi / SENSORY_PARAMS['n_oma']
@@ -882,7 +820,7 @@ def compute_sensory_wrapper(Xkp, flynum, theta_main=None, returnall=False, retur
 
     if theta_main is None:
         _, _, theta_main = body_centric_kp(Xkp[..., [flynum, ]])
-        theta_main = theta_main[..., 0]
+        theta_main = theta_main[..., 0].astype(np.float64)
 
     otherflies_vision, wall_touch, otherflies_touch = \
         compute_sensory(xeye_main, yeye_main, theta_main + np.pi / 2,
