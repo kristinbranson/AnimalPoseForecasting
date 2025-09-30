@@ -17,6 +17,18 @@
 # %autoreload 2
     
 import numpy as np
+
+# Only set non-interactive backend if not in Jupyter
+import matplotlib
+try:
+    from IPython import get_ipython
+    assert 'IPKernelApp' in get_ipython().config
+    # Running in Jupyter/IPython, keep default backend
+except:
+    # Not in Jupyter, use non-interactive backend
+    matplotlib.use('tkAgg')
+
+
 import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader

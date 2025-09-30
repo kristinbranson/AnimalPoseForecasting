@@ -736,7 +736,7 @@ def split_discr_cont(data: np.ndarray, bin_indices: list[np.ndarray]) -> tuple[n
         continuous_data: (n_agents,  n_frames, n_continuous_features) float array
             Note: n_discrete_features + n_continuous_features = n_features
     """
-    is_binned = np.zeros(data.shape[-1], np.bool)
+    is_binned = np.zeros(data.shape[-1], bool)
     for inds in bin_indices:
         is_binned[inds] = True
     return data[..., is_binned], data[..., ~is_binned]
@@ -981,7 +981,7 @@ class Dataset(torch.utils.data.Dataset):
         """
         # assemble output to look like original concatenated data (before splitting discrete and continuous)
         n_dim = self.d_output_discrete * self.discretize_nbins + self.d_output_continuous
-        is_binned = np.zeros(n_dim, np.bool)
+        is_binned = np.zeros(n_dim, bool)
         for inds in self.label_bin_indices:
             is_binned[inds] = True
         sz = list(output_discr_cont['continuous'].shape[:-1])
