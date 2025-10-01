@@ -43,9 +43,12 @@ from apf.models import initialize_model
 from flyllm.config import DEFAULTCONFIGFILE, posenames
 from flyllm.features import featglobal, get_sensory_feature_idx
 from flyllm.simulation import animate_pose
+import time
 
 from experiments.flyllm import make_dataset
 # -
+
+timestamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
 
 configfile = "/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241125.json"
 config = read_config(
@@ -76,27 +79,37 @@ model, best_model, loss_epoch = train(train_dataloader, val_dataloader, model, l
 
 # +
 # Plot the losses
-idx = np.argmin(loss_epoch['val'])
-print((idx, loss_epoch['val'][idx]))
+idx = torch.argmin(loss_epoch['val']).item()
+print((idx, loss_epoch['val'][idx].item()))
 
 plt.figure(figsize=(15, 5))
 plt.subplot(1, 3, 1)
-plt.plot(loss_epoch['train'])
-plt.plot(loss_epoch['val'])
-plt.plot(idx, loss_epoch['val'][idx], '.g')
+plt.plot(loss_epoch['train'],label='train')
+plt.plot(loss_epoch['val'],label='val')
+plt.plot(idx, loss_epoch['val'][idx], 'go')
+plt.legend()
+plt.title('Total loss')
 
 plt.subplot(1, 3, 2)
-plt.plot(loss_epoch['train_continuous'])
-plt.plot(loss_epoch['val_continuous'])
+plt.plot(loss_epoch['train_continuous'],label='train')
+plt.plot(loss_epoch['val_continuous'],label='val')
+plt.plot(idx, loss_epoch['val_continuous'][idx], 'go')
+plt.legend()
+plt.title('Continuous loss')
 
 plt.subplot(1, 3, 3)
-plt.plot(loss_epoch['train_discrete'])
-plt.plot(loss_epoch['val_discrete'])
+plt.plot(loss_epoch['train_discrete'],label='train')
+plt.plot(loss_epoch['val_discrete'],label='val')
+plt.plot(idx, loss_epoch['val_discrete'][idx], 'go')
+plt.legend()
+plt.title('Discrete loss')
 plt.show()
 # -
 
-model_file = "/groups/branson/home/eyjolfsdottire/data/flyllm/model_refactored_250307_fulldata.pkl"
+# model_file = f'agentfly_model_{timestamp}.pkl'
 # pickle.dump(model, open(model_file, "wb"))
+# OR
+# model_file = 'agentfly_model_20251001T073751.pkl'
 # model = pickle.load(open(model_file, "rb"))
 
 gt_track, pred_track = simulate(
@@ -134,5 +147,5 @@ plt.show()
 # -
 
 agent_id = 0
-savevidfile = "/groups/branson/home/eyjolfsdottire/data/flyllm/animation_250307.gif"
+savevidfile = f"animation_{timestamp}.gif"
 ani = animate_pose({'Pred': pred_track.T.copy(), 'True': gt_track.T.copy()}, focusflies=[agent_id], savevidfile=savevidfile)

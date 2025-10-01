@@ -378,14 +378,14 @@ def save_animation(ani, filename, writer=None, codec='h264', bitrate=None, fps=3
 
     kwargs = {'fps':fps}
     if writer == 'pillow':
-        if optimize is not None:
-            extra_args += ['-optimize',str(optimize)]
-        if len(extra_args) > 0:
-            kwargs['extra_args'] = extra_args
+        # if optimize is not None:
+        #     extra_args += ['-optimize',str(optimize)]
+        # if len(extra_args) > 0:
+        #     kwargs['extra_args'] = extra_args
         if dpi is not None:
             kwargs['dpi'] = dpi
 
-        writer = matplotlib.animation.PillowWriter(fps=fps,**kwargs)
+        writer = matplotlib.animation.PillowWriter(**kwargs)
     elif writer == 'ffmpeg':
         if codec is not None:
             kwargs['codec'] = codec
@@ -408,7 +408,10 @@ def save_animation(ani, filename, writer=None, codec='h264', bitrate=None, fps=3
         raise ValueError('Unknown writer type '+writer)
     
     # number of frames in ani
-    total_frames = ani.save_count
+    try:
+        total_frames = ani.save_count
+    except AttributeError:
+        total_frames = ani._save_count
     
     def progress_callback(current_frame, total_frames):
         progress_bar.update(1)
