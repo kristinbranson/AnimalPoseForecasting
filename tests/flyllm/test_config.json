@@ -1,0 +1,193 @@
+{
+    "datadir": "/groups/branson/bransonlab/test_data_apf/",
+    "intrainfilestr": "small_intrainfile.npz",
+    "invalfilestr": "small_invalfile.npz",
+    "savedir": "tests/flyllm/test_data/llmnets",
+    "save_epoch": 2,
+    "categories": [
+        "courtship",
+        "male"
+    ],
+    "augment_flip": true,
+    "simplify_out": null,
+    "simplify_in": null,
+    "compute_sensory_diffs": true,
+    "dct_tau": null,
+    "tspred_global": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        8,
+        12,
+        16,
+        24,
+        40,
+        75,
+        150
+    ],
+    "discrete_tspred": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        8,
+        12,
+        16,
+        24,
+        40,
+        75,
+        150
+    ],
+    "obs_embedding": true,
+    "obs_embedding_types": {
+        "pose": "conv1d_time",
+        "wall_touch": "conv1d_time",
+        "otherflies_vision": "conv2d",
+        "otherflies_touch": "conv1d_time"
+    },
+    "obs_embedding_params": {
+        "pose": {
+            "channels": [
+                32,
+                64,
+                128
+            ]
+        },
+        "wall_touch": {
+            "channels": [
+                32,
+                64,
+                128
+            ]
+        },
+        "otherflies_touch": {
+            "channels": [
+                128,
+                256,
+                512
+            ]
+        },
+        "otherflies_vision": {
+            "channels": [
+                8,
+                16,
+                32
+            ]
+        }
+    },
+    "input_labels": true,
+    "flatten_labels": false,
+    "flatten_obs_idx": null,
+    "flatten_do_separate_inputs": false,
+    "discreteidx": [
+        "thorax_front_x",
+        "thorax_front_y",
+        "orientation",
+        "left_wing_angle",
+        "right_wing_angle"
+    ],
+    "_old_discreteidx1": "global",
+    "_old_discreteidx2": [
+        0,
+        1,
+        2,
+        14,
+        16,
+        24,
+        26,
+        8,
+        10,
+        12,
+        18,
+        20,
+        22,
+        27,
+        28,
+        6,
+        13,
+        15,
+        23,
+        25,
+        7,
+        9,
+        11,
+        17,
+        19,
+        21,
+        5,
+        3,
+        4
+    ],
+    "discretize_nbins": 25,
+    "all_discretize_epsilon": [
+        0.01322199,
+        0.01349601,
+        0.02598117,
+        0.02033068,
+        0.01859137,
+        0.05900833,
+        0.05741996,
+        0.02196621,
+        0.0558432,
+        0.02196207,
+        0.05579313,
+        0.02626397,
+        0.12436298,
+        0.02276208,
+        0.04065661,
+        0.02275847,
+        0.04038093,
+        0.02625952,
+        0.12736998,
+        0.02628111,
+        0.13280959,
+        0.02628102,
+        0.13049692,
+        0.02439783,
+        0.0367505,
+        0.02445746,
+        0.03742915,
+        0.02930942,
+        0.02496748
+    ],
+    "p_add_input_noise": 0,
+    "input_noise_sigma": null,
+    "discretize_epsilon": null,
+    "device": "cuda",
+    "contextl": 512,
+    "masktype": null,
+    "max_mask_length": 4,
+    "pmask": 0.15,
+    "batch_size": 8,
+    "num_train_epochs": 2,
+    "optimizer_args": {
+        "lr": 0.0001,
+        "betas": [
+            0.9,
+            0.999
+        ],
+        "eps": 1e-08
+    },
+    "max_grad_norm": 1.0,
+    "numpy_seed": 123,
+    "torch_seed": 456,
+    "modeltype": "clm",
+    "modelstatetype": null,
+    "d_model": 2048,
+    "nhead": 8,
+    "d_hid": 512,
+    "nlayers": 10,
+    "dropout": 0.3,
+    "pdropout_past": 0.0,
+    "epochs_rechunk": 5,
+    "nstates": null,
+    "minstateprob": null,
+    "niterplot": 2,
+    "model_nickname": "multtimeglob_discrete_20230907",
+    "n_layers": 3
+}

@@ -996,3 +996,15 @@ class Dataset(torch.utils.data.Dataset):
         start_per_key = np.cumsum([0] + dims_per_key)[:-1]
         inds_per_key = [np.arange(start, start + dims) for start, dims in zip(start_per_key, dims_per_key)]
         return {key: concated[..., inds] for key, inds in zip(self.labels.keys(), inds_per_key)}
+    
+    def get_indices(self,idx: int | list[int] | np.ndarray):
+        """
+        get_indices(idx)
+        Returns the data for the indices by call ing __getitem__ on each index
+        """
+        idx = np.atleast_1d(idx)
+        data = [self.__getitem__(i) for i in idx]
+        # concatenate each field with a new first dimension
+        data = {key: np.stack([d[key] for d in data], axis=0) for key in data[0].keys()}
+
+        return data

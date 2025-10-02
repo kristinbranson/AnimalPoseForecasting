@@ -79,6 +79,10 @@ def json_load_helper(jsonfile):
     config = {k: v for k, v in config.items() if re.search('^_comment', k) is None}
     return config
 
+def json_save_helper(jsonfile, config, indent=4):
+    with open(jsonfile, 'w') as f:
+        json.dump(config, f, indent=indent)
+    return
 
 def read_config(jsonfile, default_configfile=None, get_sensory_feature_idx=None, featglobal=None, posenames=None):
     if default_configfile is None:

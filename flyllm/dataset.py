@@ -694,6 +694,18 @@ class FlyMLMDataset(torch.utils.data.Dataset):
         """
         return self.data[idx]
 
+    def get_indices(self,idx: int | list[int] | np.ndarray):
+        """
+        get_indices(idx)
+        Returns the data for the indices by call ing __getitem__ on each index
+        """
+        idx = np.atleast_1d(idx)
+        data = [self.__getitem__(i) for i in idx]
+        # concatenate each field with a new first dimension
+        data = {key: np.stack([d[key] for d in data], axis=0) for key in data[0].keys()}
+        
+        return data
+
     # TODO REMOVE THIS AFTER CHECKING ADDING NOISE
 
     def add_noise(self, example, input_labels):
@@ -1215,3 +1227,4 @@ class FlyTestDataset(FlyMLMDataset):
             pred_data[id] = pred_example
 
         return pred_data, true_data
+
