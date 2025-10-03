@@ -89,7 +89,7 @@ model, best_model, loss_epoch = train(train_dataloader, val_dataloader, model, l
 
 # +
 # OR
-# model_file = 'agentfly_model_20251001T073751.pkl'
+# model_file = 'agentfly_model_20251001T073751.pth'
 # model.load_state_dict(torch.load(model_file))
 
 # +
