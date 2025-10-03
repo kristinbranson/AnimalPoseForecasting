@@ -1217,5 +1217,5 @@ def sanity_check_temporal_dep(train_dataloader, device, train_src_mask, is_causa
             matches = torch.allclose(pred2[k][:, :tmess], pred[k][:, :tmess], atol=1e-2)
             assert matches, f'Mismatch in {k}'
     else:
-        matches = torch.allclose(pred2[:, :tmess] == pred[:, :tmess], atol=1e-2)
+        matches = torch.allclose(pred2[:, :tmess],pred[:, :tmess], atol=1e-2)
         assert matches

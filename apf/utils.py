@@ -363,9 +363,20 @@ def save_animation(ani, filename, writer=None, codec='h264', bitrate=None, fps=3
     
     Args:
         fig: matplotlib figure object
-        animation_frames: function that updates the plot for each frame
         filename: output filename
-        fps: frames per second
+        writer: 'pillow' or 'ffmpeg', if None, determined from filename extension
+        codec: codec for ffmpeg writer, e.g. 'h264', 'hevc', 'mpeg4'. default: None, uses FFMpegWriter default
+        bitrate: bitrate for ffmpeg writer, e.g. 1800. default: None, uses FFMpegWriter default
+        fps: frames per second, default: 30
+        dpi: resolution in dots per inch, only used if writer is 'pillow'. default: None, uses PillowWriter default
+        optimize: optimization level for gif output, obsolete, PillowWriter no longer supports optimize, 
+        leaving so that old code still works
+        preset: preset for ffmpeg output. default: 'faster', only used if writer is 'ffmpeg'
+        crf: constant rate factor for ffmpeg output, default: 20, only used if writer is 'ffmpeg'
+        video_profile: video profile for ffmpeg output, default: 'high', only used if writer is 'ffmpeg'
+        pix_fmt: pixel format for ffmpeg output, default: 'yuv420p', only used if writer is 'ffmpeg'
+        scale: scale filter for ffmpeg output, only used if writer is 'ffmpeg', default: None, no scaling
+        extra_args: list of extra arguments to pass to the FFMegWriter as extra_args, default: []
     """
     
     if writer is None:
@@ -384,8 +395,8 @@ def save_animation(ani, filename, writer=None, codec='h264', bitrate=None, fps=3
         #     kwargs['extra_args'] = extra_args
         if dpi is not None:
             kwargs['dpi'] = dpi
-
         writer = matplotlib.animation.PillowWriter(**kwargs)
+        
     elif writer == 'ffmpeg':
         if codec is not None:
             kwargs['codec'] = codec
@@ -514,7 +525,11 @@ def read_matfile(mat_file):
 
 def compute_ylim(h,margin=0.1):
     """
-    Compute ylim for a lines
+    Compute y limits based on ydata of input line handles.
+    h: list of line handles
+    margin: fraction of ylim to add as margin
+    Returns:
+    ylim: [ymin,ymax]
     """
     ylim = [np.inf,-np.inf]
     for line in h:
