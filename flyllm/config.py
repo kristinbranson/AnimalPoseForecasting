@@ -156,3 +156,15 @@ narena = 2 ** 10
 
 # Other variables
 theta_arena = np.linspace(-np.pi, np.pi, narena + 1)[:-1]
+
+def read_config(configfile, **kwargs):
+    from apf.io import read_config as apf_read_config
+    from flyllm.features import featglobal, get_sensory_feature_idx
+    return apf_read_config(
+        configfile,
+        default_configfile=DEFAULTCONFIGFILE,
+        posenames=posenames,
+        featglobal=featglobal,
+        get_sensory_feature_idx=get_sensory_feature_idx,
+        **kwargs,
+    )

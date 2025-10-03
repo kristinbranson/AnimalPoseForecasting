@@ -22,61 +22,42 @@
 # %autoreload 2
 
 import numpy as np
-import torch
+
 import matplotlib.pyplot as plt
-import tqdm
-import datetime
-import os
-from matplotlib import animation
+import torch
+from torch.utils.data import DataLoader
 import pickle
 
-from flyllm.prepare import init_flyllm
-from apf.utils import get_dct_matrix, compute_npad, save_animation, compute_ylim
+import apf
+from apf.training import train
+from apf.utils import function_args_from_config, set_mpl_backend
+from apf.simulation import simulate
+from apf.models import initialize_model
 
-from apf.data import process_test_data, interval_all, debug_less_data, chunk_data
-from apf.io import read_config, get_modeltype_str, load_and_filter_data, save_model, load_model, parse_modelfile, load_config_from_model_file
-from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames, keypointnames
-from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx, compute_scale_perfly, compute_pose_distribution_stats
-from flyllm.dataset import FlyTestDataset, FlyMLMDataset
-from flyllm.pose import FlyExample, FlyPoseLabels, FlyObservationInputs
-from flyllm.plotting import (
-    initialize_debug_plots, 
-    initialize_loss_plots, 
-    update_debug_plots,
-    update_loss_plots,
-    debug_plot_global_histograms, 
-    debug_plot_dct_relative_error, 
-    debug_plot_global_error, 
-    debug_plot_predictions_vs_labels,
-    select_featidx_plot,
-    plot_multi_pred_iter_vs_true,
-)
+import flyllm
+from flyllm.config import read_config
+from flyllm.features import featglobal, get_sensory_feature_idx
+from flyllm.simulation import animate_pose
+import time
 
-from apf.models import (
-    initialize_model, 
-    initialize_loss, 
-    compute_loss,
-    generate_square_full_mask, 
-    sanity_check_temporal_dep,
-    criterion_wrapper,
-    update_loss_nepochs,
-    stack_batch_list,
-)
-from flyllm.simulation import animate_predict_open_loop
-from flyllm.prediction import predict_all, predict_iterative_all
-
-from IPython.display import HTML
+from experiments.flyllm import make_dataset
 
 import logging
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
 
+set_mpl_backend('tkAgg')
 mpl_backend = plt.get_backend()
 if mpl_backend == 'inline':
     from IPython import display
+    from IPython.display import HTML
 
 LOG.info('CUDA available: ' + str(torch.cuda.is_available()))
 LOG.info('matplotlib backend: ' + mpl_backend)
+
+# %%
+timestamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
+print('Timestamp: ' + timestamp)
 
 # %% [markdown]
 # ### Configuration
@@ -86,9 +67,34 @@ LOG.info('matplotlib backend: ' + mpl_backend)
 
 #loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredvel_20241022_epoch200_20241023T140356.pth'
 #configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241022.json'
+
+# print current directory
 loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredvel_20241125_epoch200_20241125T191735.pth'
-configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241125.json'
-outfigdir = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/figs'
+configfile = 'configs/config_fly_llm_predvel_20241125.json'
+outfigdir = 'figs'
+debug_uselessdata = True
+
+# make directory if it doesn't exist
+if not os.path.exists(outfigdir):
+    os.makedirs(outfigdir)
+
+flyllmdir = flyllm.__path__[0]
+configfile = os.path.join(flyllmdir,configfile)
+config = read_config(configfile)
+
+train_dataset = make_dataset(config, 'intrainfile', debug=debug_uselessdata)
+val_dataset = make_dataset(config, 'invalfile', ref_dataset=train_dataset, debug=debug_uselessdata)
+
+# %%
+# configuration parameters for this model
+
+#loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredvel_20241022_epoch200_20241023T140356.pth'
+#configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241022.json'
+loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredvel_20241125_epoch200_20241125T191735.pth'
+configfile = 'flyllm/configs/config_fly_llm_predvel_20241125.json'
+outfigdir = 'figs'
+
+config = read_config(configfile)
 
 # loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredpos_20241023_epoch200_20241028T165510.pth'
 # configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predpos_20241023.json'
@@ -101,6 +107,7 @@ needtraindata = True
 needvaldata = True
 traindataprocess = 'test'
 valdataprocess = 'test'
+
 
 res = init_flyllm(configfile=configfile,mode='test',loadmodelfile=loadmodelfile,
                   quickdebugdatafile=quickdebugdatafile,needtraindata=needtraindata,needvaldata=needvaldata,

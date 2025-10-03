@@ -524,3 +524,17 @@ def compute_ylim(h,margin=0.1):
     ylim[0] -= margin*dy
     ylim[1] += margin*dy
     return ylim
+
+def set_mpl_backend(backend='tkAgg',force=False):
+    # Only set non-interactive backend if not in Jupyter
+    import matplotlib
+    if force:
+        matplotlib.use(backend)
+        return
+    try:
+        # Running in Jupyter/IPython, keep default backend
+        from IPython import get_ipython
+        assert 'IPKernelApp' in get_ipython().config
+    except:
+        # Not in Jupyter, use non-interactive backend
+        matplotlib.use(backend)
