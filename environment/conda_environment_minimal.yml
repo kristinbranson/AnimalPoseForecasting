@@ -4,6 +4,7 @@ channels:
   - nvidia
   - conda-forge
 dependencies:
+  - pip
   - numpy
   - scipy
   - matplotlib
@@ -17,5 +18,6 @@ dependencies:
   - ipykernel
   - jupytext
   - ipywidgets
+  - hdf5storage
   - pip:
     - opencv-python

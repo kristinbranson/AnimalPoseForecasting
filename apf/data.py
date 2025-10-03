@@ -26,6 +26,23 @@ def interval_all(x, l):
 
 
 def chunk_data(data, contextl, reparamfun, npad=1):
+    """
+    Chunks data into pieces of length contextl+npad, with npad frames of padding on each side.
+    Args:
+        data: dict with fields:
+            'X': nkeypts x 2 x T x n_agents array of floats containing pose data for all agents and frames
+            'ids': T x n_agents array of ints containing agent id
+            'frames': T x 1 array of ints containing video frame number
+            'y': ncategories x T x n_agents binary matrix indicating supervised behavior categories
+            'isdata': T x n_agents boolean matrix indicating whether data is valid
+            'isstart': T x n_agents boolean matrix indicating whether frame is start of a new sequence
+            optionally:
+            'videoidx': T x 1 array of ints containing index of video pose is computed from
+            'sessionids': dict mapping id to session index
+        contextl: length of main chunk, int
+        reparamfun: function that takes (X,id,agent_num,npad) and returns a dict with reparameterized data
+        npad: number of frames of padding on each side, int
+    """
     contextlpad = contextl + npad
 
     # all frames for the main agent must have real data
@@ -92,6 +109,57 @@ def chunk_data(data, contextl, reparamfun, npad=1):
             nframestotal += contextl
 
     LOG.info(f'In total {nframestotal} frames of data after chunking')
+    return X
+
+def process_test_data(data,reparamfun,npad=1,minnframes=None):
+    """
+    process_test_data(data,reparamfun,npad=1,minnframes=None)
+    Calls reparamfun on each continuous segment of data for each id in data['ids'].
+    Args:
+        data: dict with fields:
+            'X': nkeypts x 2 x T x n_agents array of floats containing pose data for all agents and frames
+            'ids': T x n_agents array of ints containing agent id
+            'frames': T x 1 array of ints containing video frame number
+            'y': ncategories x T x n_agents binary matrix indicating supervised behavior categories
+            'isdata': T x n_agents boolean matrix indicating whether data is valid
+            'isstart': T x n_agents boolean matrix indicating whether frame is start of a new sequence
+            optionally:
+            'videoidx': T x 1 array of ints containing index of video pose is computed from
+        reparamfun: function that takes (X,id,agent_num,npad) and returns a dict with reparameterized data
+        npad: number of frames of padding on each side, int
+        minnframes: minimum number of frames required to keep the data, int. If None, defaults to 5 if npad is None, else npad+1.
+    Returns:
+        X: list of dicts with reparameterized data for each continuous segment of data for each id
+    """
+
+    if minnframes is None:
+        if npad is None:
+            minnframes = 5
+        else:
+            minnframes = npad + 1
+    
+    X = []
+    nids = np.max(data['ids'])
+    for id in tqdm.trange(nids):
+        idxcurr = (data['ids'] == id) & data['isdata']
+        if np.count_nonzero(idxcurr) == 0:
+            continue
+        agent_num = np.nonzero(np.any(idxcurr,axis=0))[0]
+        assert len(agent_num) == 1, 'More than one agent found'
+        agent_num = agent_num[0]
+        t0 = np.nonzero(idxcurr[:,agent_num])[0][0]
+        t1 = np.nonzero(idxcurr[:,agent_num])[0][-1]
+        assert np.any(data['isstart'][t0+1:t1+1,agent_num]) == False, 'Data has start frame in the middle'
+        nframes = t1 - t0
+        if nframes < minnframes:
+            continue
+        #LOG.info(f'id: {id}, agent_num: {agent_num}, t0: {t0}, t1: {t1}')
+        # data['X'] is nkeypoints x 2 x T x n_agents
+        xcurr = reparamfun(data['X'][..., t0:t1+1, :], id, agent_num, npad=npad)
+        xcurr['metadata'] = {'flynum': agent_num, 'id': id, 't0': t0, 'videoidx': data['videoidx'][t0, 0],
+                                'frame0': data['frames'][t0, 0]}
+        xcurr['categories'] = data['y'][:, t0:t1 + 1, agent_num].astype(np.float32)
+        X.append(xcurr)
 
     return X
 
@@ -392,6 +460,10 @@ def debug_less_data(data, n_frames_per_video=10000, max_n_videos=1):
     data['y'] = data['y'][:, frame_ids, :]
     data['isdata'] = data['isdata'][frame_ids, :]
     data['isstart'] = data['isstart'][frame_ids, :]
+    nframes = np.count_nonzero(data['isdata'])
+    nids = len(np.unique(data['ids'][data['isdata']]))
+    LOG.info(f'After less data: nframes = {nframes}, nids = {nids}, X.shape = {data["X"].shape}')
+
     return
 
 

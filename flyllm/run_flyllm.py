@@ -51,7 +51,7 @@ from flyllm.plotting import (
     initialize_debug_plots, update_debug_plots,
     initialize_loss_plots, update_loss_plots,
 )
-from flyllm.dataset import FlyMLMDataset
+from flyllm.dataset import FlyMLMDataset, FlyTestDataset
 from flyllm.simulation import animate_predict_open_loop
 from flyllm.pose import FlyExample
 from apf.io import (
@@ -725,8 +725,19 @@ def main(configfile, loadmodelfile=None, restartmodelfile=None):
 
     model.eval()
 
+    print('Creating evaluation dataset from validataion data...')
+    eval_dataset = FlyTestDataset(valX, config['contextl'], **dataset_params)
+    eval_dataloader = torch.utils.data.DataLoader(eval_dataset,
+                                                batch_size=config['batch_size'],
+                                                shuffle=False,
+                                                pin_memory=True,
+                                                )
+    print('Done.')
+
+
     # compute predictions and labels for all validation data using default masking
-    all_pred, all_labels = predict_all(val_dataloader, val_dataset, model, config, train_src_mask)
+    all_pred, labelidx = predict_all(eval_dataloader, eval_dataset, model, config, train_src_mask)
+    pred_data,true_data = eval_dataset.create_data_from_pred(all_pred, labelidx)
 
     # plot comparison between predictions and labels on validation data
     # predv = stack_batch_list(all_pred)
@@ -735,7 +746,9 @@ def main(configfile, loadmodelfile=None, restartmodelfile=None):
     # pred_discretev = stack_batch_list(all_pred_discrete)
     # labels_discretev = stack_batch_list(all_labels_discrete)
 
-    fig, ax = debug_plot_global_histograms(all_pred, all_labels, train_dataset, nbins=25, subsample=1, compare='pred')
+    unz_gpredv = np.stack([flyexample.labels.get_future_globalpos(zscored=False) for flyexample in pred_data], axis=0)
+    unz_glabelsv = np.stack([flyexample.labels.get_future_globalpos(zscored=False,use_todiscretize=True) for flyexample in true_data], axis=0)
+    fig, ax = debug_plot_global_histograms(unz_gpredv, unz_glabelsv, train_dataset, nbins=25, subsample=1, compare='pred')
     # glabelsv = train_dataset.get_global_movement(labelsv)
     # gpredprev = torch.zeros(glabelsv.shape)
     # gpredprev[:] = np.nan
@@ -746,26 +759,26 @@ def main(configfile, loadmodelfile=None, restartmodelfile=None):
     # train_dataset.set_global_movement(gpredprev,predprev)
     # fig,ax = debug_plot_global_histograms(predprev,labelsv,train_dataset,nbins=25,subsample=100)
 
-    if train_dataset.dct_m is not None:
-        debug_plot_dct_relative_error(all_pred, all_labels, train_dataset)
+    pred_labels = [flyexample.labels for flyexample in pred_data]
+    true_labels = [flyexample.labels for flyexample in true_data]
     if train_dataset.ntspred_global > 1:
-        debug_plot_global_error(all_pred, all_labels, train_dataset)
+        debug_plot_global_error(pred_labels, true_labels, train_dataset)
 
     # crop to nplot for plotting
-    nplot = min(len(all_labels), 8000 // config['batch_size'] // config['contextl'] + 1)
-
+    nplot = min(len(labelidx), 8000 // config['contextl'] + 1)
+    
     ntspred_plot = np.minimum(4, train_dataset.ntspred_global)
-    featidxplot, ftplot = all_labels[0].select_featidx_plot(ntspred_plot)
+    featidxplot, ftplot = true_labels[0].select_featidx_plot(ntspred_plot)
     naxc = np.maximum(1, int(np.round(len(featidxplot) / nfeatures)))
-    fig, ax = debug_plot_predictions_vs_labels(all_pred[:nplot], all_labels[:nplot], naxc=naxc, featidxplot=featidxplot)
+    fig, ax = debug_plot_predictions_vs_labels(pred_labels[:nplot], true_labels[:nplot], naxc=naxc, featidxplot=featidxplot)
     if train_dataset.ntspred_global > 1:
-        featidxplot, ftplot = all_labels[0].select_featidx_plot(ntsplot=train_dataset.ntspred_global,
+        featidxplot, ftplot = true_labels[0].select_featidx_plot(ntsplot=train_dataset.ntspred_global,
                                                                 ntsplot_relative=0)
         naxc = np.maximum(1, int(np.round(len(featidxplot) / nfeatures)))
-        fig, ax = debug_plot_predictions_vs_labels(all_pred[:nplot], all_labels[:nplot], naxc=naxc,
+        fig, ax = debug_plot_predictions_vs_labels(pred_labels[:nplot], true_labels[:nplot], naxc=naxc,
                                                    featidxplot=featidxplot)
-        featidxplot, _ = all_labels[0].select_featidx_plot(ntsplot=1, ntsplot_relative=1)
-        fig, ax = debug_plot_predictions_vs_labels(all_pred[:nplot], all_labels[:nplot], naxc=naxc,
+        featidxplot, _ = true_labels[0].select_featidx_plot(ntsplot=1, ntsplot_relative=1)
+        fig, ax = debug_plot_predictions_vs_labels(pred_labels[:nplot], true_labels[:nplot], naxc=naxc,
                                                    featidxplot=featidxplot)
 
     # if train_dataset.dct_tau > 0:
