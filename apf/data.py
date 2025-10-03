@@ -26,6 +26,23 @@ def interval_all(x, l):
 
 
 def chunk_data(data, contextl, reparamfun, npad=1):
+    """
+    Chunks data into pieces of length contextl+npad, with npad frames of padding on each side.
+    Args:
+        data: dict with fields:
+            'X': nkeypts x 2 x T x n_agents array of floats containing pose data for all agents and frames
+            'ids': T x n_agents array of ints containing agent id
+            'frames': T x 1 array of ints containing video frame number
+            'y': ncategories x T x n_agents binary matrix indicating supervised behavior categories
+            'isdata': T x n_agents boolean matrix indicating whether data is valid
+            'isstart': T x n_agents boolean matrix indicating whether frame is start of a new sequence
+            optionally:
+            'videoidx': T x 1 array of ints containing index of video pose is computed from
+            'sessionids': dict mapping id to session index
+        contextl: length of main chunk, int
+        reparamfun: function that takes (X,id,agent_num,npad) and returns a dict with reparameterized data
+        npad: number of frames of padding on each side, int
+    """
     contextlpad = contextl + npad
 
     # all frames for the main agent must have real data
@@ -95,6 +112,25 @@ def chunk_data(data, contextl, reparamfun, npad=1):
     return X
 
 def process_test_data(data,reparamfun,npad=1,minnframes=None):
+    """
+    process_test_data(data,reparamfun,npad=1,minnframes=None)
+    Calls reparamfun on each continuous segment of data for each id in data['ids'].
+    Args:
+        data: dict with fields:
+            'X': nkeypts x 2 x T x n_agents array of floats containing pose data for all agents and frames
+            'ids': T x n_agents array of ints containing agent id
+            'frames': T x 1 array of ints containing video frame number
+            'y': ncategories x T x n_agents binary matrix indicating supervised behavior categories
+            'isdata': T x n_agents boolean matrix indicating whether data is valid
+            'isstart': T x n_agents boolean matrix indicating whether frame is start of a new sequence
+            optionally:
+            'videoidx': T x 1 array of ints containing index of video pose is computed from
+        reparamfun: function that takes (X,id,agent_num,npad) and returns a dict with reparameterized data
+        npad: number of frames of padding on each side, int
+        minnframes: minimum number of frames required to keep the data, int. If None, defaults to 5 if npad is None, else npad+1.
+    Returns:
+        X: list of dicts with reparameterized data for each continuous segment of data for each id
+    """
 
     if minnframes is None:
         if npad is None:

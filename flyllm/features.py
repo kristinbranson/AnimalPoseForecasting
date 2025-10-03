@@ -1350,9 +1350,9 @@ def compute_pose_distribution_stats(data,scales_perfly,prctiles=[0,.001,.01,.1,.
     high_prctiles_relpose = prctiles_relpose[len(prctiles):]
 
     return {'meanrelpose': meanrelpose,
-            'stdrelpose':stdrelpose,
-            'low_prctiles_relpose':low_prctiles_relpose,
-            'high_prctiles_relpose':high_prctiles_relpose,
+            'stdrelpose': stdrelpose,
+            'low_prctiles_relpose': low_prctiles_relpose,
+            'high_prctiles_relpose': high_prctiles_relpose,
             'prctiles': prctiles,
             }
 def regularize_pose(pose,posestats,dampenconstant=0,prctilelim=None):

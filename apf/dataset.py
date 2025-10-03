@@ -997,9 +997,9 @@ class Dataset(torch.utils.data.Dataset):
         inds_per_key = [np.arange(start, start + dims) for start, dims in zip(start_per_key, dims_per_key)]
         return {key: concated[..., inds] for key, inds in zip(self.labels.keys(), inds_per_key)}
     
-    def get_indices(self,idx: int | list[int] | np.ndarray):
+    def get_items(self,idx: int | list[int] | np.ndarray):
         """
-        get_indices(idx)
+        get_items(idx)
         Returns the data for the indices by call ing __getitem__ on each index
         """
         idx = np.atleast_1d(idx)
