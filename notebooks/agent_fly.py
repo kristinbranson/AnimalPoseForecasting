@@ -17,10 +17,21 @@
 # %autoreload 2
     
 import numpy as np
+
+# Only set non-interactive backend if not in Jupyter
+import matplotlib
+try:
+    from IPython import get_ipython
+    assert 'IPKernelApp' in get_ipython().config
+    # Running in Jupyter/IPython, keep default backend
+except:
+    # Not in Jupyter, use non-interactive backend
+    matplotlib.use('tkAgg')
+
+
 import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader
-import pickle
 
 from apf.io import read_config
 from apf.training import train
@@ -31,9 +42,12 @@ from apf.models import initialize_model
 from flyllm.config import DEFAULTCONFIGFILE, posenames
 from flyllm.features import featglobal, get_sensory_feature_idx
 from flyllm.simulation import animate_pose
+import time
 
-from experiments.flyllm import make_dataset, load_data
+from experiments.flyllm import make_dataset
 # -
+
+timestamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
 
 configfile = "/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241125.json"
 config = read_config(
@@ -49,6 +63,7 @@ config['intrainfilestr'] = config['intrainfilestr'].replace('.npz', '_v2.npz')
 config['invalfilestr'] = config['invalfilestr'].replace('.npz', '_v2.npz')
 config['intrainfile'] = config['intrainfile'].replace('.npz', '_v2.npz')
 config['invalfile'] = config['invalfile'].replace('.npz', '_v2.npz')
+
 train_dataset, flyids, track, pose, velocity, sensory = make_dataset(config, 'intrainfile', return_all=True, debug=False)
 
 val_dataset = make_dataset(config, 'invalfile', train_dataset, debug=False)
@@ -61,39 +76,52 @@ val_dataloader = DataLoader(val_dataset, batch_size=config['batch_size'], shuffl
 device = torch.device(config['device'])
 model, criterion = initialize_model(config, train_dataset, device)
 
+# +
 # Train the model
 train_args = function_args_from_config(config, train)
 train_args['num_train_epochs'] = 200
 init_loss_epoch = {}
-model_file = "/groups/branson/home/eyjolfsdottire/data/flyllm/model_refactored_251002_newdata_cont.pth"
+
+model_file = f'agentfly_model_{timestamp}.pth'
+
 model, best_model, loss_epoch = train(train_dataloader, val_dataloader, model, loss_epoch=init_loss_epoch,
                                       save_path=model_file, **train_args)
 
 # +
+# OR
+# model_file = 'agentfly_model_20251001T073751.pkl'
+# model.load_state_dict(torch.load(model_file))
+
+# +
 # Plot the losses
-idx = np.argmin(loss_epoch['val'])
-print((idx, loss_epoch['val'][idx]))
+idx = torch.argmin(loss_epoch['val']).item()
+print((idx, loss_epoch['val'][idx].item()))
 
 plt.figure(figsize=(15, 5))
 plt.subplot(1, 3, 1)
-plt.plot(loss_epoch['train'])
-plt.plot(loss_epoch['val'])
-plt.plot(idx, loss_epoch['val'][idx], '.g')
+plt.plot(loss_epoch['train'],label='train')
+plt.plot(loss_epoch['val'],label='val')
+plt.plot(idx, loss_epoch['val'][idx], 'go')
+plt.legend()
+plt.title('Total loss')
 
 plt.subplot(1, 3, 2)
-plt.plot(loss_epoch['train_continuous'])
-plt.plot(loss_epoch['val_continuous'])
+plt.plot(loss_epoch['train_continuous'],label='train')
+plt.plot(loss_epoch['val_continuous'],label='val')
+plt.plot(idx, loss_epoch['val_continuous'][idx], 'go')
+plt.legend()
+plt.title('Continuous loss')
 
 plt.subplot(1, 3, 3)
-plt.plot(loss_epoch['train_discrete'])
-plt.plot(loss_epoch['val_discrete'])
+plt.plot(loss_epoch['train_discrete'],label='train')
+plt.plot(loss_epoch['val_discrete'],label='val')
+plt.plot(idx, loss_epoch['val_discrete'][idx], 'go')
+plt.legend()
+plt.title('Discrete loss')
 plt.show()
+
+
 # -
-
-model_file = "/groups/branson/home/eyjolfsdottire/data/flyllm/model_refactored_251002_newdata_cont_epoch90_best.pth"
-# torch.save(model.state_dict(), model_file)
-model.load_state_dict(torch.load(model_file))
-
 
 def plot_arena():
     ARENA_RADIUS_MM = 26.689
@@ -103,9 +131,6 @@ def plot_arena():
     y = np.sin(theta) * ARENA_RADIUS_MM
     plt.plot(x, y, '-', color=[.8, .8, .8])
 
-
-# +
-from apf.simulation import simulate
 
 t0 = time.time()
 agent_ids = [1, 2, 5, 6, 9]
@@ -144,12 +169,10 @@ for agent_id in agent_ids:
 plt.show()
 # -
 
-savevidfile = "/groups/branson/home/eyjolfsdottire/data/flyllm/animation_multifly_251003_190_best_long.gif"
+savevidfile = f"animation_{timestamp}.gif"
 ani = animate_pose(
     {'Pred': pred_track.T.copy(), 'True': gt_track.T.copy()}, 
     focusflies=agent_ids, 
     savevidfile=savevidfile,
     contextl=config['contextl']
 )
-
-

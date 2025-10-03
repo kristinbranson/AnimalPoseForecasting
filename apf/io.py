@@ -23,6 +23,8 @@ def save_model(savefile, model, lr_optimizer=None, scheduler=None, loss=None, co
         tosave['config'] = config
     if sensory_params is not None:
         tosave['SENSORY_PARAMS'] = sensory_params
+    if hasattr(model, 'dataset_params'):
+        tosave['dataset_params'] = model.dataset_params
     torch.save(tosave, savefile)
     return
 
@@ -65,6 +67,9 @@ def load_config_from_model_file(loadmodelfile=None, config=None, state=None, no_
         sensory_params.update(state['SENSORY_PARAMS'])
     else:
         LOG.info(f'SENSORY_PARAMS not stored in model file {loadmodelfile}')
+    if (config is not None) and ('dataset_params' in state):
+        config['dataset_params'] = state['dataset_params']      
+
     return
 
 
@@ -74,6 +79,10 @@ def json_load_helper(jsonfile):
     config = {k: v for k, v in config.items() if re.search('^_comment', k) is None}
     return config
 
+def json_save_helper(jsonfile, config, indent=4):
+    with open(jsonfile, 'w') as f:
+        json.dump(config, f, indent=indent)
+    return
 
 def read_config(jsonfile, default_configfile=None, get_sensory_feature_idx=None, featglobal=None, posenames=None):
     if default_configfile is None:
@@ -193,6 +202,9 @@ def read_config(jsonfile, default_configfile=None, get_sensory_feature_idx=None,
                 raise ValueError(f'Unknown embedding type {et}')
             # end switch over embedding types
         # end if obs_embedding_types in config
+        
+        if ('test_batch_size' not in config) and ('batch_size' in config):
+            config['test_batch_size'] = config['batch_size']
 
     return config
 
@@ -305,6 +317,7 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
     # load data
     LOG.info(f"loading raw data from {infile}...")
     data = load_raw_npz_data(infile)
+    LOG.info(f"loaded data with X.shape {data['X'].shape}")
 
     # compute noise parameters
     if type(config['discreteidx']) == list and (len(config['discreteidx']) > 0) and config['discretize_epsilon'] is None:
@@ -319,11 +332,20 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
     # filter out data
     LOG.info('filtering data...')
     if config['categories'] is not None and len(config['categories']) > 0:
+        LOG.info(f"filtering data by categories {config['categories']}")
+        nframespre = np.count_nonzero(data['isdata'])
+        nidspre = len(np.unique(data['ids'][data['isdata']]))
         filter_data_by_categories(data, config['categories'])
+        nframespost = np.count_nonzero(data['isdata'])
+        nidspost = len(np.unique(data['ids'][data['isdata']]))
+        LOG.info(f"After filtering nids {nidspre} -> {nidspost}, nframes {nframespre} -> {nframespost}")
 
     # augment by flipping
     if 'augment_flip' in config and config['augment_flip']:
         assert keypointnames is not None, "Need keypointnames to perform flip augmentation"
+        LOG.info('augmenting data by flipping...')
+        nframespre = np.count_nonzero(data['isdata'])
+        nidspre = len(np.unique(data['ids'][data['isdata']]))
         flipvideoidx = np.max(data['videoidx']) + 1 + data['videoidx']
         data['videoidx'] = np.concatenate((data['videoidx'], flipvideoidx), axis=0)
         firstid = np.max(data['ids']) + 1
@@ -336,6 +358,9 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
         data['y'] = np.tile(data['y'], (1, 2, 1))
         data['isdata'] = np.tile(data['isdata'], (2, 1))
         data['isstart'] = np.tile(data['isstart'], (2, 1))
+        nframespost = np.count_nonzero(data['isdata'])
+        nidspost = len(np.unique(data['ids'][data['isdata']]))
+        LOG.info(f"After flip augmentation nids {nidspre} -> {nidspost}, nframes {nframespre} -> {nframespost}")
 
     # compute scale parameters
     if compute_scale_per_agent is None:

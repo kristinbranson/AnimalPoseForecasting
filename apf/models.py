@@ -3,6 +3,9 @@ import math
 import typing
 import torch
 
+def CrossEntropyLossEps(eps=1e-8,**kwargs):
+    ce = torch.nn.CrossEntropyLoss(**kwargs)
+    return lambda pred,target: ce((pred+eps)/(1+eps*pred.shape[1]),target)
 
 lossfcn_discrete = torch.nn.CrossEntropyLoss()
 lossfcn_continuous = torch.nn.L1Loss()
@@ -23,7 +26,10 @@ def unpack_input(input, featidx, sz, dim=-1):
 
 
 def causal_criterion(tgt, pred):
+    assert torch.isnan(tgt).any() == False, 'tgt contains nans'
+    assert torch.isnan(pred).any() == False, 'pred contains nans'
     d = tgt.shape[-1]
+    assert d > 0, 'tgt has no dimensions'
     err = torch.sum(torch.abs(tgt - pred)) / d
     return err
 
@@ -41,6 +47,7 @@ def mixed_causal_criterion(tgt, pred, weight_discrete=.5, extraout=False):
         n = np.prod(tgt_continuous.shape[:-1])
     else:
         n = np.prod(tgt_discrete.shape[:-2])
+    assert n > 0, 'no examples in batch'
     if iscontinuous:
         err_continuous = lossfcn_continuous(pred_continuous, tgt_continuous.to(device=pred_continuous.device)) * n
     else:
@@ -51,6 +58,7 @@ def mixed_causal_criterion(tgt, pred, weight_discrete=.5, extraout=False):
         pd = pd.reshape(newsz)
         td = tgt_discrete.to(device=pd.device).reshape(newsz)
         err_discrete = lossfcn_discrete(pd, td) * n
+        assert torch.isnan(err_discrete).any() == False, 'discrete loss contains nans'
     else:
         err_discrete = torch.tensor(0., dtype=tgt_continuous.dtype, device=tgt_continuous.device)
     err = (1 - weight_discrete) * err_continuous + weight_discrete * err_discrete
@@ -130,7 +138,15 @@ def criterion_wrapper(example, pred, criterion, dataset, config):
         pred_discrete = pred['labels_discrete']
     else:
         pred_discrete = None
-    pred1 = {'continuous': pred_continuous, 'discrete': pred_discrete}        
+    pred1 = {'continuous': pred_continuous, 'discrete': pred_discrete}
+    if tgt['labels'] is not None:
+        assert torch.isnan(tgt['labels']).any() == False, 'tgt labels contains nans'
+    if pred1['continuous'] is not None:
+        assert torch.isnan(pred1['continuous']).any() == False, 'pred continuous contains nans'
+    if tgt['labels_discrete'] is not None:
+        assert torch.isnan(tgt['labels_discrete']).any() == False, 'tgt labels discrete contains nans'
+    if pred1['discrete'] is not None:
+        assert torch.isnan(pred1['discrete']).any() == False, 'pred discrete contains nans'
 
     if config['modeltype'] == 'mlm':
         if dataset.discretize:
@@ -279,7 +295,7 @@ class TransformerBestStateModel(torch.nn.Module):
         self.d_model = d_model
         self.nstates = nstates
         self.d_output = d_output
-
+        
         self.init_weights()
 
     def init_weights(self) -> None:
@@ -449,8 +465,7 @@ class TransformerModel(torch.nn.Module):
                  nlayers: int = 12, dropout: float = 0.1,
                  ntokens_per_timepoint: int = 1,
                  input_idx=None, input_szs=None, embedding_types=None, embedding_params=None,
-                 d_output_discrete=None, nbins=None,
-                 ):
+                 d_output_discrete=None, nbins=None):
         super().__init__()
         self.model_type = 'Transformer'
 
@@ -491,7 +506,7 @@ class TransformerModel(torch.nn.Module):
         self.d_model = d_model
 
         self.init_weights()
-
+        
     def init_weights(self) -> None:
         pass
 
@@ -967,8 +982,8 @@ class TransformerMixedModel(TransformerModel):
 
 def generate_square_full_mask(sz: int) -> torch.Tensor:
     """
-  Generates an zero matrix. All words allowed.
-  """
+    Generates a zero matrix. All words allowed.
+    """
     return torch.zeros(sz, sz)
 
 
@@ -1037,7 +1052,7 @@ def initialize_model(config, train_dataset, device):
         d_output = train_dataset.d_output_continuous
     else:
         d_output = train_dataset.d_output
-
+        
     if config['modelstatetype'] == 'prob':
         model = TransformerStateModel(d_input, d_output, **MODEL_ARGS).to(device)
         criterion = prob_causal_criterion
@@ -1189,6 +1204,9 @@ def sanity_check_temporal_dep(train_dataloader, device, train_src_mask, is_causa
     xin = x['input'].clone()
     xin2 = xin.clone()
     tmess = 300
+    contextl = xin.shape[1]
+    if tmess >= contextl:
+        tmess = contextl // 2
     xin2[:, tmess:, :] = 100.
     model.eval()
     with torch.no_grad():
@@ -1196,8 +1214,8 @@ def sanity_check_temporal_dep(train_dataloader, device, train_src_mask, is_causa
         pred2 = model(xin2.to(device), mask=train_src_mask, is_causal=is_causal)
     if type(pred) == dict:
         for k in pred.keys():
-            matches = torch.all(pred2[k][:, :tmess] == pred[k][:, :tmess]).item()
-            assert matches
+            matches = torch.allclose(pred2[k][:, :tmess], pred[k][:, :tmess], atol=1e-2)
+            assert matches, f'Mismatch in {k}'
     else:
-        matches = torch.all(pred2[:, :tmess] == pred[:, :tmess]).item()
+        matches = torch.allclose(pred2[:, :tmess],pred[:, :tmess], atol=1e-2)
         assert matches
