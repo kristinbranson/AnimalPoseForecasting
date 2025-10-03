@@ -1044,9 +1044,9 @@ def feat2kp(Xfeat, scale_perfly, flyid=None):
     # thorax
     thorax_width = scale_perfly[scalenames.index('thorax_width'), flyid].reshape((T, nflies))
     thorax_length = scale_perfly[scalenames.index('thorax_length'), flyid].reshape((T, nflies))
-    Xkpn[keypointnames.index('left_front_thorax'), 0, ...] = -thorax_width / 2.
+    Xkpn[keypointnames.index('left_front_thorax'), 0, ...] = thorax_width / 2.
     Xkpn[keypointnames.index('left_front_thorax'), 1, ...] = 0.
-    Xkpn[keypointnames.index('right_front_thorax'), 0, ...] = thorax_width / 2.
+    Xkpn[keypointnames.index('right_front_thorax'), 0, ...] = -thorax_width / 2.
     Xkpn[keypointnames.index('right_front_thorax'), 1, ...] = 0.
     Xkpn[keypointnames.index('base_thorax'), 0, ...] = 0.
     Xkpn[keypointnames.index('base_thorax'), 1, ...] = -thorax_length

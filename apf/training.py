@@ -22,7 +22,9 @@ def train(
         num_train_epochs: int,
         max_grad_norm: float,
         optimizer_args: dict,
-        loss_epoch: dict | None = None,
+        loss_epoch: dict = None,
+        save_path: str = None,
+        save_iter: int = 10,
 ) -> tuple[TransformerModel, TransformerModel, dict]:
     """ Trains a model on train_dataloader, using val_dataloader to select the best_model.
 
@@ -36,6 +38,8 @@ def train(
          optimizer_args: Named arguments used for the AdamW optimizer.
          loss_epoch: Keeps track of training and validation losses. If provided, morphs this input so that
             if training is aborted the losses are still available.
+         save_path: If not None, specifies the directory of where to save the model.
+         save_iter: Save model every this many iterations.
 
     Returns:
         model: Model after training on all epochs
@@ -126,9 +130,16 @@ def train(
         if last_val_loss < best_val_loss:
             best_model = copy.deepcopy(model)
 
+        if save_path is not None and epoch > 0 and epoch % save_iter == 0:
+            torch.save(model.state_dict(), save_path.replace('.pth', f'_epoch{epoch}.pth'))
+            torch.save(best_model.state_dict(), save_path.replace('.pth', f'_epoch{epoch}_best.pth'))
+
         # if np.mod(epoch + 1, 5) == 0:
         train_dataloader.dataset.recompute_chunk_indices()
 
+    torch.save(model.state_dict(), save_path)
+    torch.save(model.state_dict(), save_path.replace('.pth', f'_best.pth'))
+    # TODO: Save dataset operations along with the model
     LOG.info('Done training')
 
     return model, best_model, loss_epoch

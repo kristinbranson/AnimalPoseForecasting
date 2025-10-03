@@ -32,7 +32,7 @@ from flyllm.config import DEFAULTCONFIGFILE, posenames
 from flyllm.features import featglobal, get_sensory_feature_idx
 from flyllm.simulation import animate_pose
 
-from experiments.flyllm import make_dataset
+from experiments.flyllm import make_dataset, load_data
 # -
 
 configfile = "/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241125.json"
@@ -44,9 +44,14 @@ config = read_config(
     get_sensory_feature_idx=get_sensory_feature_idx,
 )
 
-train_dataset, flyids, track, pose, velocity, sensory = make_dataset(config, 'intrainfile', return_all=True, debug=True)
+# Switch to the latest data (TODO: make a new config file for this)
+config['intrainfilestr'] = config['intrainfilestr'].replace('.npz', '_v2.npz')
+config['invalfilestr'] = config['invalfilestr'].replace('.npz', '_v2.npz')
+config['intrainfile'] = config['intrainfile'].replace('.npz', '_v2.npz')
+config['invalfile'] = config['invalfile'].replace('.npz', '_v2.npz')
+train_dataset, flyids, track, pose, velocity, sensory = make_dataset(config, 'intrainfile', return_all=True, debug=False)
 
-val_dataset = make_dataset(config, 'invalfile', train_dataset, debug=True)
+val_dataset = make_dataset(config, 'invalfile', train_dataset, debug=False)
 
 # Wrap into dataloader
 train_dataloader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True, pin_memory=True)
@@ -58,9 +63,11 @@ model, criterion = initialize_model(config, train_dataset, device)
 
 # Train the model
 train_args = function_args_from_config(config, train)
-train_args['num_train_epochs'] = 100
+train_args['num_train_epochs'] = 200
 init_loss_epoch = {}
-model, best_model, loss_epoch = train(train_dataloader, val_dataloader, model, loss_epoch=init_loss_epoch, **train_args)
+model_file = "/groups/branson/home/eyjolfsdottire/data/flyllm/model_refactored_251002_newdata_cont.pth"
+model, best_model, loss_epoch = train(train_dataloader, val_dataloader, model, loss_epoch=init_loss_epoch,
+                                      save_path=model_file, **train_args)
 
 # +
 # Plot the losses
@@ -83,24 +90,11 @@ plt.plot(loss_epoch['val_discrete'])
 plt.show()
 # -
 
-model_file = "/groups/branson/home/eyjolfsdottire/data/flyllm/model_refactored_250307_fulldata.pkl"
-# pickle.dump(model, open(model_file, "wb"))
-# model = pickle.load(open(model_file, "rb"))
+model_file = "/groups/branson/home/eyjolfsdottire/data/flyllm/model_refactored_251002_newdata_cont_epoch90_best.pth"
+# torch.save(model.state_dict(), model_file)
+model.load_state_dict(torch.load(model_file))
 
-gt_track, pred_track = simulate(
-    dataset=train_dataset,
-    model=model,
-    track=track,
-    pose=pose,
-    identities=flyids,
-    track_len=4000 + config['contextl'] + 1,
-    burn_in=config['contextl'],
-    max_contextl=config['contextl'],
-    agent_idx=0,
-    start_frame=512,
-)
 
-# +
 def plot_arena():
     ARENA_RADIUS_MM = 26.689
     n_pts = 1000
@@ -109,18 +103,53 @@ def plot_arena():
     y = np.sin(theta) * ARENA_RADIUS_MM
     plt.plot(x, y, '-', color=[.8, .8, .8])
 
-plt.figure()
-plot_arena()
 
-last_frame = 1000#None
-x, y = gt_track[0, :last_frame, :, 0].T
-plt.plot(x, y, '.', markersize=1)
-x, y = pred_track[0, :last_frame, :, 0].T
-plt.plot(x, y, '.', markersize=1)
-plt.axis('equal')
+# +
+from apf.simulation import simulate
+
+t0 = time.time()
+agent_ids = [1, 2, 5, 6, 9]
+start_frame = 117220
+gt_track, pred_track = simulate(
+    dataset=train_dataset,
+    model=model,
+    track=track,
+    pose=pose,
+    identities=flyids,
+    track_len=3000 + config['contextl'] + 1,
+    burn_in=config['contextl'],
+    max_contextl=config['contextl'],
+    agent_ids=agent_ids,
+    start_frame=start_frame,
+)
+time.time() - t0
+
+# +
+plt.figure(figsize=(10, 5))
+for i in range(2):
+    plt.subplot(1, 2, i+1)
+    plot_arena()
+
+first_frame = config['contextl']
+last_frame = None
+for agent_id in agent_ids:
+    plt.subplot(1, 2, 1)
+    x, y = gt_track[agent_id, first_frame:last_frame, :, 0].T
+    plt.plot(x, y, '.', markersize=1)
+    plt.axis('equal')
+    plt.subplot(1, 2, 2)
+    x, y = pred_track[agent_id, first_frame:last_frame, :, 0].T
+    plt.plot(x, y, '.', markersize=1)
+    plt.axis('equal')
 plt.show()
 # -
 
-agent_id = 0
-savevidfile = "/groups/branson/home/eyjolfsdottire/data/flyllm/animation_250307.gif"
-ani = animate_pose({'Pred': pred_track.T.copy(), 'True': gt_track.T.copy()}, focusflies=[agent_id], savevidfile=savevidfile)
+savevidfile = "/groups/branson/home/eyjolfsdottire/data/flyllm/animation_multifly_251003_190_best_long.gif"
+ani = animate_pose(
+    {'Pred': pred_track.T.copy(), 'True': gt_track.T.copy()}, 
+    focusflies=agent_ids, 
+    savevidfile=savevidfile,
+    contextl=config['contextl']
+)
+
+
