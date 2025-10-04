@@ -1,10 +1,12 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import OrderedDict
 from typing import NamedTuple
 import numpy as np
 import torch
 import logging
+import importlib
+import inspect
 
 from apf.data import fit_discretize_data, discretize_labels, weighted_sample
 from apf.utils import connected_components, modrange, rotate_2d_points, set_invalid_ends
@@ -13,12 +15,16 @@ from apf.features import compute_global_velocity, compute_relpose_velocity
 
 LOG = logging.getLogger(__name__)
 
-
+@dataclass
 class Operation(ABC):
     """ Abstract class for an operation to be applied to data.
 
     Methods to be implemented by inheriting classes are apply and inverse.
     """
+
+    # localattrs are attributes that should not be included in to_dict and from_dict
+    localattrs = []
+
     @abstractmethod
     def apply(self, data: np.ndarray) -> np.ndarray:
         pass
@@ -47,8 +53,55 @@ class Operation(ABC):
         elif isinstance(data, np.ndarray):
             return self.apply(data, **kwargs)
         else:
-            raise ValueError
+            raise ValueError(f"Data must be either np.ndarray or Data, not {type(data)}")
 
+    def to_dict(self) -> dict:
+        """ Returns operation class and its parameters as a dictionary.
+        Returns:
+        Dictionary with:
+            'class': class name
+            'module': module name
+            'attributes': dictionary of attributes of the class
+        For to_dict and from_dict to work, all parameters for defining the operation must be stored as attributes of the class.
+        """
+        attributes = {k: v for k,v in self.__dict__.items() if k not in self.localattrs}
+        return  {
+                'class': self.__class__.__name__,
+                'module': self.__class__.__module__,
+                'attributes': attributes
+                }
+
+    @classmethod
+    def from_dict(cls, oper_params: dict):
+        """
+        Creates an instance of the class from a dictionary created by to_dict().
+        Args:
+            data: Dictionary with:
+                'class': class name
+                'module': module name
+                'attributes': dictionary of attributes of the class, used as kwargs to create the instance
+        """
+        # Get the actual class
+        class_name = oper_params['class']
+        module = oper_params['module']
+
+        # Import the class dynamically
+        mod = importlib.import_module(module)
+        actual_class = getattr(mod, class_name)
+
+        # Create instance without calling __init__
+        # Filter which attributes can be provided to the constructor:
+        args = {}
+        if 'attributes' in oper_params:
+            sig = inspect.signature(actual_class.__init__)
+            constructor_params = sig.parameters
+            has_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in constructor_params.values())
+            for k in oper_params['attributes']:
+                if has_kwargs or (k in constructor_params):
+                    args[k] = oper_params['attributes'][k]
+        obj = actual_class(**args)
+
+        return obj
 
 class Data(NamedTuple):
     name: str
@@ -56,7 +109,7 @@ class Data(NamedTuple):
     # Operations that have been applied to the data (can be later applied in inverse to obtain original data).
     operations: list[Operation] = []
 
-
+@dataclass
 class Identity(Operation):
     """ This operation passes data through without modifications.
 
@@ -68,18 +121,17 @@ class Identity(Operation):
     def invert(self, data: np.ndarray):
         return data
 
-
+@dataclass
 class Zscore(Operation):
     """ Zscores and unzscores data.
 
-    Args:
+    Attributes:
         mean: (n_feat, ) mean value of feature values. If None will be computed the first time the operation is applied.
         std: (n_feat, ) standard deviation of feature values.
     """
-    def __init__(self, mean: np.ndarray | None = None, std: np.ndarray | None = None):
-        self.mean = mean
-        self.std = std
-
+    mean: np.ndarray | None = None
+    std: np.ndarray | None = None    
+    
     def compute(self, data: np.ndarray):
         """ Computes the mean and standard variation of features in data.
 
@@ -115,17 +167,18 @@ class Zscore(Operation):
         """
         return data * self.std[None, None, :] + self.mean[None, None, :]
 
-
+@dataclass
 class OddRoot(Operation):
     """ Takes the given root of the data to smear it out.
 
-    Args:
+    Attributes:
         root: Which root to use, 3 usually works well. Must be odd so that signed data is correctly inverted.
     """
-    def __init__(self, root: int = 3):
-        assert int(root) == root, "root must be an integer"
-        assert np.mod(root, 2) == 1, "only odd roots are invertible with signed data"
-        self.root = root
+    root: int = 3
+    
+    def __post_init__(self):
+        assert int(self.root) == self.root, "root must be an integer"
+        assert np.mod(self.root, 2) == 1, "only odd roots are invertible with signed data"
 
     def apply(self, data: np.ndarray) -> np.ndarray:
         """ Applies root to the data.
@@ -149,17 +202,16 @@ class OddRoot(Operation):
         """
         return data**self.root
 
-
+@dataclass
 class Subset(Operation):
     """ Returns the input array with only a subset of feature dimensions.
 
     NOTE: this operation is not invertible.
 
-    Args:
+    Attributes:
         include_ids: Which feature ids to select.
     """
-    def __init__(self, include_ids: np.ndarray) -> None:
-        self.include_ids = include_ids
+    include_ids: np.ndarray
 
     def apply(self, data: np.ndarray) -> np.ndarray:
         """ Returns data with a subset of features.
@@ -248,22 +300,36 @@ def sample_discrete_labels(labels_discrete, bin_samples, nsamples=1):
 
     return continuous
 
-
+@dataclass
 class Discretize(Operation):
     """ Discretizes and undiscretizes data.
 
-    Args:
+    Attributes:
         bin_edges: Boundaries for bins, (n_feat, n_bins + 1) float array
-        kwargs: Named arguments to be sent to fit_discretize_data
+        bin_centers: Centers of bins, (n_feat, n_bins) float array -- computed from bin_edges
+        bin_samples: Samples from each bin, (n_samples_per_bin, n_feat, n_bins) float array -- computed from data
+        fit_discretize_data_args: Named arguments to be sent to fit_discretize_data
     """
-    def __init__(self, bin_edges: np.ndarray | None = None, **kwargs):
+
+    bin_edges: np.ndarray | None = None
+    bin_centers: np.ndarray | None = None
+    bin_samples: np.ndarray | None = None
+    fit_discretize_data_args: dict = field(default_factory=dict)
+
+    def __init__(self, bin_edges: np.ndarray | None = None, bin_centers: np.ndarray | None = None, 
+                 bin_samples: np.ndarray | None = None, fit_discretize_data_args: dict | None = None,
+                 **kwargs):
+        # extra kwargs are put in fit_discretize_data_args
         self.bin_edges = bin_edges
-        if bin_edges is None:
-            self.bin_centers = None
+        self.bin_centers = bin_centers
+        self.bin_samples = bin_samples
+        
+        if self.bin_edges is not None and self.bin_centers is None:
+            self.bin_centers = (self.bin_edges[:, 1:] + self.bin_edges[:, :-1]) / 2
+        if fit_discretize_data_args is None:
+            self.fit_discretize_data_args = kwargs
         else:
-            self.bin_centers = (bin_edges[:, 1:] + bin_edges[:, :-1]) / 2
-        self.bin_samples = None
-        self.kwargs = kwargs
+            self.fit_discretize_data_args = fit_discretize_data_args | kwargs
 
     def compute(self, data: np.ndarray):
         """ Computes the bin edges for the data.
@@ -275,7 +341,7 @@ class Discretize(Operation):
         data_flat = data.reshape((-1, n_feat))
         valid = ~np.isnan(data_flat.sum(-1))
         data_valid = data_flat[valid, :]
-        bin_edges, samples, bin_means, bin_medians = fit_discretize_data(data_valid, **self.kwargs)
+        bin_edges, samples, bin_means, bin_medians = fit_discretize_data(data_valid, **self.fit_discretize_data_args)
         self.bin_edges = bin_edges
         # self.bin_centers = (bin_edges[:, 1:] + bin_edges[:, :-1]) / 2
         self.bin_centers = bin_medians
@@ -320,29 +386,28 @@ class Discretize(Operation):
         else:
             return labels_discrete_to_continuous(data.reshape((n_agents, n_frames, n_feat, n_bins)), self.bin_centers)
 
-
+@dataclass
 class Fusion(Operation):
     """ Apply different operations to different parts of the data.
 
-    Args:
+    Atrributes:
         operations: List of operations to be applied
         indices_per_op: list of indices to apply each operation to.
+        dims_per_op: list of output dimensions corresponding to each operation, used for inverting.
     """
-    def __init__(
-            self,
-            operations: list[Operation],
-            indices_per_op: list[np.ndarray],
-    ):
-        assert len(operations) == len(indices_per_op), "List of indices should have same length as list of operations."
+    
+    localattrs = ['dims_per_op']
+    operations: list[Operation]
+    indices_per_op: list[np.ndarray]
+    # This variable will hold the dimensions of the output corresponding to each operation, used for inverting.
+    dims_per_op: list[int] | None = None
 
-        all_indices = np.concatenate(indices_per_op)
+    def __post_init__(self):
+        assert len(self.operations) == len(self.indices_per_op), "List of indices should have same length as list of operations."
+
+        all_indices = np.concatenate(self.indices_per_op)
         assert len(all_indices) == max(all_indices) + 1 and len(all_indices) == len(np.unique(all_indices)), \
             "Indices must cover all feature dimensions and each dimension can only be provided to one operation."
-
-        self.operations = operations
-        self.indices_per_op = indices_per_op
-        # This variable will hold the dimensions of the output corresponding to each operation, used for inverting.
-        self.dims_per_op = None
 
     def apply(self, data: np.ndarray, kwargs_per_op: list[dict] | dict | None = None) -> np.ndarray:
         """ Applies operation to each subset of data, specified by indices per operation, and concatenates the result.
@@ -391,7 +456,7 @@ class Fusion(Operation):
 
         return inverted
 
-
+@dataclass
 class Roll(Operation):
     """ Rolls data by delta time.
 
@@ -399,12 +464,12 @@ class Roll(Operation):
     to time t + dt, then we roll the data forward by dt makes it so that the value at index t represents velocity of
     pose from t - dt to t.
 
-    Args:
+    Attributes::
         dt: How much to roll the data by (e.g. value used to compute the velocity data).
     """
-    def __init__(self, dt: int = 1):
-        self.dt = dt
 
+    dt: int = 1
+    
     def apply(self, data: np.ndarray) -> np.ndarray:
         """ Rolls data forward by dt.
 
@@ -428,16 +493,16 @@ class Roll(Operation):
         return np.roll(data, shift=-self.dt, axis=1)
 
 
+@dataclass
 class LocalVelocity(Operation):
     """ Computes the relative pose movement from t to t + 1.
 
-    Args:
+    Attributes:
         is_angle: Bool vector indicating whether pose index is an angle measurement, used to wrap angles
             into [-pi, pi] range when inverting the operation.
     """
-    def __init__(self, is_angle: np.ndarray = None):
-        self.is_angle = is_angle
-
+    is_angle: np.ndarray | None = None
+    
     def apply(self, pose: np.ndarray, isstart: np.ndarray | None = None) -> np.ndarray:
         """ Compute velocity from pose.
 
@@ -477,14 +542,14 @@ class LocalVelocity(Operation):
         return pose
 
 
+@dataclass
 class GlobalVelocity(Operation):
     """ Computes the global movement of an agent,  dfwd, dside, dtehta, from its (x, y, theta) position.
 
-    Args:
+    Attributes:
         tspred: A list of dt for which global movement (from t to t+dt) will be computed for.
     """
-    def __init__(self, tspred: list[int]):
-        self.tspred = tspred
+    tspred: list[int]
 
     def apply(self, position: np.ndarray, isstart: np.ndarray | None = None) -> np.ndarray:
         """ Compute global movement from position.
@@ -535,14 +600,16 @@ class GlobalVelocity(Operation):
         pos = np.cumsum(d_pos, axis=1)[:, :-1, :]
         return np.concatenate([pos, theta[:, :, None]], axis=-1)
 
-
 class Velocity(Operation):
     """ Combines global and local velocity.
 
-    Args:
+    Attributes:
         featrelative: Bool vector indicating whether pose index is a relative feature.
         featangle: Bool vector indicating whether pose index is an angle feature.
     """
+
+    localattrs = ['global_inds', 'local_inds', 'fusion']
+    
     def __init__(self, featrelative: np.ndarray, featangle: np.ndarray = None):
         # Keep track of global and local indices for the pose features
         self.global_inds = np.where(~featrelative)[0]
@@ -766,17 +833,40 @@ def get_operation(
     return None
 
 
-def get_post_operations(operations: list[Operation], name: str):
-    """ Get a list of operations that come after the operation with the specified name.
+def get_post_operations(operations: list[Operation], name: str | None = None, data: Data | None = None) -> list[Operation] | None:
+    """ Get a list of operations that come after the operation with either:
+    - the given name, if name is not None
+    - operations already applied to data, if name is None and data is not None
 
     Args:
         operations: List of operations to search from.
-        name: Name of operation to find.
+        name: Name of operation to find if non-None. If None, uses data to 
 
     Returns:
-         A list of operations following the specified name.
+        A list of operations following the input prefix.
     """
-    _, idx = get_operation(operations, name, return_idx = True)
+    if name is not None:
+        _, idx = get_operation(operations, name, return_idx = True)
+    elif data is not None:
+        if not isinstance(data, Data):
+            idx = 0
+        else:
+            # check that data.operations is a prefix of operations
+            if len(data.operations) > len(operations):
+                raise ValueError("data.operations is not a prefix of operations")
+            for i in range(len(data.operations)):
+                if isinstance(operations[i], Operation):
+                    match = data.operations[i] == operations[i]
+                elif isinstance(operations[i], dict):
+                    match = (data.operations[i].__class__.__name__ == operations[i]['class']) and \
+                        (data.operations[i].__module__ == operations[i]['module'])
+                else:
+                    raise ValueError("operations must be a list of Operation or dict")
+                if not match:
+                    raise ValueError("data.operations is not a prefix of operations")
+            idx = len(data.operations) - 1
+    else:
+        raise ValueError("Either name or data must be provided")
     if idx is None:
         return None
     return operations[idx + 1:]
@@ -786,6 +876,8 @@ def apply_operations(data: Data, operations: list[Operation]) -> Data:
     """ Apply a list of operations to data.
     """
     for oper in operations:
+        if isinstance(oper, dict):
+            oper = Operation.from_dict(oper)
         data = oper(data)
     return data
 
@@ -826,6 +918,38 @@ def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict[str, Data]) ->
         if opers is None:
             LOG.warning(f"Did not find an operation '{key}', applying all operations")
             opers = datas_ref[key].operations
+        processed_data[key] = apply_operations(datas[key], opers)
+    return processed_data
+
+
+def apply_opers_from_data_params(data_params: list[dict], datas: dict[str, Data], check_match: bool = False) -> dict[str, Data]:
+    """ Applies post processing operations from data_params (e.g. output of mydataset.get_params()['inputs'])
+    to datas, for each key.
+
+    Post-key-operations are all operations after the key of each data, for example for 'velocity' it doesn't
+    apply the operation to compute pose from keypoints, but all operations following that (e.g. zscoring).
+
+    This is useful for building a validation set from a training set, or for applying operations with the right
+    parameters to data during simulation.
+
+    Params:
+        datas_ref: Dictionary of data (e.g. train_dataset.inputs) from which to copy post processing operations.
+        datas: Dictionary of raw data to which post processing operations should be applied to.
+
+    Returns:
+        Post processed datas.
+    """
+    # assert len(datas_ref.keys()) == len(datas.keys()), "The two data collections must have the same keys"
+    processed_data = {}
+    for key in data_params.keys():
+        if key not in datas:
+            if check_match:
+                raise ValueError(f"Expect both data to have all of the same keys, but did not find '{key}' in datas")
+            else:
+                LOG.warning(f"Did not find '{key}' in datas, skipping")
+                continue 
+        # input datacurr may already have some operations applied, so we need to find the last operation that was applied
+        opers = get_post_operations(data_params[key], data=datas[key])
         processed_data[key] = apply_operations(datas[key], opers)
     return processed_data
 
@@ -1008,3 +1132,16 @@ class Dataset(torch.utils.data.Dataset):
         data = {key: np.stack([d[key] for d in data], axis=0) for key in data[0].keys()}
 
         return data
+    
+    def get_params(self) -> dict:
+        """
+        get_params()
+        Returns a dictionary of parameters of the dataset operations. Calls get_params on each operation 
+        of the inputs and labels.
+        """
+        params = {'inputs': {}, 'labels': {}}
+        for key, data in self.inputs.items():
+            params['inputs'][key] = [oper.to_dict() for oper in data.operations]
+        for key, data in self.labels.items():
+            params['labels'][key] = [oper.to_dict() for oper in data.operations]
+        return params

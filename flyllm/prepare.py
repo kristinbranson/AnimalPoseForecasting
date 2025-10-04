@@ -10,9 +10,8 @@ import pickle
 from apf.utils import get_dct_matrix, compute_npad, save_animation
 from apf.data import process_test_data, interval_all, debug_less_data, chunk_data
 from apf.io import read_config, get_modeltype_str, load_and_filter_data, save_model, load_model, parse_modelfile, load_config_from_model_file
-from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames, keypointnames
+from flyllm.config import read_config, keypointnames
 from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx, compute_scale_perfly, compute_pose_distribution_stats
-from flyllm.dataset import FlyTestDataset, FlyMLMDataset
 from flyllm.pose import FlyExample, FlyPoseLabels, FlyObservationInputs
 from flyllm.plotting import (
     initialize_debug_plots, 
@@ -35,6 +34,9 @@ from apf.models import (
     update_loss_nepochs,
     stack_batch_list,
 )
+from apf.dataset import Dataset
+from apf.training import init_optimizer
+from experiments.flyllm import make_dataset
 from flyllm.simulation import animate_predict_open_loop
 from flyllm.prediction import predict_all
 from IPython.display import HTML
@@ -62,13 +64,8 @@ def init_config(configfile=None,config=None,mode='train',loadmodelfile=None,over
     """
     
     if config is None:
-        assert configfile is not None, "No configuration file provided"
-        
-        config = read_config(configfile,
-                            default_configfile=DEFAULTCONFIGFILE,
-                            get_sensory_feature_idx=get_sensory_feature_idx,
-                            featglobal=featglobal,
-                            posenames=posenames)
+        assert configfile is not None, "No configuration file provided"        
+        config = read_config(configfile) # flyllm.config.read_config
         
     if overrideconfig is not None:
         for k in overrideconfig:
@@ -273,8 +270,7 @@ def init_process_data(config=None,data=None,scale_perfly=None,
     
     return res
 
-def init_datasets(config=None,X=None,valX=None,traindataprocess='chunk',
-                  valdataprocess='test',dct_m=None,idct_m=None,res={}):
+def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idct_m=None,debug_uselessdata=False,res={}):
     """
     res = init_datasets(config=None,X=None,valX=None,traindataprocess='chunk',
                         valdataprocess='test',dct_m=None,idct_m=None,res={})
@@ -304,35 +300,8 @@ def init_datasets(config=None,X=None,valX=None,traindataprocess='chunk',
     """
     
     assert config is not None, "No configuration provided"
-    
-    dataset_params = {
-        'max_mask_length': config['max_mask_length'],
-        'pmask': config['pmask'],
-        'masktype': config['masktype'],
-        'simplify_out': config['simplify_out'],
-        'pdropout_past': config['pdropout_past'],
-        'input_labels': config['input_labels'],
-        'dozscore': True,
-        'discreteidx': config['discreteidx'],
-        'discretize_nbins': config['discretize_nbins'],
-        'discretize_epsilon': config['discretize_epsilon'],
-        'flatten_labels': config['flatten_labels'],
-        'flatten_obs_idx': config['flatten_obs_idx'],
-        'flatten_do_separate_inputs': config['flatten_do_separate_inputs'],
-        'p_add_input_noise': config['p_add_input_noise'],
-        'dct_ms': (dct_m,idct_m),
-        'tspred_global': config['tspred_global'],
-        'discrete_tspred': config['discrete_tspred'],
-        'compute_pose_vel': config['compute_pose_vel'],
-        
-    }
 
-    if 'dataset_params' in config:
-        # zscore and discretize parameters
-        for k in config['dataset_params']:
-            dataset_params[k] = config['dataset_params'][k]
-
-    res['dataset_params'] = dataset_params
+    res['dataset_params'] = config.get('dataset_params',{})
     res['train_dataset'] = None
     res['train_dataloader'] = None
     res['val_dataset'] = None
@@ -342,70 +311,31 @@ def init_datasets(config=None,X=None,valX=None,traindataprocess='chunk',
     res['train_sz'] = None
     res['val_sz'] = None
 
-    if X is not None:
-        LOG.info('Creating training data set...')
-        if traindataprocess == 'chunk':
-            train_dataset = FlyMLMDataset(X,**dataset_params)
-        elif traindataprocess == 'test':
-            train_dataset = FlyTestDataset(X,config['contextl'],**dataset_params)
-        else:
-            raise ValueError(f'traindataprocess {traindataprocess} not recognized')
-        LOG.info(f'Train dataset size: {len(train_dataset)}')
+    if needtraindata:
+        
+        # create dataset
+        res['train_data'] = {}
+        res['train_dataset'], res['train_data']['flyids'], res['train_data']['track'], res['train_data']['pose'], \
+            res['train_data']['velocity'], res['train_data']['sensory'], res['config']['dataset_params'] = \
+            make_dataset(config,'intrainfile',dataset_params=res['dataset_params'],return_all=True,debug=debug_uselessdata)
 
-        train_dataloader = torch.utils.data.DataLoader(train_dataset,
-                                                        batch_size=config['batch_size'],
-                                                        shuffle=True,
-                                                        pin_memory=True,
-                                                        )
-        ntrain_batches = len(train_dataloader)
-        LOG.info(f'Number of training batches: {ntrain_batches}')
-        res['train_dataset'] = train_dataset
-        example = next(iter(train_dataloader))
-        LOG.info(f'val batch keys: {example.keys()}')
-        sz = example['input'].shape
-        LOG.info(f'val batch input shape = {sz}')
+        # create dataloader
+        res['train_dataloader'] = torch.utils.data.DataLoader(res['train_dataset'], batch_size=config['batch_size'], shuffle=True, pin_memory=True)
         
-        if ('zscore_params' not in dataset_params) or (dataset_params['zscore_params'] is None):
-            dataset_params['zscore_params'] = train_dataset.get_zscore_params()
-        if ('discretize_params' not in dataset_params) or (dataset_params['discretize_params'] is None):
-            dataset_params['discretize_params'] = train_dataset.get_discretize_params()
-            
+    if needvaldata:
         
-        res['train_dataset'] = train_dataset
-        res['train_dataloader'] = train_dataloader
-        res['ntrain_batches'] = ntrain_batches
-        res['train_sz'] = sz
-
-    if valX is not None:
-        LOG.info('Creating validation data set...')
-        if valdataprocess == 'chunk':
-            val_dataset = FlyMLMDataset(valX,**dataset_params)
-        elif valdataprocess == 'test':
-            val_dataset = FlyTestDataset(valX,config['contextl'],**dataset_params)
-        else:
-            raise ValueError(f'valdataprocess {valdataprocess} not recognized')
-        LOG.info(f'Validation dataset size: {len(val_dataset)}')
-        
-        val_dataloader = torch.utils.data.DataLoader(val_dataset,
-                                                    batch_size=config['test_batch_size'],
-                                                    shuffle=False,
-                                                    pin_memory=True,
-                                                    )
-        nval_batches = len(val_dataloader)
-        LOG.info(f'Number of validation batches: {nval_batches}')
-        example = next(iter(val_dataloader))
-        LOG.info(f'val batch keys: {example.keys()}')
-        sz = example['input'].shape
-        LOG.info(f'val batch input shape = {sz}')
-        res['val_dataset'] = val_dataset
-        res['val_dataloader'] = val_dataloader
-        res['nval_batches'] = nval_batches
-        res['val_sz'] = sz
+        # create dataset
+        res['val_data'] = {}
+        res['val_dataset'], res['val_data']['flyids'], res['val_data']['track'], res['val_data']['pose'], \
+            res['val_data']['velocity'], res['val_data']['sensory'], res['config']['dataset_params']= \
+            make_dataset(config,'invalfile',dataset_params=res['dataset_params'],return_all=True,debug=debug_uselessdata)
+        res['val_dataloader'] = torch.utils.data.DataLoader(res['val_dataset'], batch_size=config['batch_size'], shuffle=False, pin_memory=True)
         
     return res
 
 def init_model(config=None,somedataset=None,somedataloader=None,device=None,loadmodelfile=None,
-               restartmodelfile=None,mode='train',ntrain_batches=None,res={}):
+               restartmodelfile=None,mode='train',res={}, optimizer=None, lr_scheduler=None,
+               optimizer_args={}):
     """
     res = init_model(config=None,somedataset=None,somedataloader=None,device=None,loadmodelfile=None,
                      restartmodelfile=None,mode='train',ntrain_batches=None,res={})
@@ -418,22 +348,18 @@ def init_model(config=None,somedataset=None,somedataloader=None,device=None,load
     loadmodelfile: str, path to model file to load
     restartmodelfile: str, path to model file to restart training from
     mode: str, one of ['train','test'], whether training or testing
-    ntrain_batches: int, number of training batches
     res: dict, dictionary to store results with the following keys:
     Output:
     res: dict, updated dictionary with the following keys:
         'model': torch Module, model
         'criterion': torch Module, loss function
-        'num_training_steps': if mode in ['train',], int, number of training steps, otherwise None
-        'optimizer': if mode in ['train',], torch Optimizer, optimizer, otherwise None
-        'lr_scheduler': if mode in ['train',], torch Scheduler, learning rate scheduler, otherwise None
+        'optimizer': if mode in ['train',] and restartmodelfile is not None, torch Optimizer, optimizer, otherwise None
+        'lr_scheduler': if mode in ['train',] and restartmodelfile is not None, torch Scheduler, learning rate scheduler, otherwise None
         'opt_model': if mode in ['test',], torch Module, compiled model for testing, otherwise None
         'modeltype_str': str, model type string, used in creating unique names for various files
         'model_savetime': str, time the model was saved
         'loss_epoch': dict, loss history
-        'epoch': int, epoch number
-        'train_src_mask': torch Tensor, attention mask
-        'is_causal': bool, whether the model is causal
+        'epoch': int, current epoch number if mode in ['train',], otherwise None. only non-zeros if restarting from restartmodelfile
     """
     
     assert config is not None, "No configuration provided"
@@ -444,20 +370,6 @@ def init_model(config=None,somedataset=None,somedataloader=None,device=None,load
     # create the model
     model, criterion = initialize_model(config, somedataset, device)
     res['criterion'] = criterion
-
-    if mode in ['train',]:
-        assert ntrain_batches is not None, "No number of training batches provided"
-        # optimizer
-        num_training_steps = config['num_train_epochs'] * ntrain_batches
-        optimizer = torch.optim.AdamW(model.parameters(), **config['optimizer_args']) 
-        lr_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1., end_factor=0., total_iters=num_training_steps)
-        res['num_training_steps'] = num_training_steps
-        res['optimizer'] = optimizer
-        res['lr_scheduler'] = lr_scheduler
-    else:
-        res['num_training_steps'] = None
-        res['optimizer'] = None
-        res['lr_scheduler'] = None
 
     # load the model
     if loadmodelfile is not None:
@@ -473,6 +385,9 @@ def init_model(config=None,somedataset=None,somedataloader=None,device=None,load
             modeltype_str = config['model_nickname']
         if mode in ['train',]:
             if restartmodelfile is not None:
+                num_training_steps = config['num_train_epochs'] * len(somedataloader)
+                if optimizer is None or lr_scheduler is None:
+                    optimizer, lr_scheduler = init_optimizer(num_training_steps, model, optimizer_args)
                 loss_epoch = load_model(restartmodelfile, model, device, lr_optimizer=optimizer, scheduler=lr_scheduler)
                 update_loss_nepochs(loss_epoch, config['num_train_epochs'])
                 if np.any(np.isnan(loss_epoch['train'].cpu().numpy())):
@@ -491,26 +406,14 @@ def init_model(config=None,somedataset=None,somedataloader=None,device=None,load
             savetime = None
 
     res['model'] = model
+    res['criterion'] = criterion
+    res['optimizer'] = optimizer
+    res['lr_scheduler'] = lr_scheduler
     res['modeltype_str'] = modeltype_str
     res['model_savetime'] = savetime
     res['loss_epoch'] = loss_epoch
     res['epoch'] = epoch
         
-    # create attention mask
-    example = next(iter(somedataloader))
-    contextl = example['input'].shape[1]
-    if config['modeltype'] == 'mlm':
-        train_src_mask = generate_square_full_mask(contextl).to(device)
-        is_causal = False
-    elif config['modeltype'] == 'clm':
-        train_src_mask = torch.nn.Transformer.generate_square_subsequent_mask(contextl, device=device)
-        is_causal = True
-        #train_src_mask = generate_square_subsequent_mask(contextl).to(device)
-    else:
-        raise ValueError(f'Unknown modeltype: {config["modeltype"]}')
-    res['train_src_mask'] = train_src_mask
-    res['is_causal'] = is_causal
-
     if mode in ['test',]:
         res['opt_model'] = torch.compile(model)
     else:
@@ -518,11 +421,13 @@ def init_model(config=None,somedataset=None,somedataloader=None,device=None,load
 
     return res
 
-def init_flyllm(configfile=None,config=None,mode='test',loadmodelfile=None,seedrandom=True,
-                quickdebugdatafile=None,needtraindata=None,needvaldata=None,traindataprocess=None,
-                valdataprocess=None,restartmodelfile=None,res={},
-                doinitconfig=True,doinitstate=True,doinitrawdata=True,doinitprocessdata=True,
-                doinitdatasets=True,doinitmodel=True,overrideconfig={}):
+def init_flyllm(configfile=None,config=None,
+                mode='test',loadmodelfile=None,seedrandom=True,
+                needtraindata=None,needvaldata=None,debug_uselessdata=False,
+                restartmodelfile=None,
+                doinitconfig=True,doinitstate=True,
+                doinitdatasets=True,doinitmodel=True,overrideconfig={},
+                res={}):
     """
     res = init_flyllm(configfile=None,config=None,mode='test',loadmodelfile=None,seedrandom=True,
                       quickdebugdatafile=None,needtraindata=None,needvaldata=None,traindataprocess=None,
@@ -546,6 +451,7 @@ def init_flyllm(configfile=None,config=None,mode='test',loadmodelfile=None,seedr
     and debugging. If None, load data from config['intrainfile'] and config['invalfile']. Default = None
     needtraindata: bool, whether to load training data. If None, will be set to True if mode == 'train'. Default = None.
     needvaldata: bool, whether to load validation data. If None, will be set to True if mode in ['train','test']. Default = None.
+    debug_uselessdata: bool, whether to use only a small subset of the data for debugging. Default = False.
     traindataprocess: str, one of ['chunk','test'], how to process training data. If None, will be set to 'chunk' if 
     mode in ['train','test']. Default = None.
     valdataprocess: str, one of ['chunk','test'], how to process validation data. If None, will be set to 'chunk' if
@@ -605,100 +511,45 @@ def init_flyllm(configfile=None,config=None,mode='test',loadmodelfile=None,seedr
         'train_src_mask': torch Tensor, attention mask (init_model)
         'is_causal': bool, whether the model is causal (init_model)
     """
-    
-    ## set defaults in some kind of reasonable way
-    
+
+    ## set defaults in some kind of reasonable way    
     if (needtraindata is None):
         needtraindata = mode in ['train',]
     if (needvaldata is None):
         needvaldata = mode in ['train','test']
-            
-    if needtraindata and (traindataprocess is None):
-        if mode in ['train','test']:
-            traindataprocess = 'chunk'
-        else:
-            raise ValueError(f'traindataprocess not specified')
         
-    if needvaldata and (valdataprocess is None):
-        if mode in ['train',]:
-            valdataprocess = 'chunk'
-        elif mode in ['test',]:
-            valdataprocess = 'test'
-        else:
-            raise ValueError(f'valdataprocess not specified')
-            
-    ## load config
+    ## load config from configfile and/or loadmodelfile
+    # if loading from loadmodelfile, also sets dataset_params
+    # note that dataset_params are NOT loaded from restartmodelfile
     if doinitconfig:
-        # adds 'config' to res
-        res = init_config(configfile=configfile,config=config,mode=mode,loadmodelfile=loadmodelfile,
-                          overrideconfig=overrideconfig,res=res)
+        try:
+            init_config(configfile=configfile,config=config,mode=mode,loadmodelfile=loadmodelfile,overrideconfig=overrideconfig,res=res)
+        except Exception as e:
+            LOG.error(f'Error in init_config: {e}\nAborting init_flyllm')
+            return res
 
     ## setup device and random
     if doinitstate:
-        # adds 'device' to res
-        res = init_state(config=res['config'],seedrandom=seedrandom,res=res)
-                
-    ## load raw data
-    if doinitrawdata:
-        # adds 'data', 'scale_perfly', 'valdata', 'val_scale_perfly' to res
         try:
-            res = init_raw_data(config=res['config'],quickdebugdatafile=quickdebugdatafile,needtraindata=needtraindata,
-                                needvaldata=needvaldata,res=res)
+            # adds 'device' to res
+            res = init_state(config=res['config'],seedrandom=seedrandom,res=res)
         except Exception as e:
-            LOG.error(f'Error in init_raw_data: {e}\nAborting init_flyllm')
+            LOG.error(f'Error in init_state: {e}\nAborting init_flyllm')
             return res
-            
-
-    ## compute features
-    if doinitprocessdata:
-        # adds 'npad', 'compute_feature_params', 'reparamfun', 'val_reparamfun', 'X', 'valX', 'train_chunk_data_params', 
-        # 'val_chunk_data_params', 'dct_m', and 'idct_m' to res
-        try:
-            res = init_process_data(config=res['config'],data=res['data'],scale_perfly=res['scale_perfly'],
-                                    valdata=res['valdata'],val_scale_perfly=res['val_scale_perfly'],
-                                    traindataprocess=traindataprocess,valdataprocess=valdataprocess,res=res)
-        except Exception as e:
-            LOG.error(f'Error in init_process_data: {e}\nAborting init_flyllm')
-            return res
-
-    ## create datasets
+        
+    print("REMOVE THIS JUST FOR DEBUGGING")
+    res['config']['dataset_params'] = {}
+        
+    ## create training data sets
     if doinitdatasets:
-        # adds 'dataset_params', 'train_dataset', 'train_dataloader', 'val_dataset', 'val_dataloader', 'ntrain_batches',
-        # 'nval_batches', 'train_sz', and 'val_sz' to res
         try:
-            res = init_datasets(config=res['config'],X=res['X'],valX=res['valX'],traindataprocess=traindataprocess,
-                                valdataprocess=valdataprocess,dct_m=res['dct_m'],idct_m=res['idct_m'],res=res)
+            init_datasets(config=res['config'],needtraindata=needtraindata,needvaldata=needvaldata,debug_uselessdata=debug_uselessdata,res=res)
         except Exception as e:
             LOG.error(f'Error in init_datasets: {e}\nAborting init_flyllm')
             return res
         
-    ## print data/dataset stats
-    
-    try:
-        if needvaldata:
-            ntimepoints_valdata = np.count_nonzero(res['valdata']['isdata'])
-            LOG.info(f'ntimepoints_valdata = {ntimepoints_valdata}')
-            ntimepoints_valX = np.sum([x['input'].shape[0] for x in res['valX']])
-            LOG.info(f'ntimepoints_valX = {ntimepoints_valX}')
-            nexamples_val = len(res['val_dataset'])
-            LOG.info(f'nexamples_val = {nexamples_val}')
-            LOG.info(f'nbatches_val = {res["nval_batches"]}, batch size = {res["config"]["test_batch_size"]}, total examples = {res["nval_batches"]*res["config"]["test_batch_size"]}')
-
-        if needtraindata:
-            ntimepoints_data = np.count_nonzero(res['data']['isdata'])
-            LOG.info(f'ntimepoints_data = {ntimepoints_data}')
-            ntimepoints_X = np.sum([x['input'].shape[0] for x in res['X']])
-            LOG.info(f'ntimepoints_X = {ntimepoints_X}')
-            nexamples_train = len(res['train_dataset'])
-            LOG.info(f'nexamples_train = {nexamples_train}')
-            LOG.info(f'nbatches_train = {res["ntrain_batches"]}, batch size = {res["config"]["batch_size"]}, total examples = {res["ntrain_batches"]*res["config"]["batch_size"]}')
-    except Exception as e:
-        LOG.error(f'Error in printing data/dataset stats: {e}\n aborting init_flyllm')
-        return res
-
     if doinitmodel:
         try:
-            
             # use training or test dataset to initialize, depending on mode
             args = {}
             if mode in ['train',]:

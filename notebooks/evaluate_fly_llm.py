@@ -39,8 +39,9 @@ from flyllm.config import read_config
 from flyllm.features import featglobal, get_sensory_feature_idx
 from flyllm.simulation import animate_pose
 import time
+import os
 
-from experiments.flyllm import make_dataset
+from flyllm.prepare import init_flyllm
 
 import logging
 logging.basicConfig(level=logging.INFO)
@@ -80,10 +81,18 @@ if not os.path.exists(outfigdir):
 
 flyllmdir = flyllm.__path__[0]
 configfile = os.path.join(flyllmdir,configfile)
-config = read_config(configfile)
 
-train_dataset = make_dataset(config, 'intrainfile', debug=debug_uselessdata)
-val_dataset = make_dataset(config, 'invalfile', ref_dataset=train_dataset, debug=debug_uselessdata)
+needtraindata = True
+needvaldata = True
+
+res = init_flyllm(configfile=configfile,mode='test',loadmodelfile=loadmodelfile,
+                needtraindata=needtraindata,needvaldata=needvaldata,
+                debug_uselessdata=debug_uselessdata)
+
+
+# %%
+# bring out things that are init_flyllm
+
 
 # %%
 # configuration parameters for this model

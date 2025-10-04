@@ -5,11 +5,12 @@
 
 import numpy as np
 import logging
+from dataclasses import dataclass, field
 
 from apf.io import load_and_filter_data
 from apf.dataset import (
     Zscore, Discretize, Data, Dataset, Operation, Fusion, Subset, Roll, Identity,
-    Velocity, GlobalVelocity, apply_opers_from_data
+    Velocity, GlobalVelocity, apply_opers_from_data, apply_opers_from_data_params
 )
 from apf.data import debug_less_data
 
@@ -20,16 +21,18 @@ from flyllm.features import (
 
 LOG = logging.getLogger(__name__)
 
-
+@dataclass
 class Sensory(Operation):
     """ Computes sensory features for the flies.
 
     NOTE: this operation is not invertible.
+    Attributes: 
+        idxinfo: Keeps track of which dimensions of the sensory output correspond to what (e.g. wall, otherflies, ...)        
     """
-    def __init__(self):
-        # Keeps track of which dimensions of the sensory output correspond to what (e.g. wall, otherflies, ...)
-        self.idxinfo = None
-
+    
+    localattrs = ['idxinfo']
+    idxinfo: dict | None = None
+    
     def apply(self, Xkp: np.ndarray) -> np.ndarray:
         """ Computes sensory features from keypoints.
 
@@ -51,12 +54,14 @@ class Sensory(Operation):
         return None
 
 
+@dataclass
 class Pose(Operation):
     """ Computes fly pose from keypoints.
+    Attributes:
+        scale_perfly: Scale of each unique individual in the data. (n_individuals, n_scales) float array
     """
-    def __init__(self):
-        # Keep track of scale_perfly, needed for inverting operation.
-        self.scale_perfly = None
+    localattrs = ['scale_perfly']
+    scale_perfly: np.ndarray | None = None
 
     def apply(self, Xkp: np.ndarray, scale_perfly: np.ndarray = None, flyid: np.ndarray = None):
         """ Computes pose features from keypoints.
@@ -174,17 +179,32 @@ def make_dataset(
     tspred_global = config['tspred_global']
     aux_tspred = [dt for dt in tspred_global if dt > 1]
     if len(aux_tspred) > 0:
+        LOG.warning('!!!Auxiliary prediction is currently commented out!!!')
         auxiliary = GlobalVelocity(tspred=aux_tspred)(pose, isstart=isstart)
     else:
         auxiliary = None
 
     # Assemble the dataset
-    if ref_dataset is None:
+    if ref_dataset is not None:
+        dataset = Dataset(
+            inputs=apply_opers_from_data(ref_dataset.inputs, {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
+            labels=apply_opers_from_data(ref_dataset.labels, {'velocity': velocity}), #, 'auxiliary': auxiliary}),
+            context_length=config['contextl'],
+            isstart=isstart)
+    elif 'dataset_params' in config and config['dataset_params'] is not None and \
+        ('inputs' in config['dataset_params']) and ('labels' in config['dataset_params']):
+        dataset = Dataset(
+            inputs=apply_opers_from_data_params(config['dataset_params']['inputs'], {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
+            labels=apply_opers_from_data_params(config['dataset_params']['labels'], {'velocity': velocity}), #, 'auxiliary': auxiliary}),
+            context_length=config['contextl'],
+            isstart=isstart)
+    else:
         # velocity = OddRoot(5)(velocity)
 
         discreteidx = config['discreteidx']
         continuousidx = np.setdiff1d(np.arange(velocity.array.shape[-1]), discreteidx)
         indices_per_op = [discreteidx, continuousidx]
+    
 
         # Need to zscore before binning, otherwise bin_epsilon values need to be divided by zscore stds
         zscored_velocity = Zscore()(velocity)
@@ -205,14 +225,8 @@ def make_dataset(
             context_length=config['contextl'],
             isstart=isstart,
         )
-    else:
-        dataset = Dataset(
-            inputs=apply_opers_from_data(ref_dataset.inputs, {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
-            labels=apply_opers_from_data(ref_dataset.labels, {'velocity': velocity}), #, 'auxiliary': auxiliary}),
-            context_length=config['contextl'],
-            isstart=isstart,
-        )
+    dataset_params = dataset.get_params()
     if return_all:
-        return dataset, flyids, track, pose, velocity, sensory
+        return dataset, flyids, track, pose, velocity, sensory, dataset_params
     else:
         return dataset

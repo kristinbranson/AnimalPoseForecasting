@@ -15,6 +15,22 @@ from apf.models import (
 LOG = logging.getLogger(__name__)
 
 
+def init_optimizer(num_training_steps: int, model: TransformerModel, optimizer_args: dict = {}) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR]:
+    """ Initializes AdamW optimizer and linear learning rate scheduler.
+
+    Args:
+        num_training_steps: Total number of training steps that will be taken.
+        optimizer_args: Named arguments used for the AdamW optimizer.
+    Returns:
+        optimizer: AdamW optimizer
+        lr_scheduler: Linear learning rate scheduler
+    """
+    # Optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), **optimizer_args)
+    lr_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1., end_factor=0.,
+                                                    total_iters=num_training_steps)
+    return optimizer, lr_scheduler
+
 def train(
         train_dataloader: DataLoader,
         val_dataloader: DataLoader,
@@ -46,9 +62,7 @@ def train(
 
     # Optimizer
     num_training_steps = num_train_epochs * len(train_dataloader)
-    optimizer = torch.optim.AdamW(model.parameters(), **optimizer_args)
-    lr_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1., end_factor=0.,
-                                                     total_iters=num_training_steps)
+    optimizer, lr_scheduler = init_optimizer(num_training_steps, model, optimizer_args)
 
     # Initialize structure to keep track of loss
     if loss_epoch is None:
