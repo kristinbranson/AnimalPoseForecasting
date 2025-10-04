@@ -429,35 +429,40 @@ def init_flyllm(configfile=None,config=None,
                 doinitdatasets=True,doinitmodel=True,overrideconfig={},
                 res={}):
     """
+    Standard use:
+    res = init_flyllm(configfile,mode)
+    Full parameters with defaults:
     res = init_flyllm(configfile=None,config=None,mode='test',loadmodelfile=None,seedrandom=True,
-                      quickdebugdatafile=None,needtraindata=None,needvaldata=None,traindataprocess=None,
-                      valdataprocess=None,restartmodelfile=None,res={},
-                      doinitconfig=True,doinitstate=True,doinitrawdata=True,doinitprocessdata=True,
-                      doinitdatasets=True,doinitmodel=True)
+                      needtraindata=None,needvaldata=None,debug_uselessdata=False,
+                      doinitconfig=True,doinitstate=True,
+                      doinitdatasets=True,doinitmodel=True,
+                      overrideconfig={},res={})
     Perform all initialization steps for flyllm data. 
     Calls init_config to load the configuration.
     Calls init_state to set the random seed and device.
-    Calls init_raw_data to load the raw data.
-    Calls init_process_data to compute features from the raw data.
-    Calls init_datasets to create the training and validation datasets and dataloaders.
-    Calls init_model to initialize the model, loss function, optimizer, and scheduler.
+    Calls init_datasets to load the data, compute features, and create the training and validation datasets and dataloaders.
+    Calls init_model to initialize the model and loss function
+
     Inputs:
-    configfile: str, path to configuration file from which to load configuration if config is None
-    config: dict, configuration dictionary, default = None
-    mode: str, one of ['train','test'], whether training or testing
-    loadmodelfile: str, path to model file to load. Only used if mode == 'test'. Default = None.
+    configfile: str, path to configuration file from which to load configuration, used if config is None
+    mode: str, one of ['train','test'], whether training or testing, default = 'test'
+
+    More inputs:
+    debug_uselessdata: bool, whether to use only a small subset of the data for debugging. Default = False.
+    restartmodelfile: str, path to model file to restart training from. Default = None. Only used if mode == 'train'.
+    config: dict, configuration dictionary, default = None. If not None, use this instead of loading from configfile
+    loadmodelfile: str, path to model file to load. Only used if mode == 'test'. Default = None. If None and mode == 'test', will be set from config['loadmodelfile']
     seedrandom: bool, whether to seed the random number generators. Default = True.
-    quickdebugdatafile: str, path to small data file with data already filtered, used for speeding up loading
-    and debugging. If None, load data from config['intrainfile'] and config['invalfile']. Default = None
     needtraindata: bool, whether to load training data. If None, will be set to True if mode == 'train'. Default = None.
     needvaldata: bool, whether to load validation data. If None, will be set to True if mode in ['train','test']. Default = None.
-    debug_uselessdata: bool, whether to use only a small subset of the data for debugging. Default = False.
     traindataprocess: str, one of ['chunk','test'], how to process training data. If None, will be set to 'chunk' if 
     mode in ['train','test']. Default = None.
     valdataprocess: str, one of ['chunk','test'], how to process validation data. If None, will be set to 'chunk' if
     mode == 'train', and 'test' if mode == 'test'. Default = None.
-    restartmodelfile: str, path to model file to restart training from. Default = None. Only used if mode == 'train'.
-    res: dict, dictionary to store results. Default = {}.
+    overrideconfig: dict, dictionary of configuration parameters to override those in configfile or loadmodelfile. Default = {}
+    res: dict, dictionary to store results. Default = {}. Provide this if you are skipping steps and want to provide 
+    results from previous steps.
+    
     Can skip any of these steps. If you skip them, their results should already be in res. 
     doinitconfig: bool, whether to call init_config. Default = True. 
     doinitstate: bool, whether to call init_state. Default = True.
@@ -519,7 +524,8 @@ def init_flyllm(configfile=None,config=None,
         needvaldata = mode in ['train','test']
         
     ## load config from configfile and/or loadmodelfile
-    # if loading from loadmodelfile, also sets dataset_params
+    # sets res['config']
+    # if loading from loadmodelfile, also sets res['config']['dataset_params']
     # note that dataset_params are NOT loaded from restartmodelfile
     if doinitconfig:
         try:
@@ -536,9 +542,6 @@ def init_flyllm(configfile=None,config=None,
         except Exception as e:
             LOG.error(f'Error in init_state: {e}\nAborting init_flyllm')
             return res
-        
-    print("REMOVE THIS JUST FOR DEBUGGING")
-    res['config']['dataset_params'] = {}
         
     ## create training data sets
     if doinitdatasets:
