@@ -10,8 +10,8 @@ assert os.path.exists(DEFAULTCONFIGFILE), f"{DEFAULTCONFIGFILE} does not exist."
 
 # Names of features
 keypointnames = [
-    'wing_right',
     'wing_left',
+    'wing_right',
     'antennae_midpoint',
     'right_eye',
     'left_eye',
@@ -29,6 +29,8 @@ keypointnames = [
     'left_back_leg_tip',
     'left_middle_leg_tip',
     'left_front_leg_tip',
+    # 'right_outer_wing',
+    # 'left_outer_wing'
 ]
 
 posenames = [

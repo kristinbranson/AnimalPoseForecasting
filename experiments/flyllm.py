@@ -101,7 +101,7 @@ def load_data(
         debug: Whether to use less data for debugging
 
     Returns:
-        X: (2, n_keypoints, n_frames, n_agents) float array
+        X: (n_keypoints, 2, n_frames, n_agents) float array
         flyids: Identity of fly individuals (n_frames, n_agents) int array
         isstart: indicates whether a new track starts at a give frame for each fly, (n_frames, n_agents) bool array
         isdata: indicates whether data should be used, (n_frames, n_agents) bool array
@@ -117,7 +117,7 @@ def load_data(
     )
 
     if debug:
-        debug_less_data(data, n_frames_per_video=45000, max_n_videos=2)
+        debug_less_data(data, n_frames_per_video=10000, max_n_videos=5)
 
     # Remove all NaN agents (sometimes the last one is a dummy)
     Xkp = data['X']
@@ -127,6 +127,11 @@ def load_data(
     isstart = data['isstart'][..., valid]
     isdata = data['isdata'][..., valid]
 
+    n_kpts = len(keypointnames)
+    if n_kpts < Xkp.shape[0]:
+        LOG.warning(f"Removing last {Xkp.shape[0] - n_kpts} keypoints from the data")
+        Xkp = Xkp[:n_kpts]
+
     return Xkp, flyids, isstart, isdata, scale_perfly
 
 
@@ -135,7 +140,7 @@ def make_dataset(
         filename: str,
         ref_dataset: Dataset | None = None,
         return_all: bool = False,
-        debug: bool = True
+        debug: bool = True,
 ) -> Dataset | tuple[Dataset, np.ndarray, Data, Data, Data, Data]:
     """ Creates a dataset from config, for a given file name and optionally using a reference dataset.
 
