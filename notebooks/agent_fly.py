@@ -16,7 +16,7 @@
 # %load_ext autoreload
 # %autoreload 2
     
-import numpy as np
+import os
 
 # Only set non-interactive backend if not in Jupyter
 import matplotlib
@@ -42,14 +42,13 @@ from apf.models import initialize_model
 from flyllm.config import DEFAULTCONFIGFILE, posenames
 from flyllm.features import featglobal, get_sensory_feature_idx
 from flyllm.simulation import animate_pose
+from flyllm.plotting import plot_arena
 import time
 
 from experiments.flyllm import make_dataset
 # -
 
-timestamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
-
-configfile = "/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241125.json"
+configfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/config_fly_llm_predvel_20251007.json"
 config = read_config(
     configfile,
     default_configfile=DEFAULTCONFIGFILE,
@@ -58,12 +57,7 @@ config = read_config(
     get_sensory_feature_idx=get_sensory_feature_idx,
 )
 
-# Switch to the latest data (TODO: make a new config file for this)
-config['intrainfilestr'] = config['intrainfilestr'].replace('.npz', '_v2.npz')
-config['invalfilestr'] = config['invalfilestr'].replace('.npz', '_v2.npz')
-config['intrainfile'] = config['intrainfile'].replace('.npz', '_v2.npz')
-config['invalfile'] = config['invalfile'].replace('.npz', '_v2.npz')
-
+# Load datasets
 train_dataset, flyids, track, pose, velocity, sensory = make_dataset(config, 'intrainfile', return_all=True, debug=False)
 
 val_dataset = make_dataset(config, 'invalfile', train_dataset, debug=False)
@@ -76,16 +70,14 @@ val_dataloader = DataLoader(val_dataset, batch_size=config['batch_size'], shuffl
 device = torch.device(config['device'])
 model, criterion = initialize_model(config, train_dataset, device)
 
-# +
 # Train the model
 train_args = function_args_from_config(config, train)
-train_args['num_train_epochs'] = 200
+train_args['num_train_epochs'] = 5 #00
+train_args['save_epoch'] = 2
 init_loss_epoch = {}
+train_args
 
-model_file = f'agentfly_model_{timestamp}.pth'
-
-model, best_model, loss_epoch = train(train_dataloader, val_dataloader, model, loss_epoch=init_loss_epoch,
-                                      save_path=model_file, **train_args)
+model, best_model, loss_epoch, model_path = train(train_dataloader, val_dataloader, model, loss_epoch=init_loss_epoch, **train_args)
 
 # +
 # OR
@@ -119,20 +111,10 @@ plt.plot(idx, loss_epoch['val_discrete'][idx], 'go')
 plt.legend()
 plt.title('Discrete loss')
 plt.show()
-
-
 # -
 
-def plot_arena():
-    ARENA_RADIUS_MM = 26.689
-    n_pts = 1000
-    theta = np.arange(0, np.pi*2, np.pi*2 / n_pts)
-    x = np.cos(theta) * ARENA_RADIUS_MM
-    y = np.sin(theta) * ARENA_RADIUS_MM
-    plt.plot(x, y, '-', color=[.8, .8, .8])
-
-
 t0 = time.time()
+# Look at train_dataset.sessions to select valid fly_ids and frames
 agent_ids = [1, 2, 5, 6, 9]
 start_frame = 117220
 gt_track, pred_track = simulate(
@@ -169,7 +151,16 @@ for agent_id in agent_ids:
 plt.show()
 # -
 
-savevidfile = f"animation_{timestamp}.gif"
+savedir = "flyllm_animations"
+if not os.path.exists(savedir):
+    os.makedirs(savedir)
+if model_path is not None:
+    modelname = os.path.split(model_path)[-1].replace('.pth', '')
+    savevidfile = os.path.join(savedir, f"animation_{modelname}.gif")
+else:
+    timestamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
+    savevidfile = os.path.join(savedir, f"animation_{timestamp}.gif")
+
 ani = animate_pose(
     {'Pred': pred_track.T.copy(), 'True': gt_track.T.copy()}, 
     focusflies=agent_ids, 

@@ -4,6 +4,8 @@ from torch.utils.data import DataLoader
 import tqdm
 import copy
 import logging
+import os
+import time
 
 from apf.models import (
     sanity_check_temporal_dep,
@@ -23,8 +25,9 @@ def train(
         max_grad_norm: float,
         optimizer_args: dict,
         loss_epoch: dict = None,
-        save_path: str = None,
-        save_iter: int = 10,
+        savedir: str = None,
+        save_epoch: int = 10,
+        model_nickname: str = "model",
 ) -> tuple[TransformerModel, TransformerModel, dict]:
     """ Trains a model on train_dataloader, using val_dataloader to select the best_model.
 
@@ -38,14 +41,23 @@ def train(
          optimizer_args: Named arguments used for the AdamW optimizer.
          loss_epoch: Keeps track of training and validation losses. If provided, morphs this input so that
             if training is aborted the losses are still available.
-         save_path: If not None, specifies the directory of where to save the model.
-         save_iter: Save model every this many iterations.
+         savedir: If not None, specifies the directory of where to save the model.
+         save_epoch: Save model every this many epochs.
+         model_nickname: What to name the model.
 
     Returns:
         model: Model after training on all epochs
         best_model: Model with the lowest validation loss
         losses: Stores losses per epoch for continuous, discrete, and combined objectives for training and validation.
     """
+    save_path = None
+    if savedir is not None:
+        if not os.path.exists(savedir):
+            os.makedirs(savedir)
+        timestamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
+        save_path = os.path.join(savedir, f'{model_nickname}_{timestamp}.pth')
+        print(save_path)
+
     device = next(model.parameters()).device
 
     # Optimizer
@@ -130,16 +142,19 @@ def train(
         if last_val_loss < best_val_loss:
             best_model = copy.deepcopy(model)
 
-        if save_path is not None and epoch > 0 and epoch % save_iter == 0:
+        if savedir is not None and epoch > 0 and epoch % save_epoch == 0:
+            # TODO: Switch apf.io.save_model once that's refactored
+            #   (this will save config and dataset parameters along with the model)
             torch.save(model.state_dict(), save_path.replace('.pth', f'_epoch{epoch}.pth'))
             torch.save(best_model.state_dict(), save_path.replace('.pth', f'_epoch{epoch}_best.pth'))
 
         # if np.mod(epoch + 1, 5) == 0:
         train_dataloader.dataset.recompute_chunk_indices()
 
-    torch.save(model.state_dict(), save_path)
-    torch.save(model.state_dict(), save_path.replace('.pth', f'_best.pth'))
-    # TODO: Save dataset operations along with the model
+    if savedir is not None:
+        torch.save(model.state_dict(), save_path)
+        torch.save(model.state_dict(), save_path.replace('.pth', f'_best.pth'))
+
     LOG.info('Done training')
 
-    return model, best_model, loss_epoch
+    return model, best_model, loss_epoch, save_path
