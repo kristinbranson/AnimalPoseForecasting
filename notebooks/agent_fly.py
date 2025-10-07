@@ -72,8 +72,6 @@ model, criterion = initialize_model(config, train_dataset, device)
 
 # Train the model
 train_args = function_args_from_config(config, train)
-train_args['num_train_epochs'] = 5 #00
-train_args['save_epoch'] = 2
 init_loss_epoch = {}
 train_args
 
