@@ -553,3 +553,13 @@ def set_mpl_backend(backend='tkAgg',force=False):
     except:
         # Not in Jupyter, use non-interactive backend
         matplotlib.use(backend)
+        
+def recursive_dict_eval(d, fun: Callable, *args, **kwargs) -> dict | np.ndarray | torch.Tensor:
+    """
+    dict_eval(d,fun,*args,**kwargs)
+    Subindex all arrays in a dict. Recurses into sub-dicts.
+    """
+    if isinstance(d, dict):
+        return {k: recursive_dict_eval(v, fun, *args, **kwargs) for k, v in d.items()}
+    else:
+        return fun(d, *args, **kwargs)

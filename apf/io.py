@@ -226,15 +226,6 @@ def get_modeltype_str(config, dataset):
         modeltype_str = f"{config['modelstatetype']}_{config['modeltype']}"
     else:
         modeltype_str = config['modeltype']
-    if dataset.flatten:
-        modeltype_str += '_flattened'
-    if dataset.continuous and dataset.discretize:
-        reptype = 'mixed'
-    elif dataset.continuous:
-        reptype = 'continuous'
-    elif dataset.discretize:
-        reptype = 'discrete'
-    modeltype_str += f'_{reptype}'
     if config['categories'] is None or len(config['categories']) == 0:
         category_str = 'all'
     else:

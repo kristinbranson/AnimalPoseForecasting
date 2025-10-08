@@ -20,7 +20,10 @@ from flyllm.features import (
 )
 from flyllm.pose import FlyExample
 from apf.io import read_config, load_and_filter_data
-
+import flyllm
+import flyllm.dataset
+import apf.dataset
+import apf.utils
 
 def select_featidx_plot(train_dataset, ntspred_plot, ntsplot_global=None, ntsplot_relative=None):
     if ntsplot_global is None:
@@ -476,23 +479,40 @@ def debug_plot_batch_state(stateprob, nsamplesplot=3,
     fig.tight_layout(h_pad=0)
     return h, ax, fig
 
+def get_example_type(example):
+    example_keys = ['inputs','labels','labels_discrete','continuous','discrete']
+    if example is None:
+        return 'none'
+    elif type(example) is dict and 'input' in example and hasattr(example['input'], 'shape'):
+        return 'raw'
+    elif type(example) is list:
+        return 'list'
+    elif isinstance(example, FlyExample):
+        return 'flyexample'
+    elif type(example) is dict and any(k in example and isinstance(example[k], dict) for k in example_keys):
+        return 'data'
+    else:
+        return 'unknown'
 
 def subsample_batch(example, nsamples=1, samples=None, dataset=None):
-    israw = type(example) is dict
-    islist = type(example) is list
+    
+    example_type = get_example_type(example)
     if samples is not None:
         nsamples = len(samples)
 
-    if israw:
+    if example_type == 'raw':
         batch_size = example['input'].shape[0]
-    elif islist:
+    elif example_type == 'data':
+        key = list(example['inputs'].keys())[0]
+        batch_size = example['inputs'][key].array.shape[0]
+    elif example_type == 'list':
         batch_size = len(example)
-    elif type(example) is FlyExample:
+    elif example_type == 'flyexample':
         batch_size = int(np.prod(example.pre_sz))
         if batch_size == 1:
             return [example, ], np.arange(1)
     else:
-        raise ValueError(f'Unknown type {type(example)}')
+        raise ValueError(f'Unknown example type {type(example)}')
 
     if samples is None:
         nsamples = np.minimum(nsamples, batch_size)
@@ -500,10 +520,10 @@ def subsample_batch(example, nsamples=1, samples=None, dataset=None):
     else:
         assert np.max(samples) < batch_size
 
-    if islist:
+    if example_type == 'list':
         return [example[i] for i in samples], samples
 
-    if israw:
+    if example_type == 'raw':
         rawbatch = example
         examplelist = []
         for samplei in samples:
@@ -511,7 +531,25 @@ def subsample_batch(example, nsamples=1, samples=None, dataset=None):
             assert dataset is not None
             flyexample = FlyExample(example_in=examplecurr, dataset=dataset)
             examplelist.append(flyexample)
-    else:
+    elif example_type == 'data':
+        examplelist = []
+        for samplei in samples:
+            examplecurr = {'inputs': {}, 'labels': {}}
+            for datatype in ['inputs','labels']:
+                for (k, v) in example[datatype].items():
+                    if isinstance(v.invertdata,dict):
+                        invertdata = apf.utils.recursive_dict_eval(v.invertdata, lambda x: x[samplei])
+                    else:
+                        invertdata = None
+                    examplecurr[datatype][k] = apf.dataset.Data(name=v.name, 
+                                                                array=v.array[samplei], 
+                                                                operations=v.operations, 
+                                                                invertdata=invertdata)
+            if 'metadata' in example:
+                examplecurr['metadata'] = apf.utils.recursive_dict_eval(example['metadata'], lambda x: x[samplei])
+            examplelist.append(examplecurr)
+
+    elif example_type == 'flyexample':
         examplelist = []
         for samplei in samples:
             examplecurr = example.copy_subindex(idx_pre=samplei)
@@ -660,25 +698,33 @@ def debug_plot_pose(example, train_dataset=None, pred=None, data=None,
     example, samplesplot = subsample_batch(example, nsamples=nsamplesplot,
                                            dataset=train_dataset)
 
-    israwpred = type(pred) is dict
-    if israwpred:
-        batchpred = pred
-        pred = []
-        for i, samplei in enumerate(samplesplot):
-            predcurr = get_batch_idx(batchpred, samplei)
+    # keep compatibility with old FlyMLMDataset for now
+    isflymlm = isflymlm_dataset(train_dataset)
+    pred_type = get_example_type(pred)
+    if pred_type == 'raw':
+        if isflymlm:
             flyexample = example[i].copy()
             # just to make sure no data sticks around
             flyexample.labels.erase_labels()
-            flyexample.labels.set_prediction(predcurr)
-            pred.append(flyexample)
-    elif type(pred) is FlyExample:
+            flyexample.labels.set_prediction(pred)
+            pred_type = 'flyexample'
+        else:
+            pred = train_dataset.item_to_data(pred)
+            pred_type = 'data'
+
+    if pred is not None:
         pred, _ = subsample_batch(pred, samples=samplesplot)
 
     nsamplesplot = len(example)
     if pred is not None:
         assert (len(pred) == nsamplesplot)
-
-    contextl = example[0].ntimepoints
+        
+    if isflymlm:
+        contextl = example[0].ntimepoints
+    else:
+        key = list(example[0]['labels'].keys())[0]
+        contextl = example[0]['labels'][key].array.shape[0]
+        
     if tsplot is None:
         tsplot = np.round(np.linspace(0, contextl - 1, ntsplot)).astype(int)
     else:
@@ -710,7 +756,11 @@ def debug_plot_pose(example, train_dataset=None, pred=None, data=None,
     for i in range(nsamplesplot):
         iplot = samplesplot[i]
         examplecurr = example[i]
-        Xkp_true = examplecurr.labels.get_next_keypoints(**true_args)
+        if isflymlm:
+            Xkp_true = examplecurr.labels.get_next_keypoints(**true_args)
+        else:
+            Xkp_true = apf.dataset.apply_inverse_operations(examplecurr['labels']['velocity'].array, 
+                                                            examplecurr['labels']['velocity'].operations)
         nametrue = 'Labels'
         # ['input'][iplot,0,...].numpy(),
         #                            example['init'][iplot,...].numpy(),
@@ -817,21 +867,35 @@ def debug_plot_pose_prob(example, train_dataset, predcpu, tplot, fig=None, ax=No
 
 
 def debug_plot_sample(example_in, dataset=None, nplot=3):
+    
+    isflymlm = isflymlm_dataset(dataset)
+    
     example, samplesplot = subsample_batch(example_in, nsamples=nplot, dataset=dataset)
     nplot = len(example)
 
-    fig, ax = plt.subplots(nplot, 2, squeeze=False)
+    fig, ax = plt.subplots(nplot, 2, squeeze=False, figsize=(15, 4 * nplot))
 
-    idx = example[0].inputs.get_sensory_feature_idx()
+    if isflymlm:
+        idx = example[0].inputs.get_sensory_feature_idx()
+        T = example[0].ntimepoints
+    else:
+        sensory_op = apf.dataset.get_operation(example[0]['inputs']['sensory'].operations,'Sensory')
+        idx = sensory_op.idxinfo
+        T = example[0]['inputs']['sensory'].array.shape[0]
+        
     inputidxstart = [x[0] - .5 for x in idx.values()]
     inputidxtype = list(idx.keys())
-    T = example[0].ntimepoints
 
     for iplot, samplei in enumerate(samplesplot):
         ax[iplot, 0].cla()
         ax[iplot, 1].cla()
-        ax[iplot, 0].imshow(example[iplot].inputs.get_raw_inputs(),
-                            vmin=-3, vmax=3, cmap='coolwarm', aspect='auto')
+        if isflymlm:
+            inputs = example[iplot].inputs.get_raw_inputs()
+            labels = example[iplot].labels.get_multi(zscored=True)
+        else:
+            inputs = example[iplot]['inputs']['sensory'].array
+            labels = np.concatenate([example[iplot]['labels'][k].array for k in example[iplot]['labels']], axis=-1)
+        ax[iplot, 0].imshow(inputs, vmin=-3, vmax=3, cmap='coolwarm', aspect='auto')
         ax[iplot, 0].set_title(f'Input {samplei}')
         # ax[iplot,0].set_xticks(inputidxstart)
         for j in range(len(inputidxtype)):
@@ -841,7 +905,7 @@ def debug_plot_sample(example_in, dataset=None, nplot=3):
         ax[iplot, 0].plot([lastidx - .5, ] * 2, [-.5, T - .5], 'k-')
 
         # ax[iplot,0].set_xticklabels(inputidxtype)
-        ax[iplot, 1].imshow(example[iplot].labels.get_multi(zscored=True),
+        ax[iplot, 1].imshow(labels,
                             vmin=-3, vmax=3, cmap='coolwarm', aspect='auto')
         ax[iplot, 1].set_title(f'Labels {samplei}')
     return fig, ax
@@ -1230,10 +1294,20 @@ def debug_plot_histogram_edges(train_dataset):
     ax[0].set_yticklabels([str(t) for t in ts])
     return fig, ax
 
+def isflymlm_dataset(dataset):
+    return isinstance(dataset, flyllm.dataset.FlyMLMDataset)
 
 def initialize_debug_plots(dataset, dataloader, data, name='', tsplot=None, traj_nsamplesplot=3):
+    
+    # keep compatibility with old FlyMLMDataset for now
+    isflymlm = isflymlm_dataset(dataset)
+    
     example_batch = next(iter(dataloader))
-    example = FlyExample(example_in=example_batch, dataset=dataset)
+    if isflymlm:
+        example = FlyExample(example_in=example_batch, dataset=dataset)
+    else:
+        example = dataset.item_to_data(example_batch)
+
 
     # plot to visualize input features
     fig, ax = debug_plot_sample(example, dataset)

@@ -34,7 +34,7 @@ from apf.models import (
     update_loss_nepochs,
     stack_batch_list,
 )
-from apf.dataset import Dataset
+from apf.dataset import Dataset, DataLoader
 from apf.training import init_optimizer
 from experiments.flyllm import make_dataset
 from flyllm.simulation import animate_predict_open_loop
@@ -317,10 +317,10 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
         res['train_data'] = {}
         res['train_dataset'], res['train_data']['flyids'], res['train_data']['track'], res['train_data']['pose'], \
             res['train_data']['velocity'], res['train_data']['sensory'], res['config']['dataset_params'] = \
-            make_dataset(config,'intrainfile',dataset_params=res['dataset_params'],return_all=True,debug=debug_uselessdata)
+            make_dataset(config,'intrainfile',return_all=True,debug=debug_uselessdata)
 
         # create dataloader
-        res['train_dataloader'] = torch.utils.data.DataLoader(res['train_dataset'], batch_size=config['batch_size'], shuffle=True, pin_memory=True)
+        res['train_dataloader'] = DataLoader(res['train_dataset'], batch_size=config['batch_size'], shuffle=True, pin_memory=True)
         
     if needvaldata:
         
@@ -328,8 +328,8 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
         res['val_data'] = {}
         res['val_dataset'], res['val_data']['flyids'], res['val_data']['track'], res['val_data']['pose'], \
             res['val_data']['velocity'], res['val_data']['sensory'], res['config']['dataset_params']= \
-            make_dataset(config,'invalfile',dataset_params=res['dataset_params'],return_all=True,debug=debug_uselessdata)
-        res['val_dataloader'] = torch.utils.data.DataLoader(res['val_dataset'], batch_size=config['batch_size'], shuffle=False, pin_memory=True)
+            make_dataset(config,'invalfile',return_all=True,debug=debug_uselessdata)
+        res['val_dataloader'] = DataLoader(res['val_dataset'], batch_size=config['batch_size'], shuffle=False, pin_memory=True)
         
     return res
 
@@ -531,7 +531,7 @@ def init_flyllm(configfile=None,config=None,
         try:
             init_config(configfile=configfile,config=config,mode=mode,loadmodelfile=loadmodelfile,overrideconfig=overrideconfig,res=res)
         except Exception as e:
-            LOG.error(f'Error in init_config: {e}\nAborting init_flyllm')
+            LOG.exception(f'Error in init_config: {e}\nAborting init_flyllm')
             return res
 
     ## setup device and random
@@ -540,7 +540,7 @@ def init_flyllm(configfile=None,config=None,
             # adds 'device' to res
             res = init_state(config=res['config'],seedrandom=seedrandom,res=res)
         except Exception as e:
-            LOG.error(f'Error in init_state: {e}\nAborting init_flyllm')
+            LOG.exception(f'Error in init_state: {e}\nAborting init_flyllm')
             return res
         
     ## create training data sets
@@ -548,7 +548,7 @@ def init_flyllm(configfile=None,config=None,
         try:
             init_datasets(config=res['config'],needtraindata=needtraindata,needvaldata=needvaldata,debug_uselessdata=debug_uselessdata,res=res)
         except Exception as e:
-            LOG.error(f'Error in init_datasets: {e}\nAborting init_flyllm')
+            LOG.exception(f'Error in init_datasets: {e}\nAborting init_flyllm')
             return res
         
     if doinitmodel:
@@ -558,7 +558,7 @@ def init_flyllm(configfile=None,config=None,
             if mode in ['train',]:
                 args['somedataset'] = res['train_dataset']
                 args['somedataloader'] = res['train_dataloader']
-                args['ntrain_batches'] = res['ntrain_batches']
+                #args['ntrain_batches'] = res['ntrain_batches']
             elif mode in ['test',]:
                 args['somedataset'] = res['val_dataset']
                 args['somedataloader'] = res['val_dataloader']
@@ -566,10 +566,10 @@ def init_flyllm(configfile=None,config=None,
                 if res['traindataset'] is not None:
                     args['somedataset'] = res['train_dataset']
                     args['somedataloader'] = res['train_dataloader']
-                    args['ntrain_batches'] = res['ntrain_batches']
+                    #args['ntrain_batches'] = res['ntrain_batches']
                 elif res['val_dataset'] is not None:
                     args['somedataset'] = res['val_dataset']
-                    args['somedataloader'] = res['val_dataloader']
+                    #args['somedataloader'] = res['val_dataloader']
                 else:
                     raise ValueError('No dataset computed')
 
@@ -578,6 +578,6 @@ def init_flyllm(configfile=None,config=None,
             res = init_model(config=res['config'],device=res['device'],loadmodelfile=loadmodelfile,
                             restartmodelfile=restartmodelfile,mode=mode,res=res,**args)
         except Exception as e:
-            LOG.error(f'Error in init_model: {e}\nAborting init_flyllm')
+            LOG.exception(f'Error in init_model: {e}\nAborting init_flyllm')
             return res
     return res

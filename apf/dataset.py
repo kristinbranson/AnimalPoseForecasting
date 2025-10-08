@@ -7,6 +7,8 @@ import torch
 import logging
 import importlib
 import inspect
+import copy
+from typing import Any
 
 from apf.data import fit_discretize_data, discretize_labels, weighted_sample
 from apf.utils import connected_components, modrange, rotate_2d_points, set_invalid_ends
@@ -108,6 +110,7 @@ class Data(NamedTuple):
     array: np.ndarray
     # Operations that have been applied to the data (can be later applied in inverse to obtain original data).
     operations: list[Operation] = []
+    invertdata: Any = None # any additional data needed for inverting the operations, e.g. flyid for Pose operation
 
 @dataclass
 class Identity(Operation):
@@ -137,8 +140,10 @@ class Zscore(Operation):
 
         Args:
             data: (n_agents,  n_frames, n_features) float array
+            or (n_frames, n_features) float array
         """
-        n_frames, n_agents, n_feat = data.shape
+        
+        n_feat = data.shape[-1]
         data_flat = data.reshape((-1, n_feat))
         self.mean = np.nanmean(data_flat, axis=0)
         self.std = np.nanstd(data_flat, axis=0)
@@ -161,11 +166,19 @@ class Zscore(Operation):
 
         Args:
             data: (n_agents,  n_frames, n_features) float array
+            or (n_frames, n_features) float array
 
         Returns:
             unzscored: (n_agents,  n_frames, n_features) float array
+            or (n_frames, n_features) float array
         """
-        return data * self.std[None, None, :] + self.mean[None, None, :]
+        ismultiagent = data.ndim == 3
+        if not ismultiagent:
+            data = data[None, ...]
+        inverted = data * self.std[None, None, :] + self.mean[None, None, :]
+        if not ismultiagent:
+            inverted = inverted[0]
+        return inverted
 
 @dataclass
 class OddRoot(Operation):
@@ -185,9 +198,11 @@ class OddRoot(Operation):
 
         Args:
             data: (n_agents,  n_frames, n_features) float array
+            or (n_frames, n_features) float array
 
         Returns:
             rooted: root-th root of data, (n_agents,  n_frames, n_features) float array
+            or (n_frames, n_features) float array
         """
         return np.sign(data) * np.abs(data)**(1 / self.root)
 
@@ -196,9 +211,11 @@ class OddRoot(Operation):
 
         Args:
             data: (n_agents,  n_frames, n_features) float array
+            or (n_frames, n_features) float array
 
         Returns:
             unrooted: (n_agents,  n_frames, n_features) float array
+            or (n_frames, n_features) float array
         """
         return data**self.root
 
@@ -218,9 +235,12 @@ class Subset(Operation):
 
         Args:
             data: (n_agents,  n_frames, n_features) float array
+            or (n_frames, n_features) float array
 
         Returns:
-            sub_data: data with only the selected feature dimensions (n_agents,  n_frames, n_sub_features) float array
+            sub_data: data with only the selected feature dimensions,
+            (n_agents,  n_frames, n_sub_features) float array or
+            (n_frames, n_sub_features) float array
         """
         return data[..., self.include_ids]
 
@@ -336,6 +356,7 @@ class Discretize(Operation):
 
         Args:
             data: (n_agents,  n_frames, n_features) float array
+            or (n_frames, n_features) float array
         """
         n_feat = data.shape[-1]
         data_flat = data.reshape((-1, n_feat))
@@ -352,23 +373,27 @@ class Discretize(Operation):
 
         Args:
             data: Continuous data, (n_agents,  n_frames, n_features) float array
+            or (n_frames, n_features) float array
 
         Returns:
             binned: Binned data, (n_agents,  n_frames, n_features * n_bins) float array
+            or (n_frames, n_features * n_bins) float array
         """
         if self.bin_edges is None:
             self.compute(data)
-        n_agents, n_frames, n_feat = data.shape
+        sz_rest = data.shape[:-1]
+        n_feat = data.shape[-1]
         data_flat = data.reshape((-1, n_feat))
 
         data_flat_discrete = discretize_labels(data_flat, self.bin_edges, soften_to_ends=True)
-        return data_flat_discrete.reshape((n_agents, n_frames, -1))
+        return data_flat_discrete.reshape(sz_rest + (-1,))
 
     def invert(self, data: np.ndarray, do_sampling: bool = True) -> np.ndarray:
         """ Unbins the data.
 
         Args:
             data: Binned data, (n_agents,  n_frames, n_features * n_bins) float array
+            or (n_frames, n_features * n_bins) float array
             do_sampling: If True, samples from the probability distribution given by the bins.
                 Otherwise takes the weighted average.
                 TODO: Have an option to take argmax
@@ -377,14 +402,21 @@ class Discretize(Operation):
 
         Returns:
             continuous: Continuous data, (n_agents,  n_frames, n_features) float array
+            or (n_frames, n_features) float array
         """
+        ismultiagent = data.ndim == 3
+        if not ismultiagent:
+            data = data[None, ...]
         n_agents, n_frames, n_bin_feat = data.shape
         n_bins = self.bin_centers.shape[-1]
         n_feat = n_bin_feat // n_bins
         if do_sampling:
-            return sample_discrete_labels(data.reshape((n_agents, n_frames, n_feat, n_bins)), self.bin_samples)[0]
+            continuous = sample_discrete_labels(data.reshape((n_agents, n_frames, n_feat, n_bins)), self.bin_samples)[0]
         else:
-            return labels_discrete_to_continuous(data.reshape((n_agents, n_frames, n_feat, n_bins)), self.bin_centers)
+            continuous = labels_discrete_to_continuous(data.reshape((n_agents, n_frames, n_feat, n_bins)), self.bin_centers)
+        if not ismultiagent:
+            continuous = continuous[0]
+        return continuous
 
 @dataclass
 class Fusion(Operation):
@@ -413,33 +445,48 @@ class Fusion(Operation):
         """ Applies operation to each subset of data, specified by indices per operation, and concatenates the result.
 
         Args:
-            data: (n_agents,  n_frames, n_features) float array
+            data: (n_agents,  n_frames, n_features) float array or (n_frames, n_features) float array
             kwargs_per_op: Optional arguments provided to the operations.
                 If they are a list, the list should have the same length as the list of operations.
                 If they are not a list, the same arguments will be provided to all operations.
                 If None, no arguments will be provided to the operations.
 
         Returns:
-            fused: (n_agents,  n_frames, n_fused_features) float array
+            fused: (n_agents,  n_frames, n_fused_features) float array or 
+            (n_frames, n_fused_features) float array
         """
+        ismultiagent = data.ndim == 3
+        if not ismultiagent:
+            data = data[None, ...]
+
         if kwargs_per_op is None:
             kwargs_per_op = [{} for _ in self.operations]
         elif ~isinstance(kwargs_per_op, list):
             kwargs_per_op = [kwargs_per_op for _ in self.operations]
         processed = [op.apply(data[..., indices], **kwargs) for op, indices, kwargs in zip(self.operations, self.indices_per_op, kwargs_per_op)]
         self.dims_per_op = [proc.shape[-1] for proc in processed]
+        fused = np.concatenate(processed, axis=-1)
+        
+        if not ismultiagent:
+            fused = fused[0]
 
-        return np.concatenate(processed, axis=-1)
+        return fused
 
     def invert(self, data: np.ndarray, kwargs_per_op=None) -> np.ndarray:
         """ Inverts subsets of the processed data using the operation inverses.
 
         Args:
-            data: (n_agents,  n_frames, n_fused_features) float array
+            data: (n_agents,  n_frames, n_fused_features) float array or
+            (n_frames, n_fused_features) float array
 
         Returns:
             unfused: (n_agents,  n_frames, n_features) float array
+            or (n_frames, n_features) float array
         """
+        ismultiagent = data.ndim == 3
+        if not ismultiagent:
+            data = data[None, ...]
+        
         if kwargs_per_op is None:
             kwargs_per_op = [{} for _ in self.operations]
         elif not isinstance(kwargs_per_op, list):
@@ -453,6 +500,9 @@ class Fusion(Operation):
             n_dims = self.dims_per_op[i]
             inverted[..., indices] = self.operations[i].invert(data[..., count:count + n_dims], **kwargs_per_op[i])
             count += n_dims
+            
+        if not ismultiagent:
+            inverted = inverted[0]
 
         return inverted
 
@@ -474,12 +524,18 @@ class Roll(Operation):
         """ Rolls data forward by dt.
 
         Args:
-            data: (n_agents,  n_frames, n_features) float array
+            data: (n_agents,  n_frames, n_features) float array or (n_frames, n_features) float array
 
         Returns:
-            rolled_data: (n_agents,  n_frames, n_features) float array
+            rolled_data: (n_agents,  n_frames, n_features) float array or (n_frames, n_features) float array
         """
-        return np.roll(data, shift=self.dt, axis=1)
+        ismultiagent = data.ndim == 3
+        if not ismultiagent:
+            data = data[None, ...]
+        rolled = np.roll(data, shift=self.dt, axis=1)
+        if not ismultiagent:
+            rolled = rolled[0]
+        return rolled
 
     def invert(self, data: np.ndarray) -> np.ndarray:
         """ Rolls data backwards by dt.
@@ -490,7 +546,13 @@ class Roll(Operation):
         Returns:
             unrolled_data: (n_agents,  n_frames, n_features) float array
         """
-        return np.roll(data, shift=-self.dt, axis=1)
+        ismultiagent = data.ndim == 3
+        if not ismultiagent:
+            data = data[None, ...]
+        unrolled_data = np.roll(data, shift=-self.dt, axis=1)
+        if not ismultiagent:
+            unrolled_data = unrolled_data[0]
+        return unrolled_data
 
 
 @dataclass
@@ -507,30 +569,49 @@ class LocalVelocity(Operation):
         """ Compute velocity from pose.
 
         Args:
-            pose: (n_agents,  n_frames, n_pose_features) float array
+            pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
             isstart: Indicates whether a new fly track starts at a given frame for an agent.
-                (n_frames, n_agents) bool array
+                (n_frames, n_agents) bool array or (n_frames,) bool array
 
         Returns:
-            velocity: (n_agents,  n_frames, n_pose_features) float array
+            velocity: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
+        ismultiagent = pose.ndim == 3
+        assert isstart is None or (isstart.ndim == pose.ndim - 1), "isstart.ndim must be pose.ndim - 1"
+        if not ismultiagent:
+            pose = pose[None, ...]
+            if isstart is not None:
+                isstart = isstart[None, ...]
+        
         pose_velocity = np.moveaxis(compute_relpose_velocity(pose.T, is_angle=self.is_angle), 2, 0)
         if isstart is not None:
             # Set pose deltas that cross individuals to NaN.
             set_invalid_ends(pose_velocity, isstart, dt=1)
         pose_velocity = pose_velocity[0]
-        return pose_velocity.T
+        pose_velocity = pose_velocity.T
+        
+        if not ismultiagent:
+            pose_velocity = pose_velocity[0, ...]
+            
+        return pose_velocity
 
     def invert(self, velocity: np.ndarray, x0: np.ndarray = None) -> np.ndarray:
         """ Compute pose from pose velocity and an initial pose.
 
         Args:
-            velocity: Delta pose (n_agents,  n_frames, n_pose_features) float array
-            x0: Initial pose (n_agents,  n_frames, n_pose_features) float array
+            velocity: Delta pose (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
+            x0: Initial pose (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
 
         Returns:
-            pose: (n_agents,  n_frames, n_pose_features) float array
+            pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
+        ismultiagent = velocity.ndim == 3
+        assert x0 is None or (x0.ndim == velocity.ndim), "x0.ndim must be velocity.ndim"
+        if not ismultiagent:
+            velocity = velocity[None, ...]
+            if x0 is not None:
+                x0 = x0[None, ...]
+        
         # Note: here we are assuming dt=1
         if x0 is None:
             n_agents, _, n_features = velocity.shape
@@ -539,6 +620,10 @@ class LocalVelocity(Operation):
         pose = np.cumsum(velocity, axis=1)
         if self.is_angle is not None:
             pose[..., self.is_angle] = modrange(pose[..., self.is_angle], -np.pi, np.pi)
+            
+        if not ismultiagent:
+            pose = pose[0, ...]
+            
         return pose
 
 
@@ -555,14 +640,21 @@ class GlobalVelocity(Operation):
         """ Compute global movement from position.
 
         Args:
-            position: (n_agents,  n_frames, 3) float array
+            position: (n_agents,  n_frames, 3) float array or (n_frames, 3) float array
             isstart: Indicates whether a new fly track starts at a given frame for an agent.
-                (n_frames, n_agents) bool array
+                (n_frames, n_agents) bool array or (n_frames,) bool array
 
         Returns:
             velocity: Global pose velocity, flattened over tspred.
-                (n_agents,  n_frames, 3 * len(self.tspred)) float array
+                (n_agents,  n_frames, 3 * len(self.tspred)) float array or (n_frames, 3 * len(self.tspred)) float array
         """
+        ismultiagent = position.ndim == 3
+        assert isstart is None or (isstart.ndim == position.ndim - 1), "isstart.ndim must be position.ndim - 1"
+        if not ismultiagent:
+            position = position[None, ...]
+            if isstart is not None:
+                isstart = isstart[None, ...]
+        
         Xorigin = position[..., :2].T
         Xtheta = position[..., 2].T
         _, n_frames, n_flies = Xorigin.shape
@@ -572,8 +664,13 @@ class GlobalVelocity(Operation):
             for movement, dt in zip(movement_global, self.tspred):
                 set_invalid_ends(movement, isstart, dt=dt)
         movement_global = movement_global.reshape((-1, n_frames, n_flies))
+        
+        movement_global = movement_global.T
+        
+        if not ismultiagent:
+            movement_global = movement_global[0, ...]
 
-        return movement_global.T
+        return movement_global
 
     def invert(self, velocity: np.ndarray, x0: np.ndarray | None = None):
         """ Compute position from global movement and an initial position.
@@ -581,12 +678,19 @@ class GlobalVelocity(Operation):
         NOTE: This assumes velocity is only given for dt=1
 
         Args:
-            velocity: Global movmement (n_agents,  n_frames, 3) float array
-            x0: Initial pose (n_agents,  n_frames, n_pose_features) float array
+            velocity: Global movmement (n_agents,  n_frames, 3) float array or (n_frames, 3) float array
+            x0: Initial pose (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
 
         Returns:
-            pose: (n_agents,  n_frames, n_pose_features) float array
+            pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
+        ismultiagent = velocity.ndim == 3
+        assert x0 is None or (x0.ndim == velocity.ndim), "x0.ndim must be velocity.ndim"
+        if not ismultiagent:
+            velocity = velocity[None, ...]
+            if x0 is not None:
+                x0 = x0[None, ...]
+        
         if x0 is None:
             n_agents, _, n_dim = velocity.shape
             x0 = np.zeros((n_agents, n_dim))
@@ -598,7 +702,13 @@ class GlobalVelocity(Operation):
         d_pos = rotate_2d_points(d_pos_rel.transpose((1, 2, 0)), -theta.T).transpose((2, 0, 1))
         d_pos = np.concatenate([x0[:, None, :2], d_pos], axis=1)
         pos = np.cumsum(d_pos, axis=1)[:, :-1, :]
-        return np.concatenate([pos, theta[:, :, None]], axis=-1)
+        
+        inverted = np.concatenate([pos, theta[:, :, None]], axis=-1)
+        
+        if not ismultiagent:
+            inverted = inverted[0, ...]
+        
+        return inverted
 
 class Velocity(Operation):
     """ Combines global and local velocity.
@@ -625,12 +735,12 @@ class Velocity(Operation):
         """ Compute global and local velocity from pose.
 
         Args:
-            pose: (n_agents,  n_frames, n_pose_features) float array
+            pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
             isstart: Indicates whether a new fly track starts at a given frame for an agent.
-                (n_frames, n_agents) bool array
+                (n_frames, n_agents) bool array or (n_frames,) bool array
 
         Returns:
-            velocity: (n_agents,  n_frames, n_pose_features) float array
+            velocity: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
         return self.fusion.apply(pose, kwargs_per_op={'isstart': isstart})
 
@@ -638,11 +748,11 @@ class Velocity(Operation):
         """ Compute pose from pose velocity and an initial pose.
 
         Args:
-            velocity: Delta pose (n_agents,  n_frames, n_pose_features) float array
-            x0: Initial pose (n_agents,  n_frames, n_pose_features) float array
+            velocity: Delta pose (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
+            x0: Initial pose (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
 
         Returns:
-            pose: (n_agents,  n_frames, n_pose_features) float array
+            pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
         if x0 is not None:
             kwargs_per_op = [{'x0': x0[..., self.global_inds]}, {'x0': x0[..., self.local_inds]}]
@@ -728,6 +838,25 @@ def compute_chunk_indices(sessions: list[Session], chunk_length: int, start_offs
         chunk_indices.append(session_chunks)
     return np.concatenate(chunk_indices, axis=0)
 
+def get_array_chunk(datas: np.ndarray | torch.Tensor | dict,
+                    start_frame: int,
+                    agent_id: int,
+                    duration: int) -> np.ndarray | dict[str, np.ndarray | torch.Tensor]:
+    """ Extracts data from ndarray/Tensor for given chunk indices.
+
+    Args:
+        datas: dict to extract data from. if dict of dicts, calls recursively on each item.
+        start_frame: Start frame of the chunk
+        agent_id: Agent id of the chunk
+        duration: Number of frames in the chunk
+
+    Returns:
+        data_chunk: dict with deepest entries as (chunk_length, n_feat) float array
+    """    
+    if isinstance(datas,dict):
+        # If datas is a dict, call recursively on each item
+        return {key: get_array_chunk(value, start_frame, agent_id, duration) for key, value in datas.items()}
+    return datas[agent_id, start_frame:(start_frame + duration)]
 
 def get_data_chunk(
         datas: dict[str, Data],
@@ -738,14 +867,14 @@ def get_data_chunk(
     """ Extracts and concatenates data for given chunk indices.
 
     Args:
-        datas: A list of data to extract from
+        datas: dict of data to extract from
         start_frame: Start frame of the chunk
         agent_id: Agent id of the chunk
         duration: Number of frames in the chunk
 
     Returns:
         data_chunk: (chunk_length, n_feat_flat), float array
-    """
+    """    
     slices = [data.array[agent_id, start_frame:(start_frame + duration)] for data  in datas.values()]
     if isinstance(slices[0], np.ndarray):
         return np.concatenate(slices, axis=1)
@@ -886,9 +1015,17 @@ def apply_inverse_operations(data, operations):
     """ Apply the inverse of operations to data, in reverse order.
     """
     for oper in reversed(operations):
-        data = oper.invert(data)
+        if isinstance(data.invertdata, dict) and oper.__class__.__name__.lower() in data.invertdata:
+            extraargs = data.invertdata[oper.__class__.__name__.lower()]
+            if isinstance(extraargs, dict):
+                data = oper.invert(data, **extraargs)
+            elif isinstance(extraargs, list) | isinstance(extraargs, tuple):
+                data = oper.invert(data, *extraargs)
+            else:
+                data = oper.invert(data, extraargs)
+        else:
+            data = oper.invert(data)
     return data
-
 
 def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict[str, Data]) -> dict[str, Data]:
     """ Applies post processing operations from reference datas to datas, for each key.
@@ -954,6 +1091,19 @@ def apply_opers_from_data_params(data_params: list[dict], datas: dict[str, Data]
     return processed_data
 
 
+
+def collate_nested_dicts(batch):
+    """Recursively collates nested dicts/arrays into batched tensors"""
+    if isinstance(batch[0], dict):
+        return {k: collate_nested_dicts([d[k] for d in batch]) for k in batch[0]}
+    elif isinstance(batch[0], np.ndarray):
+        return torch.stack([torch.from_numpy(x) for x in batch])
+    elif isinstance(batch[0], torch.Tensor):
+        return torch.stack(batch)
+    else:
+        return batch
+
+
 class Dataset(torch.utils.data.Dataset):
     """ Contains ground truth data and can be supplied to torch's DataLoader to produce chunks of data.
 
@@ -964,6 +1114,11 @@ class Dataset(torch.utils.data.Dataset):
         labels: A dictionary of data labels. Same format as inputs.
         isstart: Indicates whether a frame is the start of a sequence for an agent, (n_frames, n_agents) bool array
         context_length: Number of frames in a data chunk provided by __getitem__
+        metadata: Metadata about the dataset that is needed for applying/inverting operations beyond what can 
+            be captured by the operations. These are extra arguments to the operations' apply and invert function, and there 
+            should be a value for each agent and frame. This is a dict with keys 'inputs' and 'labels', each containing a dict
+            mapping metadata keys to (n_frames, n_agents) arrays. If any key is missing, metadata for that key is assumed to
+            be empty. Default: None
 
     NOTE: currently assumes that discrete data in labels all have the same number of bins.
     """
@@ -973,11 +1128,13 @@ class Dataset(torch.utils.data.Dataset):
             labels: dict[str, Data],
             isstart: np.ndarray,
             context_length: int,
+            metadata: dict | None = None
     ):
         self.inputs = inputs
         self.labels = labels
         self.isstart = isstart
         self.context_length = context_length
+        self.metadata = metadata
 
         # Compute sessions with continuous valid data per agent
         self.sessions = compute_sessions(
@@ -1071,6 +1228,7 @@ class Dataset(torch.utils.data.Dataset):
                 chunk: A dictionary containing chunk data. Keys are
                     'input': Concatenated input chunk, (duration, d_input) float
                     'labels': Concatenated label chunk, (duration, d_output) float
+                    'metadata': Metadata about the chunk, extracted from each key in self.metadata
 
             """
         labels = get_data_chunk(self.labels, start_frame, agent_id, duration)
@@ -1082,6 +1240,14 @@ class Dataset(torch.utils.data.Dataset):
             chunk['labels'] = labels_continuous.astype(np.float32)
         if labels_discrete.shape[-1] > 0:
             chunk['labels_discrete'] = labels_discrete.astype(np.float32)
+        chunk['metadata'] = {
+            'start_frame': start_frame,
+            'duration': duration,
+            'agent_id': agent_id
+            }
+        if self.metadata is not None:
+            chunk['metadata'].update(get_array_chunk(self.metadata,start_frame,agent_id,duration))
+                
         return chunk
 
     def recompute_chunk_indices(self, start_offset: int | None = None):
@@ -1093,27 +1259,81 @@ class Dataset(torch.utils.data.Dataset):
         if start_offset is None:
             start_offset = np.random.randint(self.context_length)
         self.chunk_indices = compute_chunk_indices(self.sessions, self.context_length, start_offset=start_offset)
+        
+    def split_input_by_names(self, input: np.ndarray | torch.Tensor) -> dict[str, np.ndarray]:
+        """ Splits input by data names (from self.inputs) 
 
-    def split_output_by_names(self, output_discr_cont: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        Args:
+            input: Concatenated input data, (context_length, d_input) float array
+
+        Returns:
+            input_dict: Input data split into dataset.inputs.keys().
+        """
+        dims_per_key = [data.array.shape[-1] for data in self.inputs.values()]
+        start_per_key = np.cumsum([0] + dims_per_key)[:-1]
+        inds_per_key = [np.arange(start, start + dims) for start, dims in zip(start_per_key, dims_per_key)]
+        input_dict = {}
+        for key, inds in zip(self.inputs.keys(), inds_per_key):
+            x = input[..., inds]
+            if isinstance(x, torch.Tensor):
+                x = x.detach().cpu().numpy()
+            input_dict[key] = x
+        return input_dict
+        
+    def split_example_by_names(self, example: dict[str, np.ndarray | torch.Tensor]) -> dict[str, np.ndarray | torch.Tensor]:
+        """Similar to split_output_by_names, but works on a single example returned by __getitem__.
+        Looks for the keys 'inputs','labels',and 'labels_discrete' to split. 
+        Args:
+            example: A single example returned by __getitem__.
+        Returns:
+            example_dict: Example split into dataset.inputs.keys() and dataset.labels.keys().
+        """
+        
+        return {'input': self.split_input_by_names(example['input']),
+                'labels': self.split_output_by_names(example,continuous_key='labels',discrete_key='labels_discrete')}
+
+    def split_output_by_names(self, output_discr_cont: dict[str, np.ndarray], continuous_key: str | None = None, 
+                              discrete_key: str | None = None) -> dict[str, np.ndarray]:
         """ Splits output by data names (from self.labels) rather than by discrete vs continuous.
 
         Args:
-            output_discr_cont: Output data split into 'continuous' and 'discrete' keys.
+            output_discr_cont: Output data split into continuous_key and discrete_key keys.
+            continuous_key: Key in output_discr_cont corresponding to continuous data. Default 'continuous'.
+            discrete_key: Key in output_discr_cont corresponding to discrete data. Default 'discrete'.
+            Default values correspond to keys in predictions.
 
         Returns:
             output_names: Output data split into dataset.labels.keys().
         """
+        
+        if continuous_key is None:
+            if 'labels' in output_discr_cont:
+                continuous_key = 'labels'
+            else:
+                continuous_key = 'continuous'
+        if discrete_key is None:
+            if 'labels_discrete' in output_discr_cont:
+                discrete_key = 'labels_discrete'
+            else:
+                discrete_key = 'discrete'
+        
         # assemble output to look like original concatenated data (before splitting discrete and continuous)
         n_dim = self.d_output_discrete * self.discretize_nbins + self.d_output_continuous
         is_binned = np.zeros(n_dim, bool)
         for inds in self.label_bin_indices:
             is_binned[inds] = True
-        sz = list(output_discr_cont['continuous'].shape[:-1])
+        sz = list(output_discr_cont[continuous_key].shape[:-1])
         concated = np.ones(sz + [n_dim]) * np.nan
-        if 'discrete' in output_discr_cont:
-            concated[..., is_binned] = output_discr_cont['discrete'].detach().cpu().numpy().reshape(sz + [-1])
-        if 'continuous' in output_discr_cont:
-            concated[..., ~is_binned] = output_discr_cont['continuous'].detach().cpu().numpy()
+        if discrete_key in output_discr_cont:
+            x = output_discr_cont[discrete_key]
+            if isinstance(x, torch.Tensor):
+                x = x.detach().cpu().numpy()
+            concated[..., is_binned] = x.reshape(sz + [-1])
+        if continuous_key in output_discr_cont:
+            x = output_discr_cont[continuous_key]
+            if isinstance(x, torch.Tensor):
+                x = x.detach().cpu().numpy()
+            concated[..., ~is_binned] = x
 
         # split concatenated data
         dims_per_key = [data.array.shape[-1] for data in self.labels.values()]
@@ -1145,3 +1365,62 @@ class Dataset(torch.utils.data.Dataset):
         for key, data in self.labels.items():
             params['labels'][key] = [oper.to_dict() for oper in data.operations]
         return params
+
+    def item_to_data(self,item: dict[str, np.ndarray | torch.Tensor]) -> dict[str, Data]:
+        """
+        item_to_data(item)
+        Converts an item (as returned by __getitem__) or the prediction of a model to a dictionary of 
+        Data objects, with the operations from the dataset. 
+        Args:
+            item (dict[str, np.ndarray  |  torch.Tensor]): Dictionary produced by __getitem__ or a model prediction.
+            Should have (some of) the keys:
+                'input': Concatenated input data, (context_length, d_input) float array
+                'labels' or 'continuous': Concatenated continuous data in labels, (context_length, d_output_continuous) float
+                'labels_discrete' or 'discrete': Concatenated flattened discrete data in labels, 
+                (context_length, d_output_discrete * n_bins) float
+
+        Returns:
+            dict[str, Data]: Dictionary containing Data objects for each key in item, with the operations from the dataset.
+            Should have (some of) the keys:
+                'inputs': A dictionary of Data objects for each input in the dataset.inputs.keys(). Missing if 'input' not in item.
+                'labels': A dictionary of Data objects for each label in the dataset.labels.keys(). Missing if 
+                'labels', 'continuous', etc. not in item.
+        """
+        datadict = {}
+        if 'input' in item:
+            datadict['inputs'] = {}
+            input_dict = self.split_input_by_names(item['input'])
+            for k,v in input_dict.items():
+                if 'metadata' in item and 'inputs' in item['metadata'] and k in item['metadata']['inputs']:
+                    metadatacurr = item['metadata']['inputs'][k]
+                else:
+                    metadatacurr = None
+                datadict['inputs'][k] = Data(name=self.inputs[k].name, array=v, operations=self.inputs[k].operations, invertdata=metadatacurr)
+        continuous_key = None
+        discrete_key = None
+        if 'labels' in item: 
+            continuous_key = 'labels'
+        elif 'continuous' in item:
+            continuous_key = 'continuous'
+        if 'labels_discrete' in item:
+            discrete_key = 'labels_discrete'
+        elif 'discrete' in item:
+            discrete_key = 'discrete'
+        if continuous_key is not None or discrete_key is not None:
+            datadict['labels'] = {}
+            output_dict = self.split_output_by_names(item,continuous_key=continuous_key,discrete_key=discrete_key)
+            for k,v in output_dict.items():
+                if 'metadata' in item and 'labels' in item['metadata'] and k in item['metadata']['labels']:
+                    metadatacurr = item['metadata']['labels'][k]
+                else:
+                    metadatacurr = None
+                datadict['labels'][k] = Data(name=self.labels[k].name, array=v, operations=self.labels[k].operations, invertdata=metadatacurr)
+        
+        return datadict
+
+
+class DataLoader(torch.utils.data.DataLoader):
+    """ A thin wrapper around torch's DataLoader to use collate_nested_dicts as the collate_fn.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs, collate_fn=collate_nested_dicts)

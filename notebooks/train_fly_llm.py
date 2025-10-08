@@ -8,7 +8,7 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.11.2
 #   kernelspec:
-#     display_name: Python 3 (ipykernel)
+#     display_name: transformer
 #     language: python
 #     name: python3
 # ---
@@ -26,124 +26,99 @@
 
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
-import tqdm
-import datetime
+import time
 import os
-from matplotlib import animation
-import pickle
+
+import apf
+from apf.training import train
+from apf.utils import function_args_from_config, set_mpl_backend
+from apf.simulation import simulate
+from apf.models import initialize_model
+import matplotlib.pyplot as plt
+
+import flyllm
+from flyllm.config import read_config
+from flyllm.features import featglobal, get_sensory_feature_idx
+from flyllm.simulation import animate_pose
 
 from flyllm.prepare import init_flyllm
-from apf.utils import get_dct_matrix, compute_npad
-from apf.data import chunk_data, interval_all, debug_less_data
-from apf.models import (
-    initialize_model,
-    initialize_loss,
-    generate_square_full_mask,
-    sanity_check_temporal_dep,
-    criterion_wrapper,
-    update_loss_nepochs,
-)
-from apf.io import read_config, get_modeltype_str, load_and_filter_data, save_model, load_model, parse_modelfile
-from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames, keypointnames
-from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx, compute_scale_perfly
-from flyllm.dataset import FlyMLMDataset
-from flyllm.plotting import (
-    initialize_debug_plots, 
-    initialize_loss_plots, 
-    update_debug_plots,
-    update_loss_plots,
-    debug_plot_global_histograms, 
-    debug_plot_dct_relative_error, 
-    debug_plot_global_error, 
-    debug_plot_predictions_vs_labels,
-    select_featidx_plot,
-)
-from apf.models import (
-    initialize_model, 
-    initialize_loss, 
-    compute_loss,
-    generate_square_full_mask, 
-    sanity_check_temporal_dep,
-    criterion_wrapper,
-    stack_batch_list,
-)
-from flyllm.simulation import animate_predict_open_loop
-from flyllm.prediction import predict_all
-from IPython.display import HTML
 
 import logging
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
 
+set_mpl_backend('tkAgg')
 mpl_backend = plt.get_backend()
 if mpl_backend == 'inline':
     from IPython import display
+    from IPython.display import HTML
 
 LOG.info('CUDA available: ' + str(torch.cuda.is_available()))
 LOG.info('matplotlib backend: ' + mpl_backend)
+
+# %%
+print(torch.cuda.memory_summary())
+
+
+# %%
+timestamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
+print('Timestamp: ' + timestamp)
+
+# %% [markdown]
+# ### Set parameters
+
+# %%
+configfile = 'configs/config_fly_llm_predvel_20241125.json'
+restartmodelfile = None
+outfigdir = 'figs'
+debug_uselessdata = True
+
+# path to config file based on code directory
+flyllmdir = flyllm.__path__[0]
+configfile = os.path.join(flyllmdir,configfile)
+
+# make directory if it doesn't exist
+if not os.path.exists(outfigdir):
+    os.makedirs(outfigdir)
 
 # %% [markdown]
 # ### Configuration
 
 # %%
-# configuration parameters for this model
-
-restartmodelfile = None
-#restartmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flymulttimeglob_predposition_20240305_epoch130_20240825T122647.pth'
-configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241125.json'
-
-# set to None if you want to use the full data
-quickdebugdatafile = None
-
-needtraindata = True
-needvaldata = True
-traindataprocess = 'chunk'
-valdataprocess = 'chunk'
 res = init_flyllm(configfile=configfile,mode='train',restartmodelfile=restartmodelfile,
-                  quickdebugdatafile=quickdebugdatafile,needtraindata=needtraindata,needvaldata=needvaldata,
-                  traindataprocess=traindataprocess,valdataprocess=valdataprocess)
+                debug_uselessdata=debug_uselessdata)
+
+for key in res:
+    print(f'{key}: {type(res[key])}')
 
 # unpack outputs
 config = res['config']
 device = res['device']
-data = res['data']
-scale_perfly = res['scale_perfly']
-valdata = res['valdata']
-val_scale_perfly = res['val_scale_perfly']
-X = res['X']
-valX = res['valX']
-npad = res['npad']
-reparamfun = res['reparamfun']
-val_reparamfun = res['val_reparamfun']
-chunk_data_params = res['train_chunk_data_params']
+train_data = res['train_data']
+val_data = res['val_data']
 train_dataset = res['train_dataset']
 train_dataloader = res['train_dataloader']
 val_dataset = res['val_dataset']
 val_dataloader = res['val_dataloader']
-dataset_params = res['dataset_params']
-ntrain_batches = res['ntrain_batches']
-nval_batches = res['nval_batches']
 model = res['model']
 criterion = res['criterion']
-num_training_steps = res['num_training_steps']
 optimizer = res['optimizer']
 lr_scheduler = res['lr_scheduler']
+modeltype_str = res['modeltype_str']
 loss_epoch = res['loss_epoch']
 epoch = res['epoch']
 modeltype_str = res['modeltype_str']
 savetime = res['model_savetime']
-train_src_mask = res['train_src_mask']
-is_causal = res['is_causal']
 
 train_dataset_params = {
     'input_noise_sigma': config['input_noise_sigma'],
 }
 
 
-# %%
-# some helper functions for debugging
+# %% [markdown]
+# ### some helper functions for debugging
 
+# %%
 import tracemalloc
 import linecache
 
@@ -185,39 +160,40 @@ def update_plots(figs):
         plt.pause(.1)
 
 
+# %% [markdown]
+# ### profile example creation
+
 # %%
-# profile example creation
-import cProfile
-import pstats
+# import cProfile
+# import pstats
 
-from flyllm.dataset import FlyMLMDataset
+# from flyllm.dataset import FlyMLMDataset
 
-def profile_test():
-    train_dataset_small = FlyMLMDataset(X[:min(len(X),100)],**train_dataset_params,**dataset_params)
+# def profile_test():
+#     train_dataset_small = FlyMLMDataset(X[:min(len(X),100)],**train_dataset_params,**dataset_params)
 
-if False:
+# if False:
 
-    cProfile.run('profile_test()','profile_test.out')
-    p = pstats.Stats('profile_test.out')
-    p.strip_dirs().sort_stats('cumtime').print_stats(20)
+#     cProfile.run('profile_test()','profile_test.out')
+#     p = pstats.Stats('profile_test.out')
+#     p.strip_dirs().sort_stats('cumtime').print_stats(20)
 
-if False:
-    profile_test()
+# if False:
+#     profile_test()
 
 # %% [markdown]
-# ### Train
+# ### set up debug plots
 
 # %%
-# set up debug plots
-#plt.ion()
+from flyllm.plotting import initialize_debug_plots, initialize_loss_plots
 debug_params = {}
 # if contextl is long, still just look at samples from the first 64 frames
 if config['contextl'] > 64:
     debug_params['tsplot'] = np.round(np.linspace(0,64,5)).astype(int)
     debug_params['traj_nsamplesplot'] = 1
 hdebug = {}
-hdebug['train'] = initialize_debug_plots(train_dataset, train_dataloader, data,name='Train', **debug_params)
-hdebug['val'] = initialize_debug_plots(val_dataset, val_dataloader, valdata, name='Val', **debug_params)
+hdebug['train'] = initialize_debug_plots(train_dataset, train_dataloader, train_data, name='Train', **debug_params)
+hdebug['val'] = initialize_debug_plots(val_dataset, val_dataloader, val_data, name='Val', **debug_params)
 
 hloss = initialize_loss_plots(loss_epoch)
 
@@ -228,6 +204,12 @@ valexample = next(iter(val_dataloader))
 last_val_loss = loss_epoch['val'][epoch].item()
 if np.isnan(last_val_loss):
     last_val_loss = None
+
+
+# %% [markdown]
+# ### Train
+
+# %%
 
 # train loop
 for epoch in range(epoch, config['num_train_epochs']):

@@ -63,16 +63,16 @@ class Pose(Operation):
     localattrs = ['scale_perfly']
     scale_perfly: np.ndarray | None = None
 
-    def apply(self, Xkp: np.ndarray, scale_perfly: np.ndarray = None, flyid: np.ndarray = None):
+    def apply(self, Xkp: np.ndarray, scale_perfly: np.ndarray | None = None, flyid: np.ndarray | None = None):
         """ Computes pose features from keypoints.
 
         Args:
-            Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array
-            scale_perfly: Scale of each unique individual in the data. (n_individuals, n_scales) float array
-            flyid: Identity of fly corresponding to Xkp, (n_frames, n_agents) int array
+            Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array or (n_frames, n_keypoints, 2) float array
+            scale_perfly: Scale of each unique individual in the data. (n_individuals, n_scales) float array or (n_scales,) float array
+            flyid: Identity of fly corresponding to Xkp, (n_frames, n_agents) int array or (n_frames,) int array
 
         Returns:
-            pose: (n_agents,  n_frames, n_pose_features) float array
+            pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
         if scale_perfly is not None:
             self.scale_perfly = scale_perfly
@@ -184,20 +184,28 @@ def make_dataset(
     else:
         auxiliary = None
 
+    metadata = {'labels': {'velocity': {'pose': flyids.T}},
+                'inputs': {'pose': {'pose': flyids.T},
+                           'velocity': {'pose': flyids.T}}}
+
     # Assemble the dataset
     if ref_dataset is not None:
         dataset = Dataset(
             inputs=apply_opers_from_data(ref_dataset.inputs, {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
             labels=apply_opers_from_data(ref_dataset.labels, {'velocity': velocity}), #, 'auxiliary': auxiliary}),
             context_length=config['contextl'],
-            isstart=isstart)
+            isstart=isstart,
+            metadata=metadata
+        )
     elif 'dataset_params' in config and config['dataset_params'] is not None and \
         ('inputs' in config['dataset_params']) and ('labels' in config['dataset_params']):
         dataset = Dataset(
             inputs=apply_opers_from_data_params(config['dataset_params']['inputs'], {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
             labels=apply_opers_from_data_params(config['dataset_params']['labels'], {'velocity': velocity}), #, 'auxiliary': auxiliary}),
             context_length=config['contextl'],
-            isstart=isstart)
+            isstart=isstart, 
+            metadata=metadata
+        )
     else:
         # velocity = OddRoot(5)(velocity)
 
@@ -224,6 +232,7 @@ def make_dataset(
             },
             context_length=config['contextl'],
             isstart=isstart,
+            metadata=metadata
         )
     dataset_params = dataset.get_params()
     if return_all:
