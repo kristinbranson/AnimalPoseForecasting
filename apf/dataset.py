@@ -1011,12 +1011,21 @@ def apply_operations(data: Data, operations: list[Operation]) -> Data:
     return data
 
 
-def apply_inverse_operations(data, operations):
+def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data, operations: list | None = None, invertdata: dict | None = None):
     """ Apply the inverse of operations to data, in reverse order.
     """
+    
+    # allow data to be a Data object, in which case we extract operations and invertdata from it
+    if isinstance(data, Data):
+        if operations is None:
+            operations = data.operations
+        if invertdata is None:
+            invertdata = data.invertdata
+        data = data.array
+    
     for oper in reversed(operations):
-        if isinstance(data.invertdata, dict) and oper.__class__.__name__.lower() in data.invertdata:
-            extraargs = data.invertdata[oper.__class__.__name__.lower()]
+        if invertdata is not None and oper.__class__.__name__.lower() in invertdata:
+            extraargs = invertdata[oper.__class__.__name__.lower()]
             if isinstance(extraargs, dict):
                 data = oper.invert(data, **extraargs)
             elif isinstance(extraargs, list) | isinstance(extraargs, tuple):

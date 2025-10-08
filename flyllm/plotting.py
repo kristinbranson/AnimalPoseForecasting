@@ -759,8 +759,7 @@ def debug_plot_pose(example, train_dataset=None, pred=None, data=None,
         if isflymlm:
             Xkp_true = examplecurr.labels.get_next_keypoints(**true_args)
         else:
-            Xkp_true = apf.dataset.apply_inverse_operations(examplecurr['labels']['velocity'].array, 
-                                                            examplecurr['labels']['velocity'].operations)
+            Xkp_true = apf.dataset.apply_inverse_operations(examplecurr['labels']['velocity'])
         nametrue = 'Labels'
         # ['input'][iplot,0,...].numpy(),
         #                            example['init'][iplot,...].numpy(),
