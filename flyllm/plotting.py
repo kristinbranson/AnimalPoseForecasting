@@ -690,12 +690,12 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
     return ax, fig
 
 
-def debug_plot_pose(example, train_dataset=None, pred=None, data=None,
+def debug_plot_pose(examplein, train_dataset=None, pred=None, data=None,
                     true_discrete_mode='to_discretize',
                     pred_discrete_mode='sample',
                     ntsplot=5, nsamplesplot=3, h=None, ax=None, fig=None,
                     tsplot=None):
-    example, samplesplot = subsample_batch(example, nsamples=nsamplesplot,
+    example, samplesplot = subsample_batch(examplein, nsamples=nsamplesplot,
                                            dataset=train_dataset)
 
     # keep compatibility with old FlyMLMDataset for now
@@ -736,7 +736,7 @@ def debug_plot_pose(example, train_dataset=None, pred=None, data=None,
         ntsplot = len(tsplot)
 
     if ax is None:
-        fig, ax = plt.subplots(nsamplesplot, ntsplot, squeeze=False)
+        fig, ax = plt.subplots(nsamplesplot, ntsplot, squeeze=False, figsize=(3 * ntsplot, 3 * nsamplesplot))
 
     if h is None:
         h = {'kpt0': [], 'kpt1': [], 'edge0': [], 'edge1': []}
@@ -753,27 +753,33 @@ def debug_plot_pose(example, train_dataset=None, pred=None, data=None,
     else:
         pred_args = {}
 
+    nametrue = 'Labels'
+
     for i in range(nsamplesplot):
         iplot = samplesplot[i]
         examplecurr = example[i]
         if isflymlm:
             Xkp_true = examplecurr.labels.get_next_keypoints(**true_args)
+            t0 = examplecurr.metadata['t0']
+            flynum = examplecurr.metadata['flynum']
         else:
             Xkp_true = apf.dataset.apply_inverse_operations(examplecurr['labels']['velocity'])
-        nametrue = 'Labels'
-        # ['input'][iplot,0,...].numpy(),
-        #                            example['init'][iplot,...].numpy(),
-        #                            example['labels'][iplot,...].numpy(),
-        #                            example['scale'][iplot,...].numpy())
-        # Xkp_true = Xkp_true[...,0]
-        t0 = examplecurr.metadata['t0']
-        flynum = examplecurr.metadata['flynum']
+            Xkp_true = Xkp_true[0].transpose(0,2,1)
+            t0 = examplecurr['metadata']['start_frame']
+            flynum = examplecurr['metadata']['agent_id']
         if pred is not None:
             predcurr = pred[i]
-            Xkp_pred = predcurr.labels.get_next_keypoints(**pred_args)
+            if isflymlm:
+                Xkp_pred = predcurr.labels.get_next_keypoints(**pred_args)
+            else:
+                Xkp_pred = apf.dataset.apply_inverse_operations(predcurr['labels']['velocity'])
+                Xkp_pred = Xkp_pred[0].transpose(0,2,1)
             namepred = 'Pred'
         elif data is not None:
-            Xkp_pred = data['X'][:, :, t0:t0 + contextl, flynum].transpose(2, 0, 1)
+            if isflymlm:
+                Xkp_pred = data['X'][:, :, t0:t0 + contextl, flynum].transpose(2, 0, 1)
+            else:
+                Xkp_pred = data['track'].array[flynum,t0:t0+contextl].transpose(0,2,1)
             namepred = 'Raw data'
         else:
             Xkp_pred = None
@@ -796,14 +802,14 @@ def debug_plot_pose(example, train_dataset=None, pred=None, data=None,
                 ax[i, j].set_title(f't = {tplot}')
 
             h['kpt0'][i][j], h['edge0'][i][j], _, _, _ = plot_fly(Xkp_true[tplot, :, :],
-                                                                       skel_lw=2, color=[0, 0, 0],
-                                                                       ax=ax[i, j], hkpt=h['kpt0'][i][j],
-                                                                       hedge=h['edge0'][i][j])
+                                                                skel_lw=2, color=[0, 0, 0],
+                                                                ax=ax[i, j], hkpt=h['kpt0'][i][j],
+                                                                hedge=h['edge0'][i][j])
             if Xkp_pred is not None:
                 h['kpt1'][i][j], h['edge1'][i][j], _, _, _ = plot_fly(Xkp_pred[tplot, :, :],
-                                                                           skel_lw=1, color=[0, 1, 1],
-                                                                           ax=ax[i, j], hkpt=h['kpt1'][i][j],
-                                                                           hedge=h['edge1'][i][j])
+                                                                    skel_lw=1, color=[0, 1, 1],
+                                                                    ax=ax[i, j], hkpt=h['kpt1'][i][j],
+                                                                    hedge=h['edge1'][i][j])
                 if i == 0 and j == 0:
                     ax[i, j].legend([h['edge0'][i][j], h['edge1'][i][j]], [nametrue, namepred])
             ax[i, j].set_aspect('equal')

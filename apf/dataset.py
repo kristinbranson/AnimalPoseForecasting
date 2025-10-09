@@ -486,6 +486,7 @@ class Fusion(Operation):
         ismultiagent = data.ndim == 3
         if not ismultiagent:
             data = data[None, ...]
+            kwargs_per_op = [{k: v[None, ...] for k, v in kwargs.items()} for kwargs in kwargs_per_op] if kwargs_per_op is not None else None
         
         if kwargs_per_op is None:
             kwargs_per_op = [{} for _ in self.operations]
@@ -606,7 +607,6 @@ class LocalVelocity(Operation):
             pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
         ismultiagent = velocity.ndim == 3
-        assert x0 is None or (x0.ndim == velocity.ndim), "x0.ndim must be velocity.ndim"
         if not ismultiagent:
             velocity = velocity[None, ...]
             if x0 is not None:
@@ -685,7 +685,6 @@ class GlobalVelocity(Operation):
             pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
         ismultiagent = velocity.ndim == 3
-        assert x0 is None or (x0.ndim == velocity.ndim), "x0.ndim must be velocity.ndim"
         if not ismultiagent:
             velocity = velocity[None, ...]
             if x0 is not None:
@@ -755,6 +754,11 @@ class Velocity(Operation):
             pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
         if x0 is not None:
+            
+            # if has a value for every frame, just take the first frame
+            if x0.ndim == velocity.ndim:
+                x0 = x0[0]
+            
             kwargs_per_op = [{'x0': x0[..., self.global_inds]}, {'x0': x0[..., self.local_inds]}]
         else:
             kwargs_per_op = None
@@ -1375,7 +1379,7 @@ class Dataset(torch.utils.data.Dataset):
             params['labels'][key] = [oper.to_dict() for oper in data.operations]
         return params
 
-    def item_to_data(self,item: dict[str, np.ndarray | torch.Tensor]) -> dict[str, Data]:
+    def item_to_data(self,item: dict[str, np.ndarray | torch.Tensor]) -> dict:
         """
         item_to_data(item)
         Converts an item (as returned by __getitem__) or the prediction of a model to a dictionary of 
@@ -1424,6 +1428,7 @@ class Dataset(torch.utils.data.Dataset):
                 else:
                     metadatacurr = None
                 datadict['labels'][k] = Data(name=self.labels[k].name, array=v, operations=self.labels[k].operations, invertdata=metadatacurr)
+        datadict['metadata'] = {k: v for k,v in item.get('metadata',{}).items() if k not in ['inputs','labels']}        
         
         return datadict
 

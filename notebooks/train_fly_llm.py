@@ -82,7 +82,7 @@ if not os.path.exists(outfigdir):
     os.makedirs(outfigdir)
 
 # %% [markdown]
-# ### Configuration
+# ### Load configuration and data 
 
 # %%
 res = init_flyllm(configfile=configfile,mode='train',restartmodelfile=restartmodelfile,
@@ -180,6 +180,18 @@ def update_plots(figs):
 
 # if False:
 #     profile_test()
+
+# %%
+example_curr = train_dataset[0]
+data_curr = train_dataset.item_to_data(example_curr)
+data_curr['labels']['velocity'].array.shape
+pose = apf.dataset.apply_inverse_operations(data_curr['labels']['velocity'])
+print(pose.shape)
+print(pose[0,0])
+print(example_curr['metadata'].keys())
+t0 = example_curr['metadata']['start_frame']
+flynum = example_curr['metadata']['agent_id']
+
 
 # %% [markdown]
 # ### set up debug plots

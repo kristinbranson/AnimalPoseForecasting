@@ -184,9 +184,9 @@ def make_dataset(
     else:
         auxiliary = None
 
-    metadata = {'labels': {'velocity': {'pose': flyids.T}},
-                'inputs': {'pose': {'pose': flyids.T},
-                           'velocity': {'pose': flyids.T}}}
+    metadata = {'labels': { 'velocity': {'pose': flyids.T, 'velocity': pose.array} },
+                'inputs': { 'pose': {'pose': flyids.T},
+                            'velocity': {'pose': flyids.T} }}
 
     # Assemble the dataset
     if ref_dataset is not None:
