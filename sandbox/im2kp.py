@@ -1,3 +1,9 @@
+"""
+Code that Kristin used for a course on Animal Pose Estimation with Deep Learning.
+
+Copied from https://colab.research.google.com/drive/15lY6vI0cT6Iw6yq4_2Kxw5Lptn89lAUi?usp=sharing
+"""
+
 import numpy as np
 from tqdm import tqdm
 import os
