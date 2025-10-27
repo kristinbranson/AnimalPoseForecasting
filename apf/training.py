@@ -4,6 +4,7 @@ from torch.utils.data import DataLoader
 import tqdm
 import copy
 import logging
+from typing import Callable
 
 from apf.models import (
     sanity_check_temporal_dep,
@@ -39,6 +40,8 @@ def train(
         max_grad_norm: float,
         optimizer_args: dict,
         loss_epoch: dict | None = None,
+        end_epoch_hook: Callable | None = None,
+        end_iter_hook: Callable | None = None,
 ) -> tuple[TransformerModel, TransformerModel, dict]:
     """ Trains a model on train_dataloader, using val_dataloader to select the best_model.
 
@@ -90,6 +93,7 @@ def train(
     progress_bar = tqdm.tqdm(range(num_training_steps), file=sys.stdout)
     best_model = model
     best_val_loss = 10000
+        
     for epoch in range(0, num_train_epochs):
         model.train()
         tr_loss = torch.tensor(0.0).to(device)
@@ -118,6 +122,10 @@ def train(
             optimizer.step()
             lr_scheduler.step()
             model.zero_grad()
+            
+            if end_iter_hook is not None:
+                end_iter_hook(model=model, step=step, example=example, 
+                            predfn=lambda input: model.output(input, mask=train_src_mask, is_causal=is_causal))
 
         # update progress bar
         stat = {'trainloss': tr_loss.item() / nmask_train, 'lastvalloss': last_val_loss, 'epoch': epoch}
@@ -136,6 +144,9 @@ def train(
         loss_epoch['val'][epoch], loss_epoch['val_discrete'][epoch], loss_epoch['val_continuous'][epoch] = \
             compute_loss_mixed(model, val_dataloader, device, train_src_mask, weight_discrete=weight_discrete)
         last_val_loss = loss_epoch['val'][epoch].item()
+        
+        if end_epoch_hook is not None:
+            end_epoch_hook(model=model, epoch=epoch, loss_epoch=loss_epoch)
 
         if last_val_loss < best_val_loss:
             best_model = copy.deepcopy(model)

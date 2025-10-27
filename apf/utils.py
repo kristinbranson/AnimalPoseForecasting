@@ -540,19 +540,21 @@ def compute_ylim(h,margin=0.1):
     ylim[1] += margin*dy
     return ylim
 
+def is_notebook():
+    try:
+        from IPython import get_ipython
+        if get_ipython() is not None and 'IPKernelApp' in get_ipython().config:
+            return True
+    except:
+        pass
+    return False
+
 def set_mpl_backend(backend='tkAgg',force=False):
     # Only set non-interactive backend if not in Jupyter
     import matplotlib
-    if force:
+    if force or not is_notebook():
         matplotlib.use(backend)
         return
-    try:
-        # Running in Jupyter/IPython, keep default backend
-        from IPython import get_ipython
-        assert 'IPKernelApp' in get_ipython().config
-    except:
-        # Not in Jupyter, use non-interactive backend
-        matplotlib.use(backend)
         
 def recursive_dict_eval(d, fun: Callable, *args, **kwargs) -> dict | np.ndarray | torch.Tensor:
     """

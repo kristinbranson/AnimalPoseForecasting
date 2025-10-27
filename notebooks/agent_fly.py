@@ -8,7 +8,7 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.11.2
 #   kernelspec:
-#     display_name: Python 3 (ipykernel)
+#     display_name: transformer
 #     language: python
 #     name: python3
 # ---
@@ -52,7 +52,7 @@ config = read_config(
 )
 
 # %%
-train_dataset, flyids, track, pose, velocity, sensory = make_dataset(config, 'intrainfile', return_all=True, debug=True)
+train_dataset, flyids, track, pose, velocity, sensory, dataset_params = make_dataset(config, 'intrainfile', return_all=True, debug=True)
 
 # %%
 val_dataset = make_dataset(config, 'invalfile', train_dataset, debug=True)

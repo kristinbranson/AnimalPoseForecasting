@@ -31,7 +31,7 @@ import os
 
 import apf
 from apf.training import train
-from apf.utils import function_args_from_config, set_mpl_backend
+from apf.utils import function_args_from_config, set_mpl_backend, is_notebook
 from apf.simulation import simulate
 from apf.models import initialize_model
 import matplotlib.pyplot as plt
@@ -42,23 +42,24 @@ from flyllm.features import featglobal, get_sensory_feature_idx
 from flyllm.simulation import animate_pose
 
 from flyllm.prepare import init_flyllm
+from flyllm.plotting import initialize_debug_plots, initialize_loss_plots
 
 import logging
+import tqdm
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
 
 set_mpl_backend('tkAgg')
-mpl_backend = plt.get_backend()
-if mpl_backend == 'inline':
-    from IPython import display
-    from IPython.display import HTML
+ISNOTEBOOK = is_notebook()
+if ISNOTEBOOK:
+    from IPython.display import HTML, display, clear_output
+    plt.ioff()
+else:
+    plt.ion()
 
 LOG.info('CUDA available: ' + str(torch.cuda.is_available()))
 LOG.info('matplotlib backend: ' + mpl_backend)
-
-# %%
-print(torch.cuda.memory_summary())
-
+LOG.info('isnotebook: ' + str(ISNOTEBOOK))
 
 # %%
 timestamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
@@ -114,6 +115,14 @@ train_dataset_params = {
     'input_noise_sigma': config['input_noise_sigma'],
 }
 
+ntrain_batches = len(train_dataloader)
+num_training_steps = ntrain_batches * config['num_train_epochs']
+valexample = next(iter(val_dataloader))
+ntimepoints_per_batch = valexample['input'].shape[0]
+last_val_loss = loss_epoch['val'][epoch].item()
+if np.isnan(last_val_loss):
+    last_val_loss = None
+
 
 # %% [markdown]
 # ### some helper functions for debugging
@@ -149,15 +158,18 @@ def display_top(snapshot, key_type='lineno', limit=None):
     total = sum(stat.size for stat in top_stats)
     print("Total allocated size: %.1f KiB" % (total / 1024))
     
-def update_plots(figs):
-    if mpl_backend == 'inline':
-        display.clear_output(wait=True)
+def refresh_plots(hdebug):
+    figs = [v for h in hdebug.values() for k, v in h.items() if k.startswith('fig')]
+        
+    if ISNOTEBOOK:
+        clear_output(wait=True)
         for fig in figs:
             if fig is not None:
-                display.display(fig)
+                display(fig)
     else:
-        plt.show()
-        plt.pause(.1)
+        for fig in figs:
+            fig.canvas.draw()
+            fig.canvas.flush_events()
 
 
 # %% [markdown]
@@ -197,7 +209,6 @@ flynum = example_curr['metadata']['agent_id']
 # ### set up debug plots
 
 # %%
-from flyllm.plotting import initialize_debug_plots, initialize_loss_plots
 debug_params = {}
 # if contextl is long, still just look at samples from the first 64 frames
 if config['contextl'] > 64:
@@ -206,22 +217,81 @@ if config['contextl'] > 64:
 hdebug = {}
 hdebug['train'] = initialize_debug_plots(train_dataset, train_dataloader, train_data, name='Train', **debug_params)
 hdebug['val'] = initialize_debug_plots(val_dataset, val_dataloader, val_data, name='Val', **debug_params)
-
 hloss = initialize_loss_plots(loss_epoch)
 
-progress_bar = tqdm.tqdm(range(num_training_steps),initial=epoch*ntrain_batches)
+if ISNOTEBOOK:
+    refresh_plots(hdebug|{'loss': hloss})
+else:
+    plt.ion()
+    plt.show(block=False)
 
-ntimepoints_per_batch = train_dataset.ntimepoints
+
+
+# %%
+# functions for plotting visualizations of results during training
+
+def end_iter_hook(model=None, step=None, example=None, predfn=None, **kwargs):
+    
+    assert step is not None
+    
+    if step % config['niterplot'] != 0:
+        return
+
+    assert model is not None
+    assert example is not None
+    assert predfn is not None
+
+    LOG.info(f'Updating debug plots at step {step}')
+
+    with torch.no_grad():
+        trainpred = predfn(example['input'].to(device=device))
+        valpred = predfn(valexample['input'].to(device=device))
+    update_debug_plots(hdebug['train'],config,model,train_dataset,example,trainpred,name='Train',criterion=criterion,**debug_params)
+    update_debug_plots(hdebug['val'],config,model,val_dataset,valexample,valpred,name='Val',criterion=criterion,**debug_params)
+    refresh_plots(hdebug)
+    return
+
+def end_epoch_hook(loss_epoch=None, **kwargs):
+    assert loss_epoch is not None
+    LOG.info(f'Updating loss plots at end of epoch {epoch}')
+    update_loss_plots(hloss, loss_epoch)
+    refresh_plots(hdebug|{'loss': hloss})
+    return
+
+trainexample = next(iter(train_dataloader))
 valexample = next(iter(val_dataloader))
-last_val_loss = loss_epoch['val'][epoch].item()
-if np.isnan(last_val_loss):
-    last_val_loss = None
+contextl = example['input'].shape[1]
+train_src_mask = torch.nn.Transformer.generate_square_subsequent_mask(contextl, device=device)
 
+end_iter_hook(model=model,step=0,example=trainexample,predfn=lambda input: model.output(input, mask=train_src_mask, is_causal=True))
+
+# %%
+# clean up memory allocation before training
+if device.type == 'cuda':
+    model = model.to(device='cpu')
+    gc.collect()
+    torch.cuda.empty_cache()
+    model = model.to(device=device)
+    memalloc = torch.cuda.memory_allocated() / 1e9
+    print(f'Initial cuda memory allocated: {memalloc:.3f} GB')
+    memreserved = torch.cuda.memory_reserved() / 1e9
+    print(f'Initial cuda memory reserved: {memreserved:.3f} GB')
+    print(torch.cuda.memory_summary())
+
+train_args = function_args_from_config(config, train)
+# can override args here
+#train_args['num_train_epochs'] = 100
+model, best_model, loss_epoch = train(train_dataloader, val_dataloader, model, 
+                                    loss_epoch=loss_epoch, **train_args,
+                                    end_iter_hook=end_iter_hook,
+                                    end_epoch_hook=end_epoch_hook)
 
 # %% [markdown]
 # ### Train
 
 # %%
+progress_bar = tqdm.tqdm(range(num_training_steps),initial=epoch*ntrain_batches)
+
 
 # train loop
 for epoch in range(epoch, config['num_train_epochs']):
@@ -238,7 +308,7 @@ for epoch in range(epoch, config['num_train_epochs']):
         pred = model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal)
         loss, loss_discrete, loss_continuous = criterion_wrapper(example, pred, criterion, train_dataset, config)
         assert np.isnan(loss.item()) == False, f'loss is nan at step {step}, epoch {epoch}'
-          
+        
         loss.backward()
         
         for weights in model.parameters():
@@ -251,14 +321,13 @@ for epoch in range(epoch, config['num_train_epochs']):
             nmask_train += example['input'].shape[0]*ntimepoints_per_batch 
     
         if step % config['niterplot'] == 0:
-          
+        
             with torch.no_grad():
                 trainpred = model.output(example['input'].to(device=device),mask=train_src_mask,is_causal=is_causal)
                 valpred = model.output(valexample['input'].to(device=device),mask=train_src_mask,is_causal=is_causal)
             update_debug_plots(hdebug['train'],config,model,train_dataset,example,trainpred,name='Train',criterion=criterion,**debug_params)
             update_debug_plots(hdebug['val'],config,model,val_dataset,valexample,valpred,name='Val',criterion=criterion,**debug_params)
-            update_plots([hdebug['train']['figpose'],hdebug['train']['figtraj'],hdebug['train']['figstate'],
-                          hdebug['val']['figpose'],hdebug['val']['figtraj'],hdebug['val']['figstate'],hloss['fig']])
+            refresh_plots(hdebug)
     
         tr_loss_step = loss.detach()
         tr_loss += tr_loss_step
@@ -290,16 +359,15 @@ for epoch in range(epoch, config['num_train_epochs']):
     
     # compute validation loss after this epoch
     if val_dataset.discretize:
-         loss_epoch['val'][epoch],loss_epoch['val_discrete'][epoch],loss_epoch['val_continuous'][epoch] = \
-           compute_loss(model,val_dataloader,val_dataset,device,train_src_mask,criterion,config)
+        loss_epoch['val'][epoch],loss_epoch['val_discrete'][epoch],loss_epoch['val_continuous'][epoch] = \
+            compute_loss(model,val_dataloader,val_dataset,device,train_src_mask,criterion,config)
     else:
         loss_epoch['val'][epoch] = \
-          compute_loss(model,val_dataloader,val_dataset,device,train_src_mask,criterion,config)
+            compute_loss(model,val_dataloader,val_dataset,device,train_src_mask,criterion,config)
     last_val_loss = loss_epoch['val'][epoch].item()
     
     update_loss_plots(hloss, loss_epoch)
-    update_plots([hdebug['train']['figpose'],hdebug['train']['figtraj'],hdebug['train']['figstate'],
-                  hdebug['val']['figpose'],hdebug['val']['figtraj'],hdebug['val']['figstate'],hloss['fig']])
+    refresh_plots(hdebug|{'loss': hloss})
     
     if (epoch + 1) % config['save_epoch'] == 0:
         savefile = os.path.join(config['savedir'], f"fly{modeltype_str}_epoch{epoch + 1}_{savetime}.pth")
@@ -314,7 +382,7 @@ for epoch in range(epoch, config['num_train_epochs']):
     if np.mod(epoch+1,config['epochs_rechunk']) == 0:
         print(f'Rechunking data after epoch {epoch}')
         X = chunk_data(data,config['contextl'],reparamfun,**chunk_data_params)
-      
+
         train_dataset = FlyMLMDataset(X,**train_dataset_params,**dataset_params)
         print('New training data set created')
 

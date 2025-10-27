@@ -17,6 +17,7 @@ from apf.features import compute_global_velocity, compute_relpose_velocity
 
 LOG = logging.getLogger(__name__)
 
+
 @dataclass
 class Operation(ABC):
     """ Abstract class for an operation to be applied to data.
@@ -26,6 +27,7 @@ class Operation(ABC):
 
     # localattrs are attributes that should not be included in to_dict and from_dict
     localattrs = []
+    name = None
 
     @abstractmethod
     def apply(self, data: np.ndarray) -> np.ndarray:
@@ -34,6 +36,10 @@ class Operation(ABC):
     @abstractmethod
     def invert(self, data: np.ndarray) -> np.ndarray:
         pass
+    
+    def __post_init__(self):
+        if self.name is None:
+            self.name = self.__class__.__name__.lower()
 
     def __call__(self, data, **kwargs):
         """
@@ -48,7 +54,7 @@ class Operation(ABC):
         """
         if isinstance(data, Data):
             return Data(
-                name=f"{data.name}_{self.__class__.__name__.lower()}",
+                name=f"{data.name}_{self.name}",
                 array=self.apply(data.array, **kwargs),
                 operations=data.operations + [self]
             )
@@ -190,6 +196,7 @@ class OddRoot(Operation):
     root: int = 3
     
     def __post_init__(self):
+        super().__post_init__()
         assert int(self.root) == self.root, "root must be an integer"
         assert np.mod(self.root, 2) == 1, "only odd roots are invertible with signed data"
 
@@ -350,6 +357,8 @@ class Discretize(Operation):
             self.fit_discretize_data_args = kwargs
         else:
             self.fit_discretize_data_args = fit_discretize_data_args | kwargs
+            
+        super().__post_init__()
 
     def compute(self, data: np.ndarray):
         """ Computes the bin edges for the data.
@@ -417,6 +426,23 @@ class Discretize(Operation):
         if not ismultiagent:
             continuous = continuous[0]
         return continuous
+    
+    @property
+    def nbins(self):
+        """
+        Returns the number of bins.
+        """
+        return self.bin_centers.shape[-1]
+    
+    def unflatten(self,data: Data | np.ndarray | torch.Tensor) -> np.ndarray:
+        """
+        array_unflattened = discretize_op.unflatten(data)
+        Returns the data array unflattened to (n_agents, n_frames, n_features, n_bins).
+        """
+        if isinstance(data, Data):
+            data = data.array
+        return data.reshape(data.shape[:-1] + (-1,self.nbins))
+        
 
 @dataclass
 class Fusion(Operation):
@@ -435,6 +461,7 @@ class Fusion(Operation):
     dims_per_op: list[int] | None = None
 
     def __post_init__(self):
+        super().__post_init__()
         assert len(self.operations) == len(self.indices_per_op), "List of indices should have same length as list of operations."
 
         all_indices = np.concatenate(self.indices_per_op)
@@ -506,6 +533,27 @@ class Fusion(Operation):
             inverted = inverted[0]
 
         return inverted
+    
+    def unfuse(self, data: Data | np.ndarray | torch.Tensor) -> np.ndarray:
+        """
+        array_parts = fusion_op.unfuse(array)
+        Returns a dict with a key for each operation. The value for each key is the part of the data
+        corresponding to that operation.
+        Args:
+            data: Either np.ndarray or torch.Tensor or Data
+        """
+        if isinstance(data, Data):
+            data = data.array
+        res = {}
+        
+        count = 0
+        for i, indices in enumerate(self.indices_per_op):
+            opname = self.operations[i].name
+            n_dims = self.dims_per_op[i]
+            res[opname] = data[..., count:count + n_dims]
+            count += n_dims
+            
+        return res
 
 @dataclass
 class Roll(Operation):
@@ -729,6 +777,7 @@ class Velocity(Operation):
             operations=[GlobalVelocity(tspred=[1]), LocalVelocity(is_angle=is_angle)],
             indices_per_op=[self.global_inds, self.local_inds]
         )
+        super().__post_init__()
 
     def apply(self, pose: np.ndarray, isstart: np.ndarray | None = None):
         """ Compute global and local velocity from pose.
@@ -943,24 +992,35 @@ def split_discr_cont(data: np.ndarray, bin_indices: list[np.ndarray]) -> tuple[n
 
 
 def get_operation(
-        operations: list[Operation], name: str, return_idx: bool = False
-) -> Operation | None | tuple[Operation | None, int | None]:
+        operations: list[Operation], name: str, return_idx: bool = False, recursive: bool = False
+) -> Operation | None | tuple[ Operation | None, int | None | tuple ]:
     """ Find operation from a list of operation, given its name.
 
     Args:
         operations: List of operations to search from.
         name: Name of operation to find.
-        return_idx: Whether to also return the index of the operation.
+        return_idx: Whether to also return the index of the operation. Default is False.
+        recursive: Whether to search recursively within Fusion operations. Default is False.
 
     Returns:
         operation: Operation corresponding to the requested name, None if not found in the list.
         idx: If return_idx is True, also returns the index of the operation within the list.
     """
     for i, oper in enumerate(operations):
-        if oper.__class__.__name__.lower() == name.lower():
+        if oper.name == name.lower():
             if return_idx:
                 return oper, i
             return oper
+    if recursive:
+        for i, oper in enumerate(operations):
+            if isinstance(oper, Fusion):
+                suboper, subidx = get_operation(oper.operations, name, return_idx=True, recursive=True)
+                if suboper is not None:
+                    if return_idx:
+                        if not isinstance(subidx, tuple):
+                            subidx = (subidx, )
+                        return suboper, (i, ) + subidx
+                    return suboper
     if return_idx:
         return None, None
     return None
@@ -973,8 +1033,10 @@ def get_post_operations(operations: list[Operation], name: str | None = None, da
 
     Args:
         operations: List of operations to search from.
-        name: Name of operation to find if non-None. If None, uses data to 
-
+        name: Name of operation to find if non-None. Can be None if data is provided. Default is None.
+        data: Data object to find operations after if name is None. data.operations must be the start of operations, 
+        and this returns the operations after. Default is None.
+    
     Returns:
         A list of operations following the input prefix.
     """
@@ -991,7 +1053,7 @@ def get_post_operations(operations: list[Operation], name: str | None = None, da
                 if isinstance(operations[i], Operation):
                     match = data.operations[i] == operations[i]
                 elif isinstance(operations[i], dict):
-                    match = (data.operations[i].__class__.__name__ == operations[i]['class']) and \
+                    match = (data.operations[i].name == operations[i]['attributes']['name']) and \
                         (data.operations[i].__module__ == operations[i]['module'])
                 else:
                     raise ValueError("operations must be a list of Operation or dict")
@@ -1004,6 +1066,21 @@ def get_post_operations(operations: list[Operation], name: str | None = None, da
         return None
     return operations[idx + 1:]
 
+def get_pre_operations(operations: list[Operation], name: str) -> list[Operation] | None:
+    """ Get a list of operations that come before the operation with the given name.
+
+    Args:
+        operations: List of operations to search from.
+        name: Name of operation to find.
+
+    Returns:
+        A list of operations preceding the input prefix.
+    """
+    _, idx = get_operation(operations, name, return_idx = True)
+    if idx is None:
+        return None
+    return operations[:idx]
+
 
 def apply_operations(data: Data, operations: list[Operation]) -> Data:
     """ Apply a list of operations to data.
@@ -1015,7 +1092,9 @@ def apply_operations(data: Data, operations: list[Operation]) -> Data:
     return data
 
 
-def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data, operations: list | None = None, invertdata: dict | None = None):
+def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data, 
+                             operations: list | None = None, invertdata: dict | None = None,
+                             extraargs: dict = {}):
     """ Apply the inverse of operations to data, in reverse order.
     """
     
@@ -1028,16 +1107,17 @@ def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data, operations:
         data = data.array
     
     for oper in reversed(operations):
-        if invertdata is not None and oper.__class__.__name__.lower() in invertdata:
-            extraargs = invertdata[oper.__class__.__name__.lower()]
-            if isinstance(extraargs, dict):
-                data = oper.invert(data, **extraargs)
-            elif isinstance(extraargs, list) | isinstance(extraargs, tuple):
-                data = oper.invert(data, *extraargs)
-            else:
-                data = oper.invert(data, extraargs)
-        else:
-            data = oper.invert(data)
+        invertdataargs = invertdata.get(oper.name, None) if invertdata else None
+        kwargs = extraargs.get(oper.name, {})
+        args = []
+        if isinstance(invertdataargs, dict):
+            kwargs = kwargs | invertdataargs
+        elif isinstance(invertdataargs, (list, tuple)):
+            args += list(invertdataargs)
+        elif invertdataargs is not None:
+            args.append(invertdataargs)
+        data = oper.invert(data, *args, **kwargs)
+        
     return data
 
 def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict[str, Data]) -> dict[str, Data]:

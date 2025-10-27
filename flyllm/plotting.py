@@ -558,10 +558,21 @@ def subsample_batch(example, nsamples=1, samples=None, dataset=None):
     return examplelist, samples
 
 
+def example2discrcont(examplecurr): 
+    fusionop, fusionidx = apf.dataset.get_operation(examplecurr['labels']['velocity'].operations,'fusion',return_idx=True)
+    discrop = apf.dataset.get_operation(fusionop.operations,'discretize')
+    fuseddata = apf.dataset.apply_inverse_operations(examplecurr['labels']['velocity'],examplecurr['labels']['velocity'].operations[fusionidx+1:])
+    unfuseddata = fusionop.unfuse(fuseddata)
+    unfuseddata['discretize'] = discrop.unflatten(unfuseddata['discretize'])
+    return (unfuseddata['discretize'],unfuseddata['identity'])
+
 def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None,
                           pred=None, data=None, nsamplesplot=3,
                           h=None, ax=None, fig=None, label_true='True', label_pred='Pred',
                           ntsplot=3, ntsplot_global=None, ntsplot_relative=None):
+    
+    isflymlm = isflymlm_dataset(train_dataset)
+    
     example, samplesplot = subsample_batch(example_in, nsamples=nsamplesplot,
                                            dataset=train_dataset)
     nsamplesplot = len(example)
@@ -569,31 +580,69 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
     true_color = [0, 0, 0]
     pred_cmap = lambda x: plt.get_cmap("tab10")(x % 10)
 
-    if train_dataset.ismasked():
+    if isflymlm and train_dataset.ismasked():
         mask = example_in['mask']
     else:
         mask = None
 
     if ax is None:
         if fig is None:
-          fig, ax = plt.subplots(1, nsamplesplot, squeeze=False)
+          fig, ax = plt.subplots(1, nsamplesplot, squeeze=False, figsize=(3 * nsamplesplot, 6))
         else:
           ax = fig.subplots(1, nsamplesplot, squeeze=False)
         ax = ax[0, :]
 
-    featidxplot, ftplot = example[0].labels.select_featidx_plot(ntsplot=ntsplot,
-                                                                ntsplot_global=ntsplot_global,
-                                                                ntsplot_relative=ntsplot_relative)
+    examplecurr = example[0]
+    if isflymlm:
+        featidxplot, ftplot = examplecurr.labels.select_featidx_plot(ntsplot=ntsplot,
+                                                                    ntsplot_global=ntsplot_global,
+                                                                    ntsplot_relative=ntsplot_relative)
+        outnames = examplecurr.labels.get_multi_names()
+        contextl = examplecurr.labels.ntimepoints_train
+        idx_multi_to_multidiscrete = examplecurr.labels._idx_multi_to_multidiscrete
+        idx_multi_to_multicontinuous = examplecurr.labels._idx_multi_to_multicontinuous
+        nbins = train_dataset.discretize_nbins
+    else:
+        # this doesn't handle sampling from multiple time points
+        velop,velidx = apf.dataset.get_operation(examplecurr['labels']['velocity'].operations,'velocity',return_idx=True)
+        featidxglobal = velop.global_inds
+        featidxrelative = velop.local_inds
+        featidxplot = np.concatenate((featidxglobal,featidxrelative))
+        outnames = posenames
+
+        fusionop, fusionidx = apf.dataset.get_operation(examplecurr['labels']['velocity'].operations,'fusion',return_idx=True)
+        discrop = apf.dataset.get_operation(fusionop.operations,'discretize')
+        nbins = discrop.nbins
+        contextl = examplecurr['labels']['velocity'].array.shape[0]
+        fusion_indices = {op.name: idx for (op, idx) in zip(fusionop.operations,fusionop.indices_per_op)}
+        idx_multi_to_multidiscrete = -np.ones(np.max(featidxplot)+1,dtype=int)
+        idx_multi_to_multicontinuous = -np.ones(np.max(featidxplot)+1,dtype=int)
+        for i,fi in enumerate(fusion_indices['discretize']):
+            idx_multi_to_multidiscrete[fi] = i
+        for i,fi in enumerate(fusion_indices['identity']):
+            idx_multi_to_multicontinuous[fi] = i
+                    
     for i, iplot in enumerate(samplesplot):
         examplecurr = example[i]
-        rawlabelstrue = examplecurr.labels.get_train_labels()
-        zmovement_continuous_true = rawlabelstrue['continuous']
-        zmovement_discrete_true = rawlabelstrue['discrete']
+        if isflymlm:
+            rawlabelstrue = examplecurr.labels.get_train_labels()
+            zmovement_continuous_true = rawlabelstrue['continuous']
+            zmovement_discrete_true = rawlabelstrue['discrete']
+        else:
+            zmovement_discrete_true, zmovement_continuous_true = example2discrcont(examplecurr)
+            if isinstance(zmovement_discrete_true,np.ndarray):
+                zmovement_discrete_true = torch.from_numpy(zmovement_discrete_true)
+            if isinstance(zmovement_continuous_true,np.ndarray):
+                zmovement_continuous_true = torch.from_numpy(zmovement_continuous_true)
 
         err_total = None
-        maskcurr = examplecurr.labels.get_mask()
-        if maskcurr is None:
-            maskidx = np.nonzero(maskcurr)[0]
+        if isflymlm:
+            maskcurr = examplecurr.labels.get_mask()
+            if maskcurr is None:
+                maskidx = np.nonzero(maskcurr)[0]
+        else:
+            maskcurr = None
+
         zmovement_continuous_pred = None
         zmovement_discrete_pred = None
         if pred is not None:
@@ -627,19 +676,14 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
 
         mult = 6.
         d = len(featidxplot)
-        outnames = examplecurr.labels.get_multi_names()
-        contextl = examplecurr.labels.ntimepoints_train
 
         ax[i].cla()
 
-        # TODO make this use the new PoseLabels class better
-        idx_multi_to_multidiscrete = examplecurr.labels._idx_multi_to_multidiscrete
-        idx_multi_to_multicontinuous = examplecurr.labels._idx_multi_to_multicontinuous
         for featii, feati in enumerate(featidxplot):
             featidx = idx_multi_to_multidiscrete[feati]
             if featidx < 0:
                 continue
-            im = np.ones((train_dataset.discretize_nbins, contextl, 3))
+            im = np.ones((nbins, contextl, 3))
             ztrue = zmovement_discrete_true[:, featidx, :].cpu().T
             ztrue = ztrue - torch.min(ztrue)
             ztrue = ztrue / torch.max(ztrue)
@@ -884,7 +928,7 @@ def debug_plot_sample(example_in, dataset=None, nplot=3):
         idx = example[0].inputs.get_sensory_feature_idx()
         T = example[0].ntimepoints
     else:
-        sensory_op = apf.dataset.get_operation(example[0]['inputs']['sensory'].operations,'Sensory')
+        sensory_op = apf.dataset.get_operation(example[0]['inputs']['sensory'].operations,'sensory')
         idx = sensory_op.idxinfo
         T = example[0]['inputs']['sensory'].array.shape[0]
         
@@ -897,9 +941,13 @@ def debug_plot_sample(example_in, dataset=None, nplot=3):
         if isflymlm:
             inputs = example[iplot].inputs.get_raw_inputs()
             labels = example[iplot].labels.get_multi(zscored=True)
-        else:
+        else:                    
             inputs = example[iplot]['inputs']['sensory'].array
-            labels = np.concatenate([example[iplot]['labels'][k].array for k in example[iplot]['labels']], axis=-1)
+            labels = []
+            for v in example[iplot]['labels'].values():
+                zlabels_curr = apf.dataset.apply_inverse_operations(v,apf.dataset.get_post_operations(v.operations,'zscore'))
+                labels.append(zlabels_curr)
+            labels = np.concatenate(labels,axis=-1)
         ax[iplot, 0].imshow(inputs, vmin=-3, vmax=3, cmap='coolwarm', aspect='auto')
         ax[iplot, 0].set_title(f'Input {samplei}')
         # ax[iplot,0].set_xticks(inputidxstart)
@@ -1342,9 +1390,6 @@ def initialize_debug_plots(dataset, dataloader, data, name='', tsplot=None, traj
         'figstate': None,
         'example': example
     }
-
-    plt.show()
-    plt.pause(.001)
 
     return hdebug
 
