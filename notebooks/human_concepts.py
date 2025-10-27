@@ -77,28 +77,44 @@ ax.axis('equal')
 
 # %%
 centeridx = 7
+fps = 150.
 
 # compute the velocity vector
 # X is # (nkpts, 2, nframes, nflies)
 vel = rawdata['X'][centeridx,:,1:,:] - rawdata['X'][centeridx,:,:-1,:]  # (2, nframes-1, nflies)
 vel[:,rawdata['isstart'][1:,:]] = np.nan  # set velocity between end frames and start frames to nan
+vel_mmps = vel * fps  # convert to mm/s
 
 velmag = np.linalg.norm(vel, axis=0)  # (nframes-1, nflies)
+velmag_mmps = velmag * fps  # convert to mm/s
 
-maxvelmag = .5
+maxvelmag = 50
 
 # plot the velocity of one fly over time
 fig,ax = plt.subplots(3,1, figsize=(8,6), sharex=True)
-ax[0].plot(vel[0,:,flyidx], '-')
+ax[0].plot(vel_mmps[0,:,flyidx], '-')
 ax[0].set_ylabel('Vx')
 ax[0].set_ylim([-maxvelmag, maxvelmag])
-ax[1].plot(vel[1,:,flyidx], '-')
+ax[1].plot(vel_mmps[1,:,flyidx], '-')
 ax[1].set_ylabel('Vy')
 ax[1].set_ylim([-maxvelmag, maxvelmag])
-ax[2].plot(velmag[:,flyidx], '-')
+ax[2].plot(velmag_mmps[:,flyidx], '-')
 ax[2].set_ylabel('|V|')
 ax[2].set_ylim([0, maxvelmag])
 ax[2].set_xlabel('Frame')
 
 ax[2].set_xlim(0,10000)
 
+
+# %%
+# histogram the velocity magnitudes
+
+minvelmag = 1e-1
+maxvelmag = 100
+nbins = 100
+bin_edges = np.logspace(np.log10(minvelmag), np.log10(maxvelmag), num=nbins+1)
+counts,bin_edges = np.histogram(velmag_mmps[~np.isnan(velmag_mmps)],bins=bin_edges)
+fig,ax = plt.subplots()
+ax.bar(bin_edges[:-1], counts, width=np.diff(bin_edges), align='edge')
+ax.set_xlabel('Velocity magnitude (mm/s)')
+ax.set_ylabel('Fly-frames')
