@@ -158,8 +158,6 @@ def display_top(snapshot, key_type='lineno', limit=None):
     print("Total allocated size: %.1f KiB" % (total / 1024))
 
 
-# %%
-
 # %% [markdown]
 # ### profile example creation
 
@@ -182,6 +180,8 @@ def display_top(snapshot, key_type='lineno', limit=None):
 #     profile_test()
 
 # %%
+# random debugging stuff
+
 example_curr = train_dataset[0]
 data_curr = train_dataset.item_to_data(example_curr)
 data_curr['labels']['velocity'].array.shape

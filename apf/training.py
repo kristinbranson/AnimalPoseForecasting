@@ -33,28 +33,38 @@ def init_optimizer(num_training_steps: int, model: TransformerModel, optimizer_a
     return optimizer, lr_scheduler
 
 def train(
-        train_dataloader: DataLoader,
-        val_dataloader: DataLoader,
-        model: TransformerModel,
-        num_train_epochs: int,
-        max_grad_norm: float,
-        optimizer_args: dict,
+        train_dataloader: DataLoader | None = None,
+        val_dataloader: DataLoader | None = None,
+        model: TransformerModel | None = None,
+        num_train_epochs: int | None = None,
+        max_grad_norm: float | None = None,
+        optimizer_args: dict | None = None,
         loss_epoch: dict | None = None,
         end_epoch_hook: Callable | None = None,
         end_iter_hook: Callable | None = None,
+        optimizer: torch.optim.Optimizer | None = None,
+        lr_scheduler: torch.optim.lr_scheduler.LambdaLR | None = None,
 ) -> tuple[TransformerModel, TransformerModel, dict]:
     """ Trains a model on train_dataloader, using val_dataloader to select the best_model.
 
     Args:
-         train_dataloader: Dataloader used for training, provides examples with 'input' of shape
-            (batch_size, contextl, n_in_features) and 'labels' of shape (batch_size, contextl, n_out_features)
-         val_dataloader: Dataloader usef for validation.
-         model: Transformer model to be trained
-         num_train_epochs: How many times to loop through all examples in the dataset during training.
-         max_grad_norm: Threshold for clipping gradients during training.
-         optimizer_args: Named arguments used for the AdamW optimizer.
-         loss_epoch: Keeps track of training and validation losses. If provided, morphs this input so that
+        train_dataloader: Dataloader used for training, provides examples with 'input' of shape
+           (batch_size, contextl, n_in_features) and 'labels' of shape (batch_size, contextl, n_out_features)
+        val_dataloader: Dataloader usef for validation.
+        model: Transformer model to be trained
+        num_train_epochs: How many times to loop through all examples in the dataset during training.
+        max_grad_norm: Threshold for clipping gradients during training.
+        optimizer_args: Named arguments used for the AdamW optimizer.
+        loss_epoch: Keeps track of training and validation losses. If provided, morphs this input so that
             if training is aborted the losses are still available.
+        end_epoch_hook: Function called at the end of each epoch. Signature:
+            def end_epoch_hook(model: TransformerModel, epoch: int, loss_epoch: dict) -> None
+        end_iter_hook: Function called at the end of each training iteration. Signature:
+            def end_iter_hook(model: TransformerModel, step: int, example: dict, predfn: Callable) -> None
+            where predfn is a function that predicts with the model on the input example. 
+        optimizer: If provided, uses this optimizer instead of initializing a new optimizer.
+        lr_scheduler: If provided, uses this learning rate scheduler instead of initializing a new one.
+        
 
     Returns:
         model: Model after training on all epochs
