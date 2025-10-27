@@ -360,6 +360,11 @@ def get_batch_idx(example, idx):
     for kw, v in example.items():
         if isinstance(v, np.ndarray) or torch.is_tensor(v):
             example1[kw] = v[idx, ...]
+        elif isinstance(v, list):
+            if isinstance(idx, (int,np.integer)):
+                example1[kw] = v[idx]
+            else:
+                example1[kw] = [v[i] for i in idx]
         elif isinstance(v, dict):
             example1[kw] = get_batch_idx(v, idx)
 

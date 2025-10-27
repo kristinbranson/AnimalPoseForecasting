@@ -58,7 +58,6 @@ else:
     plt.ion()
 
 LOG.info('CUDA available: ' + str(torch.cuda.is_available()))
-LOG.info('matplotlib backend: ' + mpl_backend)
 LOG.info('isnotebook: ' + str(ISNOTEBOOK))
 
 # %%
@@ -157,20 +156,9 @@ def display_top(snapshot, key_type='lineno', limit=None):
         print("%s other: %.1f KiB" % (len(other), size / 1024))
     total = sum(stat.size for stat in top_stats)
     print("Total allocated size: %.1f KiB" % (total / 1024))
-    
-def refresh_plots(hdebug):
-    figs = [v for h in hdebug.values() for k, v in h.items() if k.startswith('fig')]
-        
-    if ISNOTEBOOK:
-        clear_output(wait=True)
-        for fig in figs:
-            if fig is not None:
-                display(fig)
-    else:
-        for fig in figs:
-            fig.canvas.draw()
-            fig.canvas.flush_events()
 
+
+# %%
 
 # %% [markdown]
 # ### profile example creation
@@ -219,8 +207,30 @@ hdebug['train'] = initialize_debug_plots(train_dataset, train_dataloader, train_
 hdebug['val'] = initialize_debug_plots(val_dataset, val_dataloader, val_data, name='Val', **debug_params)
 hloss = initialize_loss_plots(loss_epoch)
 
+def refresh_plots(hdebug):
+    
+    if ISNOTEBOOK:
+        if 'display_handles' not in hdebug:
+            hdebug['display_handles'] = {}
+        for k,fig in hdebug.items():
+            if not k.startswith('fig') or fig is None:
+                continue 
+            if k in hdebug['display_handles']:
+                hdebug['display_handles'][k].update(fig)
+            else:
+                hdebug['display_handles'][k] = display(fig,display_id=k)
+
+    else:
+        for k,fig in hdebug.items():
+            if not k.startswith('fig') or fig is None:
+                continue 
+            fig.canvas.draw()
+            fig.canvas.flush_events()
+
 if ISNOTEBOOK:
-    refresh_plots(hdebug|{'loss': hloss})
+    refresh_plots(hdebug['train'])
+    refresh_plots(hdebug['val'])
+    refresh_plots(hloss)
 else:
     plt.ion()
     plt.show(block=False)
@@ -229,6 +239,8 @@ else:
 
 # %%
 # functions for plotting visualizations of results during training
+
+from flyllm.plotting import update_debug_plots, update_loss_plots
 
 def end_iter_hook(model=None, step=None, example=None, predfn=None, **kwargs):
     
@@ -248,26 +260,32 @@ def end_iter_hook(model=None, step=None, example=None, predfn=None, **kwargs):
         valpred = predfn(valexample['input'].to(device=device))
     update_debug_plots(hdebug['train'],config,model,train_dataset,example,trainpred,name='Train',criterion=criterion,**debug_params)
     update_debug_plots(hdebug['val'],config,model,val_dataset,valexample,valpred,name='Val',criterion=criterion,**debug_params)
-    refresh_plots(hdebug)
+    refresh_plots(hdebug['train'])
+    refresh_plots(hdebug['val'])
     return
 
 def end_epoch_hook(loss_epoch=None, **kwargs):
     assert loss_epoch is not None
     LOG.info(f'Updating loss plots at end of epoch {epoch}')
     update_loss_plots(hloss, loss_epoch)
-    refresh_plots(hdebug|{'loss': hloss})
+    refresh_plots(hloss)
     return
 
-trainexample = next(iter(train_dataloader))
-valexample = next(iter(val_dataloader))
-contextl = example['input'].shape[1]
-train_src_mask = torch.nn.Transformer.generate_square_subsequent_mask(contextl, device=device)
+# test the hooks
 
-end_iter_hook(model=model,step=0,example=trainexample,predfn=lambda input: model.output(input, mask=train_src_mask, is_causal=True))
+# trainexample = next(iter(train_dataloader))
+# valexample = next(iter(val_dataloader))
+# contextl = trainexample['input'].shape[1]
+# train_src_mask = torch.nn.Transformer.generate_square_subsequent_mask(contextl, device=device)
+
+# end_iter_hook(model=model,step=0,example=trainexample,predfn=lambda input: model.output(input, mask=train_src_mask, is_causal=True))
+# end_epoch_hook(loss_epoch=loss_epoch)
+
 
 # %%
 # clean up memory allocation before training
 if device.type == 'cuda':
+    import gc
     model = model.to(device='cpu')
     gc.collect()
     torch.cuda.empty_cache()

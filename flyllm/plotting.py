@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from matplotlib import cm, colors
 import torch
 import tqdm
+import copy
 
 from apf.models import criterion_wrapper
 from apf.utils import npindex, zscore, unzscore
@@ -479,32 +480,45 @@ def debug_plot_batch_state(stateprob, nsamplesplot=3,
     fig.tight_layout(h_pad=0)
     return h, ax, fig
 
+raw_example_keys = ['inputs','labels','labels_discrete','continuous','discrete']
+
+def get_example_key(example):
+    # find the first key in raw_example_keys that is in example
+    for k in raw_example_keys:
+        if k in example:
+            return k
+    return None
+
 def get_example_type(example):
-    example_keys = ['inputs','labels','labels_discrete','continuous','discrete']
     if example is None:
         return 'none'
-    elif type(example) is dict and 'input' in example and hasattr(example['input'], 'shape'):
+    elif type(example) is dict and any(k in example and hasattr(example[k], 'shape') for k in raw_example_keys):
         return 'raw'
     elif type(example) is list:
         return 'list'
     elif isinstance(example, FlyExample):
         return 'flyexample'
-    elif type(example) is dict and any(k in example and isinstance(example[k], dict) for k in example_keys):
+    elif type(example) is dict and any(k in example and isinstance(example[k], dict) for k in raw_example_keys):
         return 'data'
     else:
         return 'unknown'
 
 def subsample_batch(example, nsamples=1, samples=None, dataset=None):
     
+    # keep compatibility with old FlyMLMDataset for now
+    isflymlm = isflymlm_dataset(dataset)
+    
     example_type = get_example_type(example)
     if samples is not None:
         nsamples = len(samples)
 
     if example_type == 'raw':
-        batch_size = example['input'].shape[0]
+        key = get_example_key(example)
+        batch_size = example[key].shape[0]
     elif example_type == 'data':
-        key = list(example['inputs'].keys())[0]
-        batch_size = example['inputs'][key].array.shape[0]
+        key0 = get_example_key(example)
+        key1 = list(example[key0].keys())[0]
+        batch_size = example[key0][key1].array.shape[0]
     elif example_type == 'list':
         batch_size = len(example)
     elif example_type == 'flyexample':
@@ -529,8 +543,12 @@ def subsample_batch(example, nsamples=1, samples=None, dataset=None):
         for samplei in samples:
             examplecurr = get_batch_idx(rawbatch, samplei)
             assert dataset is not None
-            flyexample = FlyExample(example_in=examplecurr, dataset=dataset)
+            if isflymlm:
+                flyexample = FlyExample(example_in=examplecurr, dataset=dataset)
+            else:
+                flyexample = dataset.item_to_data(examplecurr)
             examplelist.append(flyexample)
+
     elif example_type == 'data':
         examplelist = []
         for samplei in samples:
@@ -629,6 +647,7 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
             zmovement_continuous_true = rawlabelstrue['continuous']
             zmovement_discrete_true = rawlabelstrue['discrete']
         else:
+            rawlabelstrue = get_batch_idx(example_in, iplot)
             zmovement_discrete_true, zmovement_continuous_true = example2discrcont(examplecurr)
             if isinstance(zmovement_discrete_true,np.ndarray):
                 zmovement_discrete_true = torch.from_numpy(zmovement_discrete_true)
@@ -734,33 +753,29 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
     return ax, fig
 
 
-def debug_plot_pose(examplein, train_dataset=None, pred=None, data=None,
+def debug_plot_pose(examplein, train_dataset=None, predin=None, data=None,
                     true_discrete_mode='to_discretize',
                     pred_discrete_mode='sample',
                     ntsplot=5, nsamplesplot=3, h=None, ax=None, fig=None,
                     tsplot=None):
-    example, samplesplot = subsample_batch(examplein, nsamples=nsamplesplot,
-                                           dataset=train_dataset)
 
     # keep compatibility with old FlyMLMDataset for now
     isflymlm = isflymlm_dataset(train_dataset)
-    pred_type = get_example_type(pred)
-    if pred_type == 'raw':
-        if isflymlm:
-            flyexample = example[i].copy()
-            # just to make sure no data sticks around
-            flyexample.labels.erase_labels()
-            flyexample.labels.set_prediction(pred)
-            pred_type = 'flyexample'
-        else:
-            pred = train_dataset.item_to_data(pred)
-            pred_type = 'data'
 
-    if pred is not None:
-        pred, _ = subsample_batch(pred, samples=samplesplot)
+    example, samplesplot = subsample_batch(examplein, nsamples=nsamplesplot,
+                                           dataset=train_dataset)
+
+    if predin is not None:
+        predinaug = {k: v for (k, v) in predin.items()}
+        if not isflymlm:
+            if 'metadata' in examplein:
+                predinaug['metadata'] = examplein['metadata']
+            if 'inputs' in examplein:
+                predinaug['input'] = examplein['input']
+        pred, _ = subsample_batch(predinaug, samples=samplesplot, dataset=train_dataset)
 
     nsamplesplot = len(example)
-    if pred is not None:
+    if predin is not None:
         assert (len(pred) == nsamplesplot)
         
     if isflymlm:
@@ -793,9 +808,15 @@ def debug_plot_pose(examplein, train_dataset=None, pred=None, data=None,
         true_args = {}
 
     if pred_discrete_mode == 'sample':
-        pred_args = {'nsamples': 1, 'collapse_samples': True}
+        if isflymlm:
+            pred_args = {'nsamples': 1, 'collapse_samples': True}
+        else:
+            invert_args = {'discretize': {'do_sampling': True}}
     else:
-        pred_args = {}
+        if isflymlm:
+            pred_args = {}
+        else:
+            invert_args = {'discretize': {'do_sampling': False}}
 
     nametrue = 'Labels'
 
@@ -807,16 +828,17 @@ def debug_plot_pose(examplein, train_dataset=None, pred=None, data=None,
             t0 = examplecurr.metadata['t0']
             flynum = examplecurr.metadata['flynum']
         else:
-            Xkp_true = apf.dataset.apply_inverse_operations(examplecurr['labels']['velocity'])
+            Xkp_true = apf.dataset.apply_inverse_operations(examplecurr['labels']['velocity'],extraargs=invert_args)
             Xkp_true = Xkp_true[0].transpose(0,2,1)
             t0 = examplecurr['metadata']['start_frame']
             flynum = examplecurr['metadata']['agent_id']
-        if pred is not None:
+        if predin is not None:
             predcurr = pred[i]
+            predcurr['metadata'] = examplecurr['metadata']
             if isflymlm:
                 Xkp_pred = predcurr.labels.get_next_keypoints(**pred_args)
             else:
-                Xkp_pred = apf.dataset.apply_inverse_operations(predcurr['labels']['velocity'])
+                Xkp_pred = apf.dataset.apply_inverse_operations(predcurr['labels']['velocity'],extraargs=invert_args)
                 Xkp_pred = Xkp_pred[0].transpose(0,2,1)
             namepred = 'Pred'
         elif data is not None:
@@ -1405,7 +1427,7 @@ def update_debug_plots(hdebug, config, model, dataset, example, pred, criterion=
             pred1 = {k: v.detach().cpu() for k, v in pred.items()}
         else:
             pred1 = pred.detach().cpu()
-    debug_plot_pose(example, dataset, pred=pred1, h=hdebug['hpose'], ax=hdebug['axpose'], fig=hdebug['figpose'],
+    debug_plot_pose(example, dataset, predin=pred1, h=hdebug['hpose'], ax=hdebug['axpose'], fig=hdebug['figpose'],
                           tsplot=tsplot)
     debug_plot_batch_traj(example, dataset, criterion=criterion, config=config, pred=pred1, ax=hdebug['axtraj'],
                           fig=hdebug['figtraj'], nsamplesplot=traj_nsamplesplot)
