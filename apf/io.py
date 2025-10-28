@@ -21,6 +21,8 @@ def save_model(savefile, model, lr_optimizer=None, scheduler=None, loss=None, co
         tosave['loss'] = loss
     if config is not None:
         tosave['config'] = config
+    elif hasattr(model, 'config') and model.config is not None:
+        tosave['config'] = model.config
     if sensory_params is not None:
         tosave['SENSORY_PARAMS'] = sensory_params
     if hasattr(model, 'dataset_params'):

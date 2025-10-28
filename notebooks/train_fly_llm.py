@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.11.2
+#       jupytext_version: 1.17.1
 #   kernelspec:
 #     display_name: transformer
 #     language: python
@@ -124,7 +124,8 @@ if np.isnan(last_val_loss):
 
 
 # %% [markdown]
-# ### some helper functions for debugging
+# ### some helper functions for profiling
+#
 
 # %%
 import tracemalloc
@@ -283,7 +284,8 @@ def end_epoch_hook(loss_epoch=None, **kwargs):
 
 
 # %%
-# clean up memory allocation before training
+# clean up memory allocation before training, particularly if running in a notebook
+# and things have crashed before...
 if device.type == 'cuda':
     import gc
     model = model.to(device='cpu')
@@ -296,121 +298,134 @@ if device.type == 'cuda':
     print(f'Initial cuda memory reserved: {memreserved:.3f} GB')
     print(torch.cuda.memory_summary())
 
-train_args = function_args_from_config(config, train)
+savefilestr = os.path.join(config['savedir'], f"fly{modeltype_str}_{savetime}")
+
+train_args = function_args_from_config(config,train)
+train_args['train_dataloader'] = train_dataloader
+train_args['val_dataloader'] = val_dataloader
+train_args['model'] = model
+train_args['loss_epoch'] = loss_epoch
+train_args['end_epoch_hook'] = end_epoch_hook
+train_args['end_iter_hook'] = end_iter_hook
+train_args['optimizer'] = optimizer
+train_args['lr_scheduler'] = lr_scheduler
+# criterion hard-coded to mixed_causal_criterion
+#train_args['criterion'] = criterion
+train_args['start_epoch'] = epoch
+train_args['savefilestr'] = savefilestr
+
 # can override args here
 #train_args['num_train_epochs'] = 100
-model, best_model, loss_epoch = train(train_dataloader, val_dataloader, model, 
-                                    loss_epoch=loss_epoch, **train_args,
-                                    end_iter_hook=end_iter_hook,
-                                    end_epoch_hook=end_epoch_hook)
-
-# %% [markdown]
-# ### Train
+model, best_model, loss_epoch = train(**train_args)
 
 # %%
-progress_bar = tqdm.tqdm(range(num_training_steps),initial=epoch*ntrain_batches)
+# old train code
+
+# progress_bar = tqdm.tqdm(range(num_training_steps),initial=epoch*ntrain_batches)
 
 
-# train loop
-for epoch in range(epoch, config['num_train_epochs']):
+# # train loop
+# for epoch in range(epoch, config['num_train_epochs']):
 
-    model.train()
-    tr_loss = torch.tensor(0.0).to(device)
-    if train_dataset.discretize:
-        tr_loss_discrete = torch.tensor(0.0).to(device)
-        tr_loss_continuous = torch.tensor(0.0).to(device)
+#     model.train()
+#     tr_loss = torch.tensor(0.0).to(device)
+#     if train_dataset.discretize:
+#         tr_loss_discrete = torch.tensor(0.0).to(device)
+#         tr_loss_continuous = torch.tensor(0.0).to(device)
     
-    nmask_train = 0
-    for step, example in enumerate(train_dataloader):
+#     nmask_train = 0
+#     for step, example in enumerate(train_dataloader):
     
-        pred = model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal)
-        loss, loss_discrete, loss_continuous = criterion_wrapper(example, pred, criterion, train_dataset, config)
-        assert np.isnan(loss.item()) == False, f'loss is nan at step {step}, epoch {epoch}'
+#         pred = model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal)
+#         loss, loss_discrete, loss_continuous = criterion_wrapper(example, pred, criterion, train_dataset, config)
+#         assert np.isnan(loss.item()) == False, f'loss is nan at step {step}, epoch {epoch}'
         
-        loss.backward()
+#         loss.backward()
         
-        for weights in model.parameters():
-            assert torch.isnan(weights.grad).any() == False, f'nan in gradients at step {step}, epoch {epoch}'
+#         for weights in model.parameters():
+#             assert torch.isnan(weights.grad).any() == False, f'nan in gradients at step {step}, epoch {epoch}'
         
-        # how many timepoints are in this batch for normalization
-        if config['modeltype'] == 'mlm':
-            nmask_train += torch.count_nonzero(example['mask'])
-        else:
-            nmask_train += example['input'].shape[0]*ntimepoints_per_batch 
+#         # how many timepoints are in this batch for normalization
+#         if config['modeltype'] == 'mlm':
+#             nmask_train += torch.count_nonzero(example['mask'])
+#         else:
+#             nmask_train += example['input'].shape[0]*ntimepoints_per_batch 
     
-        if step % config['niterplot'] == 0:
+#         if step % config['niterplot'] == 0:
         
-            with torch.no_grad():
-                trainpred = model.output(example['input'].to(device=device),mask=train_src_mask,is_causal=is_causal)
-                valpred = model.output(valexample['input'].to(device=device),mask=train_src_mask,is_causal=is_causal)
-            update_debug_plots(hdebug['train'],config,model,train_dataset,example,trainpred,name='Train',criterion=criterion,**debug_params)
-            update_debug_plots(hdebug['val'],config,model,val_dataset,valexample,valpred,name='Val',criterion=criterion,**debug_params)
-            refresh_plots(hdebug)
+#             with torch.no_grad():
+#                 trainpred = model.output(example['input'].to(device=device),mask=train_src_mask,is_causal=is_causal)
+#                 valpred = model.output(valexample['input'].to(device=device),mask=train_src_mask,is_causal=is_causal)
+#             update_debug_plots(hdebug['train'],config,model,train_dataset,example,trainpred,name='Train',criterion=criterion,**debug_params)
+#             update_debug_plots(hdebug['val'],config,model,val_dataset,valexample,valpred,name='Val',criterion=criterion,**debug_params)
+#             refresh_plots(hdebug)
     
-        tr_loss_step = loss.detach()
-        tr_loss += tr_loss_step
-        if train_dataset.discretize:
-            tr_loss_discrete += loss_discrete.detach()
-            tr_loss_continuous += loss_continuous.detach()
+#         tr_loss_step = loss.detach()
+#         tr_loss += tr_loss_step
+#         if train_dataset.discretize:
+#             tr_loss_discrete += loss_discrete.detach()
+#             tr_loss_continuous += loss_continuous.detach()
     
-        # gradient clipping
-        torch.nn.utils.clip_grad_norm_(model.parameters(),config['max_grad_norm'])
-        optimizer.step()
-        lr_scheduler.step()
-        model.zero_grad()
+#         # gradient clipping
+#         torch.nn.utils.clip_grad_norm_(model.parameters(),config['max_grad_norm'])
+#         optimizer.step()
+#         lr_scheduler.step()
+#         model.zero_grad()
         
-        # update progress bar
-        stat = {'train loss': tr_loss.item()/nmask_train,'last val loss': last_val_loss,'epoch': epoch}
-        if train_dataset.discretize:
-            stat['train loss discrete'] = tr_loss_discrete.item()/nmask_train
-            stat['train loss continuous'] = tr_loss_continuous.item()/nmask_train
-        progress_bar.set_postfix(stat)
-        progress_bar.update(1)
+#         # update progress bar
+#         stat = {'train loss': tr_loss.item()/nmask_train,'last val loss': last_val_loss,'epoch': epoch}
+#         if train_dataset.discretize:
+#             stat['train loss discrete'] = tr_loss_discrete.item()/nmask_train
+#             stat['train loss continuous'] = tr_loss_continuous.item()/nmask_train
+#         progress_bar.set_postfix(stat)
+#         progress_bar.update(1)
         
-        # end of iteration loop
+#         # end of iteration loop
     
-    # training epoch complete
-    loss_epoch['train'][epoch] = tr_loss.item() / nmask_train
-    if train_dataset.discretize:
-        loss_epoch['train_discrete'][epoch] = tr_loss_discrete.item() / nmask_train
-        loss_epoch['train_continuous'][epoch] = tr_loss_continuous.item() / nmask_train
+#     # training epoch complete
+#     loss_epoch['train'][epoch] = tr_loss.item() / nmask_train
+#     if train_dataset.discretize:
+#         loss_epoch['train_discrete'][epoch] = tr_loss_discrete.item() / nmask_train
+#         loss_epoch['train_continuous'][epoch] = tr_loss_continuous.item() / nmask_train
     
-    # compute validation loss after this epoch
-    if val_dataset.discretize:
-        loss_epoch['val'][epoch],loss_epoch['val_discrete'][epoch],loss_epoch['val_continuous'][epoch] = \
-            compute_loss(model,val_dataloader,val_dataset,device,train_src_mask,criterion,config)
-    else:
-        loss_epoch['val'][epoch] = \
-            compute_loss(model,val_dataloader,val_dataset,device,train_src_mask,criterion,config)
-    last_val_loss = loss_epoch['val'][epoch].item()
+#     # compute validation loss after this epoch
+#     if val_dataset.discretize:
+#         loss_epoch['val'][epoch],loss_epoch['val_discrete'][epoch],loss_epoch['val_continuous'][epoch] = \
+#             compute_loss(model,val_dataloader,val_dataset,device,train_src_mask,criterion,config)
+#     else:
+#         loss_epoch['val'][epoch] = \
+#             compute_loss(model,val_dataloader,val_dataset,device,train_src_mask,criterion,config)
+#     last_val_loss = loss_epoch['val'][epoch].item()
     
-    update_loss_plots(hloss, loss_epoch)
-    refresh_plots(hdebug|{'loss': hloss})
+#     update_loss_plots(hloss, loss_epoch)
+#     refresh_plots(hdebug|{'loss': hloss})
     
-    if (epoch + 1) % config['save_epoch'] == 0:
-        savefile = os.path.join(config['savedir'], f"fly{modeltype_str}_epoch{epoch + 1}_{savetime}.pth")
-        print(f'Saving to file {savefile}')
-        save_model(savefile, model,
-                    lr_optimizer=optimizer,
-                    scheduler=lr_scheduler,
-                    loss=loss_epoch,
-                    config=config)
+#     if (epoch + 1) % config['save_epoch'] == 0:
+#         savefile = os.path.join(config['savedir'], f"fly{modeltype_str}_epoch{epoch + 1}_{savetime}.pth")
+#         print(f'Saving to file {savefile}')
+#         save_model(savefile, model,
+#                     lr_optimizer=optimizer,
+#                     scheduler=lr_scheduler,
+#                     loss=loss_epoch,
+#                     config=config)
     
-    # rechunk the training data
-    if np.mod(epoch+1,config['epochs_rechunk']) == 0:
-        print(f'Rechunking data after epoch {epoch}')
-        X = chunk_data(data,config['contextl'],reparamfun,**chunk_data_params)
+#     # rechunk the training data
+#     if np.mod(epoch+1,config['epochs_rechunk']) == 0:
+#         print(f'Rechunking data after epoch {epoch}')
+#         X = chunk_data(data,config['contextl'],reparamfun,**chunk_data_params)
 
-        train_dataset = FlyMLMDataset(X,**train_dataset_params,**dataset_params)
-        print('New training data set created')
+#         train_dataset = FlyMLMDataset(X,**train_dataset_params,**dataset_params)
+#         print('New training data set created')
 
-print('Done training')
+# print('Done training')
 
 # %%
-savefile = os.path.join(config['savedir'], f"fly{modeltype_str}_epoch{epoch + 1}_{savetime}.pth")
-print(f'Saving to file {savefile}')
-save_model(savefile, model,
-            lr_optimizer=optimizer,
-            scheduler=lr_scheduler,
-            loss=loss_epoch,
-            config=config)
+# should be in train function
+
+# savefile = os.path.join(config['savedir'], f"fly{modeltype_str}_epoch{epoch + 1}_{savetime}.pth")
+# print(f'Saving to file {savefile}')
+# save_model(savefile, model,
+#             lr_optimizer=optimizer,
+#             scheduler=lr_scheduler,
+#             loss=loss_epoch,
+#             config=config)

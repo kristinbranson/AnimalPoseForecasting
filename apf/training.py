@@ -5,6 +5,7 @@ import tqdm
 import copy
 import logging
 from typing import Callable
+import time
 
 from apf.models import (
     sanity_check_temporal_dep,
@@ -12,6 +13,7 @@ from apf.models import (
     mixed_causal_criterion,
     TransformerModel,
 )
+from apf.io import save_model
 
 LOG = logging.getLogger(__name__)
 
@@ -44,6 +46,9 @@ def train(
         end_iter_hook: Callable | None = None,
         optimizer: torch.optim.Optimizer | None = None,
         lr_scheduler: torch.optim.lr_scheduler.LambdaLR | None = None,
+        start_epoch: int = 0,
+        savefilestr: str | None = None,
+        save_epoch: int | None = None,
 ) -> tuple[TransformerModel, TransformerModel, dict]:
     """ Trains a model on train_dataloader, using val_dataloader to select the best_model.
 
@@ -55,16 +60,20 @@ def train(
         num_train_epochs: How many times to loop through all examples in the dataset during training.
         max_grad_norm: Threshold for clipping gradients during training.
         optimizer_args: Named arguments used for the AdamW optimizer.
-        loss_epoch: Keeps track of training and validation losses. If provided, morphs this input so that
-            if training is aborted the losses are still available.
+        loss_epoch: Keeps track of training and validation losses. If None, initializes a new structure.
+        Useful for resuming training. Defaults to None.
         end_epoch_hook: Function called at the end of each epoch. Signature:
             def end_epoch_hook(model: TransformerModel, epoch: int, loss_epoch: dict) -> None
         end_iter_hook: Function called at the end of each training iteration. Signature:
             def end_iter_hook(model: TransformerModel, step: int, example: dict, predfn: Callable) -> None
             where predfn is a function that predicts with the model on the input example. 
-        optimizer: If provided, uses this optimizer instead of initializing a new optimizer.
-        lr_scheduler: If provided, uses this learning rate scheduler instead of initializing a new one.
-        
+        optimizer: If provided, uses this optimizer instead of initializing a new optimizer. Useful for 
+        resuming training. Defaults to None.
+        lr_scheduler: If provided, uses this learning rate scheduler instead of initializing a new one. Useful 
+        for resuming training. Defaults to None.
+        start_epoch: If resuming training, the epoch to start from. Defaults to 0.
+        savefilestr: Saves the model to this file every save_epoch epochs. Defaults to None.
+        save_epoch: Number of epochs between saving the model. If None, does not save. Defaults to None.
 
     Returns:
         model: Model after training on all epochs
@@ -75,14 +84,26 @@ def train(
 
     # Optimizer
     num_training_steps = num_train_epochs * len(train_dataloader)
-    optimizer, lr_scheduler = init_optimizer(num_training_steps, model, optimizer_args)
+    if optimizer is None or lr_scheduler is None:
+        optimizer, lr_scheduler = init_optimizer(num_training_steps, model, optimizer_args)
+
+    # Criterion
+    criterion = mixed_causal_criterion
+        
+    # set savefilestr
+    if savefilestr is None:
+        timestamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
+        savefilestr = f'apf_model_{timestamp}'
+        print(f'Model(s) will be saved to {savefilestr}_epoch<epoch>.pth')
 
     # Initialize structure to keep track of loss
     if loss_epoch is None:
         loss_epoch = {}
     for key in ['train', 'val', 'train_continuous', 'train_discrete', 'val_continuous', 'val_discrete']:
-        loss_epoch[key] = torch.zeros(num_train_epochs)
-        loss_epoch[key][:] = torch.nan
+        if key not in loss_epoch:
+            loss_epoch[key] = torch.zeros(num_train_epochs)
+            loss_epoch[key][:] = torch.nan
+            
     last_val_loss = None
 
     # Create attention mask
@@ -104,7 +125,7 @@ def train(
     best_model = model
     best_val_loss = 10000
         
-    for epoch in range(0, num_train_epochs):
+    for epoch in range(start_epoch, num_train_epochs):
         model.train()
         tr_loss = torch.tensor(0.0).to(device)
         tr_loss_discrete = torch.tensor(0.0).to(device)
@@ -114,7 +135,7 @@ def train(
         for step, example in enumerate(train_dataloader):
 
             pred = model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal)
-            loss, loss_discrete, loss_continuous = mixed_causal_criterion(
+            loss, loss_discrete, loss_continuous = criterion(
                 example, pred, weight_discrete=weight_discrete, extraout=True
             )
             loss.backward()
@@ -138,7 +159,7 @@ def train(
                             predfn=lambda input: model.output(input, mask=train_src_mask, is_causal=is_causal))
 
         # update progress bar
-        stat = {'trainloss': tr_loss.item() / nmask_train, 'lastvalloss': last_val_loss, 'epoch': epoch}
+        stat = {'train loss': tr_loss.item() / nmask_train, 'last val loss': last_val_loss, 'epoch': epoch}
         stat['train loss discrete'] = tr_loss_discrete.item() / nmask_train
         stat['train loss continuous'] = tr_loss_continuous.item() / nmask_train
         progress_bar.set_postfix(stat)
@@ -160,6 +181,15 @@ def train(
 
         if last_val_loss < best_val_loss:
             best_model = copy.deepcopy(model)
+            
+            
+        if ((epoch + 1) % save_epoch == 0) or (epoch == num_train_epochs - 1):
+            savefile = f'{savefilestr}_epoch{epoch + 1}.pth'
+            print(f'Saving to file {savefile}')
+            save_model(savefile, model,
+                        lr_optimizer=optimizer,
+                        scheduler=lr_scheduler,
+                        loss=loss_epoch)
 
         # if np.mod(epoch + 1, 5) == 0:
         train_dataloader.dataset.recompute_chunk_indices()

@@ -265,7 +265,8 @@ class TransformerBestStateModel(torch.nn.Module):
 
     def __init__(self, d_input: int, d_output: int,
                  d_model: int = 2048, nhead: int = 8, d_hid: int = 512,
-                 nlayers: int = 12, dropout: float = 0.1, nstates: int = 8):
+                 nlayers: int = 12, dropout: float = 0.1, nstates: int = 8,
+                 dataset_params=None,config=None):
         super().__init__()
         self.model_type = 'TransformerBestState'
 
@@ -295,6 +296,12 @@ class TransformerBestStateModel(torch.nn.Module):
         self.d_model = d_model
         self.nstates = nstates
         self.d_output = d_output
+        
+        # dataset parameters
+        self.dataset_params = dataset_params
+        
+        # config, primarily for book-keeping
+        self.config = config
         
         self.init_weights()
 
@@ -338,7 +345,8 @@ class TransformerStateModel(torch.nn.Module):
     def __init__(self, d_input: int, d_output: int,
                  d_model: int = 2048, nhead: int = 8, d_hid: int = 512,
                  nlayers: int = 12, dropout: float = 0.1, nstates: int = 64,
-                 minstateprob: float = None):
+                 minstateprob: float = None, dataset_params=None,
+                 config=None):
         super().__init__()
         self.model_type = 'TransformerState'
 
@@ -377,6 +385,12 @@ class TransformerStateModel(torch.nn.Module):
         self.nstates = nstates
         self.d_output = d_output
         self.minstateprob = minstateprob
+
+        # dataset parameters
+        self.dataset_params = dataset_params
+        
+        # config, primarily for book-keeping
+        self.config = config
 
         self.init_weights()
 
@@ -436,7 +450,6 @@ class TransformerStateModel(torch.nn.Module):
             pred['perstate'].shape[:-1])
         return out
 
-
 class myTransformerEncoderLayer(torch.nn.TransformerEncoderLayer):
 
     def __init__(self, *args, need_weights=False, **kwargs):
@@ -465,7 +478,8 @@ class TransformerModel(torch.nn.Module):
                  nlayers: int = 12, dropout: float = 0.1,
                  ntokens_per_timepoint: int = 1,
                  input_idx=None, input_szs=None, embedding_types=None, embedding_params=None,
-                 d_output_discrete=None, nbins=None):
+                 d_output_discrete=None, nbins=None,
+                 dataset_params=None, config=None):
         super().__init__()
         self.model_type = 'Transformer'
 
@@ -504,6 +518,12 @@ class TransformerModel(torch.nn.Module):
 
         # store hyperparameters
         self.d_model = d_model
+        
+        # dataset parameters
+        self.dataset_params = dataset_params
+
+        # config, primarily for book-keeping
+        self.config = config
 
         self.init_weights()
         
@@ -554,7 +574,6 @@ class TransformerModel(torch.nn.Module):
             output['discrete'] = torch.softmax(output['discrete'], dim=-1)
 
         return output
-
 
 class ObsEmbedding(torch.nn.Module):
     def __init__(self, d_model: int, input_idx, input_szs, embedding_types, embedding_params):
@@ -1028,8 +1047,14 @@ def initialize_model(config, train_dataset, device):
         'nhead': config['nhead'],
         'd_hid': config['d_hid'],
         'nlayers': config['nlayers'],
-        'dropout': config['dropout']
+        'dropout': config['dropout'],
+        'config': config
     }
+    if 'dataset_params' in config:
+        MODEL_ARGS['dataset_params'] = config['dataset_params']
+    elif hasattr(train_dataset, 'get_params'):
+        MODEL_ARGS['dataset_params'] = train_dataset.get_params()
+        
     if config['modelstatetype'] is not None:
         MODEL_ARGS['nstates'] = config['nstates']
         assert config['obs_embedding'] == False, 'Not implemented'
