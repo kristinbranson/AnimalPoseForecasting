@@ -18,7 +18,7 @@ def simulate(
     track_len: int = 1000,
     burn_in: int = 200,
     max_contextl: int = 512,
-    agent_idx: int = 0,
+    agent_ids: list[int] | None = None,
     start_frame: int = 1000,
 ) -> tuple[np.ndarray, np.ndarray]:
     """ Simulates an agent given model and some initialization.
@@ -32,35 +32,45 @@ def simulate(
         track_len: How long the total track should be after simulation (including burnin).
         burn_in: How many frames to use for the initialization.
         max_contextl: Max number of frames to feed as input to the model. If None, uses the full history.
-        agent_idx: Which agent to use for initialization.
+        agent_ids: Which agents to simulate. If None, simulates all the agents.
         start_frame: Which start frame to use for the initialization.
 
     Returns:
         gt_track: ground truth 2d track at each frame. Used for first burn_in frames.
         pred_track: 2d track at each frame based on open loop simulation.
     """
-    # Extract ground truth
-    gt_chunk = dataset.get_chunk(start_frame=start_frame, duration=track_len, agent_id=agent_idx)
-    gt_input = gt_chunk['input']
+    if agent_ids is None:
+        n_agents = track.array.shape[0]
+        agent_ids = np.arange(n_agents)
+    n_sim_agents = len(agent_ids)
 
+    # Extract ground truth
+    gt_input = []
+    agent_identities = []
+    for agent_idx in agent_ids:
+        # Get data input chunk for this agent
+        gt_chunk = dataset.get_chunk(start_frame=start_frame, duration=track_len, agent_id=agent_idx)
+        gt_input.append(gt_chunk['input'])
+        # Get agent identity (to be used for inverting pose which requires agent scale)
+        agent_identity = np.unique(identities[start_frame:start_frame + track_len, agent_idx])
+        assert len(agent_identity) == 1, f"Too many individual ids: {agent_identity}"
+        agent_identities.append(agent_identity[0])
+    gt_input = np.array(gt_input)
     gt_track = track.array[:, start_frame:start_frame + track_len]
     gt_pose = pose.array[:, start_frame:start_frame + track_len]
-    agent_identity = np.unique(identities[start_frame:start_frame + track_len, agent_idx])
-    assert len(agent_identity) == 1, f"Too many individual ids: {agent_identity}"
-    agent_identity = agent_identity[0]
 
     # Initialize model input
     device = next(model.parameters()).device
-    model_input = torch.zeros((1, track_len, gt_input.shape[-1]))
+    model_input = torch.zeros((n_sim_agents, track_len, gt_input.shape[-1]))
     curr_frame = burn_in
-    model_input[0, :curr_frame, :] = torch.from_numpy(gt_input[:curr_frame])
+    model_input[:, :curr_frame, :] = torch.from_numpy(gt_input[:, :curr_frame])
     model_input = model_input.to(device)
 
-    # Initialize track
+    # Initialize tracks (set the future to nan for all agents to be simulated)
     pred_track = copy.deepcopy(gt_track)
-    pred_track[agent_idx, curr_frame + 1:] = np.nan
+    pred_track[agent_ids, curr_frame + 1:] = np.nan
     pred_pose = copy.deepcopy(gt_pose)
-    pred_pose[agent_idx, curr_frame + 1:] = np.nan
+    pred_pose[agent_ids, curr_frame + 1:] = np.nan
 
     masksizeprev = 0
     model.eval()
@@ -88,11 +98,11 @@ def simulate(
         velocity = apply_inverse_operations(proc_velocity, preproc_opers)
 
         # Apply velocity to current pose
-        curr_pose = pred_pose[agent_idx, curr_frame - 1]
+        curr_pose = pred_pose[agent_ids, curr_frame - 1]
         velocity_op = get_operation(velocity_operations, 'velocity')
         velocity = np.concatenate([velocity, np.zeros_like(velocity)], axis=1)
-        new_pose = velocity_op.invert(velocity, x0=curr_pose[None, :])[:, -1:, :]
-        pred_pose[agent_idx, curr_frame] = new_pose
+        new_pose = velocity_op.invert(velocity, x0=curr_pose)[:, -1, :]
+        pred_pose[agent_ids, curr_frame] = new_pose
 
         if np.isnan(new_pose).sum() > 0:
             LOG.error(f"Predicted pose contains a NaN, aborting at frame {curr_frame}.")
@@ -101,23 +111,23 @@ def simulate(
         # Map pose to keypoints
         pose_op = get_operation(velocity_operations, 'pose')
         if pose_op is None:
-            keypoints = pred_pose[agent_idx, curr_frame, :]
+            keypoints = pred_pose[agent_ids, curr_frame, :]
         else:
-            keypoints = pose_op.invert(pred_pose[agent_idx, curr_frame, :], agent_identity)
-        pred_track[agent_idx, curr_frame] = keypoints
+            keypoints = pose_op.invert(pred_pose[agent_ids, curr_frame, :], agent_identities)
+        pred_track[agent_ids, curr_frame] = keypoints
 
         # Compute sensory information
         sensory_op = get_operation(dataset.inputs['sensory'].operations, 'sensory')
         sensory = sensory_op.apply(pred_track[:, curr_frame:curr_frame+1])
 
         # Assemble inputs and apply the same preproc operations to the data as the training data
-        inputs = {'velocity': velocity[:1, :1, :],
-                  'pose': pred_pose[agent_idx, curr_frame],
-                  'sensory': sensory[agent_idx]
+        inputs = {'velocity': velocity[:, :1, :],
+                  'pose': pred_pose[agent_ids, None, curr_frame],
+                  'sensory': sensory[agent_ids]
                   }
         inputs_proc = apply_opers_from_data(dataset.inputs, inputs)
         curr_in = np.concatenate(list(inputs_proc.values()), axis=-1)
-        model_input[:, curr_frame, :] = torch.from_numpy(curr_in.astype(np.float32)).to(device)
+        model_input[:, curr_frame, :] = torch.from_numpy(curr_in[:, 0, :].astype(np.float32)).to(device)
 
         curr_frame += 1
 

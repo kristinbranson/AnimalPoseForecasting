@@ -132,6 +132,11 @@ def load_data(
     isstart = data['isstart'][..., valid]
     isdata = data['isdata'][..., valid]
 
+    n_kpts = len(keypointnames)
+    if n_kpts < Xkp.shape[0]:
+        LOG.warning(f"Removing last {Xkp.shape[0] - n_kpts} keypoints from the data")
+        Xkp = Xkp[:n_kpts]
+
     return Xkp, flyids, isstart, isdata, scale_perfly
 
 
@@ -140,7 +145,7 @@ def make_dataset(
         filename: str,
         ref_dataset: Dataset | None = None,
         return_all: bool = False,
-        debug: bool = True
+        debug: bool = True,
 ) -> Dataset | tuple[Dataset, np.ndarray, Data, Data, Data, Data]:
     """ Creates a dataset from config, for a given file name and optionally using a reference dataset.
 
