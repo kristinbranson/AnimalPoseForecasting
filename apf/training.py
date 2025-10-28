@@ -103,6 +103,9 @@ def train(
         if key not in loss_epoch:
             loss_epoch[key] = torch.zeros(num_train_epochs)
             loss_epoch[key][:] = torch.nan
+        else:
+            # overwrite future epochs with nan in case they are not nan
+            loss_epoch[key][epoch:] = torch.nan
             
     last_val_loss = None
 
@@ -123,6 +126,7 @@ def train(
     LOG.info(f"weight_discrete = {weight_discrete}")
     progress_bar = tqdm.tqdm(range(num_training_steps), file=sys.stdout)
     best_model = model
+    best_epoch = None
     best_val_loss = 10000
         
     for epoch in range(start_epoch, num_train_epochs):
@@ -181,7 +185,7 @@ def train(
 
         if last_val_loss < best_val_loss:
             best_model = copy.deepcopy(model)
-            
+            best_epoch = epoch            
             
         if ((epoch + 1) % save_epoch == 0) or (epoch == num_train_epochs - 1):
             savefile = f'{savefilestr}_epoch{epoch + 1}.pth'
@@ -193,6 +197,15 @@ def train(
 
         # if np.mod(epoch + 1, 5) == 0:
         train_dataloader.dataset.recompute_chunk_indices()
+
+    # save best model
+    if best_epoch is not None:
+        savefile = f'{savefilestr}_bestmodel_epoch{best_epoch + 1}.pth'
+        print(f'Saving best model to file {savefile}')
+        save_model(savefile, best_model,
+                    lr_optimizer=optimizer,
+                    scheduler=lr_scheduler,
+                    loss=loss_epoch)
 
     LOG.info('Done training')
 

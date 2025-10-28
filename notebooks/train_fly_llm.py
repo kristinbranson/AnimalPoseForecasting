@@ -265,7 +265,7 @@ def end_iter_hook(model=None, step=None, example=None, predfn=None, **kwargs):
     refresh_plots(hdebug['val'])
     return
 
-def end_epoch_hook(loss_epoch=None, **kwargs):
+def end_epoch_hook(loss_epoch=None, epoch=None, **kwargs):
     assert loss_epoch is not None
     LOG.info(f'Updating loss plots at end of epoch {epoch}')
     update_loss_plots(hloss, loss_epoch)
@@ -296,7 +296,6 @@ if device.type == 'cuda':
     print(f'Initial cuda memory allocated: {memalloc:.3f} GB')
     memreserved = torch.cuda.memory_reserved() / 1e9
     print(f'Initial cuda memory reserved: {memreserved:.3f} GB')
-    print(torch.cuda.memory_summary())
 
 savefilestr = os.path.join(config['savedir'], f"fly{modeltype_str}_{savetime}")
 
@@ -317,6 +316,20 @@ train_args['savefilestr'] = savefilestr
 # can override args here
 #train_args['num_train_epochs'] = 100
 model, best_model, loss_epoch = train(**train_args)
+
+# %%
+# # test restarting from saved model
+# restartmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredvel_20241125_20251028T132437_epoch6.pth'
+# res = init_flyllm(configfile=configfile,mode='train',restartmodelfile=restartmodelfile,
+#                 debug_uselessdata=debug_uselessdata)
+# # test testing model
+# loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredvel_20241125_20251028T132437_epoch6.pth'
+# res = init_flyllm(configfile=configfile,mode='test',loadmodelfile=loadmodelfile,
+#                   debug_uselessdata=debug_uselessdata)
+# assert(np.all(model.dataset_params['labels']['velocity'][2]['attributes']['mean'] == \
+#     res['model'].dataset_params['labels']['velocity'][2]['attributes']['mean']))
+# assert(np.all(model.dataset_params['labels']['velocity'][2]['attributes']['std'] == \
+#     res['model'].dataset_params['labels']['velocity'][2]['attributes']['std']))
 
 # %%
 # old train code
