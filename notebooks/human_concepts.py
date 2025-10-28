@@ -27,7 +27,12 @@ utils.set_mpl_backend('tkAgg')
 from flyllm.config import DEFAULTCONFIGFILE, posenames
 from flyllm.features import featglobal, get_sensory_feature_idx
 import time
-from flyllm.plotting import plot_fly, plot_flies
+from flyllm.plotting import plot_fly, plot_flies, plot_arena
+import os
+
+outfigdir = 'human_concepts_figs'
+if not os.path.exists(outfigdir):
+    os.makedirs(outfigdir)
 
 thresh_stopped = 5
 thresh_walking = 15
@@ -237,6 +242,150 @@ ax[1].set_yticklabels(['isstop','iswalk','wasstopped','willwalk','willstop','sta
 
 
 ax[1].set_xlabel('Frame')
-#ax[1].set_xlim(14000,16000)
+ax[1].set_xlim(14000,16000)
 
 
+# %%
+# animate some examples where fly starts moving
+import matplotlib.animation as animation
+
+savetogif = False
+outfps = 30
+nplot = 10
+axr = 15 # in mm
+idx = np.nonzero(startsmoving)
+tstartsmoving = idx[0]
+flysstartsmoving = idx[1]
+idxplot = np.random.choice(len(tstartsmoving), size=nplot, replace=False)
+if nplot > 1:
+    savetogif = True  # if plotting multiple examples, save to gif files
+
+iplot = idxplot[0]
+tcurr = tstartsmoving[iplot]
+flycurr = flysstartsmoving[iplot]
+
+fig,ax = plt.subplots(1,1, figsize=(9,9))
+plot_arena(ax)
+
+t0 = tcurr - tstopped_frames
+t1 = tcurr + tfuture_frames + 1
+
+xmid = rawdata['X'][centeridx,0,tcurr,flycurr]
+ymin = rawdata['X'][centeridx,1,tcurr,flycurr]
+
+otherflies = np.setdiff1d(np.arange(nflies), flycurr)
+hother['kpt'],hother['edge'],hother['txt'],_,_ = plot_flies(rawdata['X'][:,:,tcurr,otherflies], ax=ax, kpt_marker='.', kpt_ms=5, skel_lw=1)
+hmain['kpt'],hmain['edge'],hmain['txt'],_,_ = plot_fly(rawdata['X'][:,:,tcurr,flycurr], ax=ax, kpt_marker='o', kpt_ms=20, skel_lw=2)
+hti = ax.set_title(f'Fly {flycurr}, frame {tcurr}, off = 0')
+
+def update(frame):
+    tplot = t0 + frame
+    # update other flies
+    plot_fly(rawdata['X'][:,:,tplot,flycurr], hedge=hmain['edge'], hkpt=hmain['kpt'], htxt=hmain['txt'], ax=ax)
+    plot_flies(rawdata['X'][:,:,tplot,otherflies], hedges=hother['edge'], hkpts=hother['kpt'], htxt=hother['txt'], ax=ax)
+    hti.set_text(f'Fly {flycurr}, frame {tcurr}, off = {tplot-tcurr}')
+    
+    allhandles = [hmain['edge'],hmain['kpt'],hti] + hother['edge'] + hother['kpt']
+    return allhandles
+
+for iplot in idxplot:
+
+    tcurr = tstartsmoving[iplot]
+    flycurr = flysstartsmoving[iplot]
+    print(f'Plotting fly {flycurr} starting to move at frame {tcurr}')
+
+    t0 = tcurr - tstopped_frames
+    t1 = tcurr + tfuture_frames + 1
+
+    xmid = rawdata['X'][centeridx,0,tcurr,flycurr]
+    ymin = rawdata['X'][centeridx,1,tcurr,flycurr]
+
+    ax.set_xlim([xmid - axr, xmid + axr])
+    ax.set_ylim([ymin - axr, ymin + axr])
+    ax.set_aspect('equal')
+
+    ani = animation.FuncAnimation(fig, update, frames=t1-t0, interval=1000/outfps, blit=False)
+
+    if savetogif:
+        outgiffile = os.path.join(outfigdir, f'startsmoving_fly{flycurr}_frame{tcurr}_{timestamp}.gif')
+        ani.save(outgiffile, writer='pillow', fps=outfps)
+        print(f'Saved animation to {outgiffile}')
+    else:
+        if utils.is_notebook():
+            # show the animation in the notebook
+            from IPython.display import HTML, display
+            display(HTML(ani.to_jshtml()))
+        else:
+            ani
+
+
+# %%
+# animate some examples where fly stays stopped, should probably do something smarter than copy paste 
+import matplotlib.animation as animation
+
+savetogif = False
+nplot = 10
+idx = np.nonzero(staysstopped)
+tstaysstopped = idx[0]
+flystaysstopped = idx[1]
+idxplot = np.random.choice(len(tstaysstopped), size=nplot, replace=False)
+if nplot > 1:
+    savetogif = True  # if plotting multiple examples, save to gif files
+
+iplot = idxplot[0]
+tcurr = tstaysstopped[iplot]
+flycurr = flystaysstopped[iplot]
+
+fig,ax = plt.subplots(1,1, figsize=(9,9))
+plot_arena(ax)
+
+t0 = tcurr - tstopped_frames
+t1 = tcurr + tfuture_frames + 1
+
+xmid = rawdata['X'][centeridx,0,tcurr,flycurr]
+ymin = rawdata['X'][centeridx,1,tcurr,flycurr]
+
+otherflies = np.setdiff1d(np.arange(nflies), flycurr)
+hother['kpt'],hother['edge'],hother['txt'],_,_ = plot_flies(rawdata['X'][:,:,tcurr,otherflies], ax=ax, kpt_marker='.', kpt_ms=5, skel_lw=1)
+hmain['kpt'],hmain['edge'],hmain['txt'],_,_ = plot_fly(rawdata['X'][:,:,tcurr,flycurr], ax=ax, kpt_marker='o', kpt_ms=20, skel_lw=2)
+hti = ax.set_title(f'Fly {flycurr}, frame {tcurr}, off = 0')
+
+def update(frame):
+    tplot = t0 + frame
+    # update other flies
+    plot_fly(rawdata['X'][:,:,tplot,flycurr], hedge=hmain['edge'], hkpt=hmain['kpt'], htxt=hmain['txt'], ax=ax)
+    plot_flies(rawdata['X'][:,:,tplot,otherflies], hedges=hother['edge'], hkpts=hother['kpt'], htxt=hother['txt'], ax=ax)
+    hti.set_text(f'Fly {flycurr}, frame {tcurr}, off = {tplot-tcurr}')
+    
+    allhandles = [hmain['edge'],hmain['kpt'],hti] + hother['edge'] + hother['kpt']
+    return allhandles
+
+for iplot in idxplot:
+
+    tcurr = tstaysstopped[iplot]
+    flycurr = flystaysstopped[iplot]
+    print(f'Plotting fly {flycurr} staying stopped at frame {tcurr}')
+
+    t0 = tcurr - tstopped_frames
+    t1 = tcurr + tfuture_frames + 1
+
+    xmid = rawdata['X'][centeridx,0,tcurr,flycurr]
+    ymin = rawdata['X'][centeridx,1,tcurr,flycurr]
+
+    ax.set_xlim([xmid - axr, xmid + axr])
+    ax.set_ylim([ymin - axr, ymin + axr])
+    ax.set_aspect('equal')
+
+    ani = animation.FuncAnimation(fig, update, frames=t1-t0, interval=1000/outfps, blit=False)
+
+    if savetogif:
+        outgiffile = os.path.join(outfigdir, f'staysstopped_fly{flycurr}_frame{tcurr}_{timestamp}.gif')
+        ani.save(outgiffile, writer='pillow', fps=outfps)
+        print(f'Saved animation to {outgiffile}')
+    else:
+        if utils.is_notebook():
+            # show the animation in the notebook
+            from IPython.display import HTML, display
+            display(HTML(ani.to_jshtml()))
+        else:
+            ani

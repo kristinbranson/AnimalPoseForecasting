@@ -191,7 +191,7 @@ def plot_fly(pose=None, kptidx=keypointidx, skelidx=skeleton_edges, fig=None, ax
             # xc = np.concatenate((pose[skelidx,0],np.zeros((nedges,1))+np.nan),axis=1)
             # yc = np.concatenate((pose[skelidx,1],np.zeros((nedges,1))+np.nan),axis=1)
         else:
-            segments = np.zeros((nedges, 2)) + np.nan
+            segments = np.zeros((nedges, 2, 2)) + np.nan
             # xc = np.array([])
             # yc = np.array([])
         if hedge is None:
