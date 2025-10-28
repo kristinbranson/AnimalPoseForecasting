@@ -139,19 +139,32 @@ ax.legend()
 
 # %%
 # find time points when the fly is stopped for at least tstopped seconds and transitions to walking
+# willwalk is true at frame t if the fly is stopped at all frames t-tstopped_frames+1, t-tstopped_frames+2, ..., t
+# and will walk at some point in frames t+1, t+2, ..., t+tfuture_frames
+
 # velmag is # (nframes-1, nflies)
-tstopped = .5 # seconds
-tfuture = 1 # seconds
-tstopped_frames = int(tstopped * fps)
-tfuture_frames = int(tfuture * fps)
-filstopped = np.ones((tstopped_frames,1),dtype=int)
-filfuture = np.ones((tfuture_frames,1),dtype=int)
+
+tstopped = .5 # seconds, must be stopped for at least this long
+tfuture = 1 # seconds, must be walking at some point in the next tfuture seconds, or must be stopped for at least tfuture seconds
+tstopped_frames = int(tstopped * fps) # convert to frames
+tfuture_frames = int(tfuture * fps) # convert to frames
+filstopped = np.ones((tstopped_frames,1),dtype=int) # filter for wasstopped
+filfuture = np.ones((tfuture_frames,1),dtype=int) # filter for future, willwalk or willstop
 nflies = velmag_mmps.shape[1]
-# nflies = 1
+# nflies = 1 # for debugging
 
 from scipy.ndimage import convolve
 
 def same2valid(x,filsize,debug=False):
+    """
+    Unpad an array x that was convolved with a filter of size filsize so that all entries are valid. This only 
+    handles 1D convolution along axis=0, but x can have any number of trailing dimensions.
+    x: array of shape (nframes, ...), the result of scipy.ndimage.convolve of an array with a filter of size (filsize,...). 
+    filsize: int, size of the filter used in the convolution
+    debug: bool, if True, assumes that the padding regions are NaN, and checks that padleft and padright regions are all NaN, 
+    and that the valid region has no NaNs.
+    returns: array of shape (nframes - filsize + 1, ...), the unpadded valid region of x
+    """
     padright = filsize // 2
     padleft = filsize - padright - 1
     if debug:
@@ -161,26 +174,34 @@ def same2valid(x,filsize,debug=False):
         assert not np.any(np.isnan(x[padleft:-padright]))
     return x[padleft:-padright]
 
-# isstop = np.zeros((1000,nflies))
-# isstop[:500] = 1
-isstop = velmag_mmps <= thresh_stopped
-wasstopped = convolve(isstop.astype(int), filstopped, mode='constant', cval=0) >= tstopped_frames
-wasstopped = same2valid(wasstopped, tstopped_frames)
-wasstopped = np.r_[np.zeros((tstopped_frames-1, nflies), dtype=bool),wasstopped]
+# isstop = np.zeros((1000,nflies)) # for debugging
+# isstop[:500] = 1 # for debugging
+isstop = velmag_mmps <= thresh_stopped # whether stopped in current frame
+wasstopped = convolve(isstop.astype(int), filstopped, mode='constant', cval=0) >= tstopped_frames # same padding
+wasstopped = same2valid(wasstopped, tstopped_frames) # valid padding
+# shift to align with original frames, necessarily false at the initial frames because we don't have enough history
+# first possible frame that can have wasstopped == True is tstopped_frames
+wasstopped = np.r_[np.zeros((tstopped_frames-1, nflies), dtype=bool),wasstopped] 
 
-# iswalk = np.zeros((1000,nflies))
-# iswalk[500-1+tfuture_frames:] = 1
-iswalk = velmag_mmps >= thresh_walking
-willwalk = convolve(iswalk.astype(int), filfuture, mode='constant', cval=0) >= 1
-willwalk = same2valid(willwalk, tfuture_frames)
+# iswalk = np.zeros((1000,nflies)) # for debugging
+# iswalk[500-1+tfuture_frames:] = 1 # for debugging
+iswalk = velmag_mmps >= thresh_walking # whether walking in current frame
+willwalk = convolve(iswalk.astype(int), filfuture, mode='constant', cval=0) >= 1 # same padding
+willwalk = same2valid(willwalk, tfuture_frames) # valid padding
+# shift to align with original frames. t = 0 should correspond to frames 1:tfuture_frames+1
+# so start at willwalk[1]
+# last possible frame that can have willwalk == True is nframes-1-tfuture_frames
 willwalk = np.r_[willwalk[1:],np.zeros((tfuture_frames, nflies), dtype=bool)]
 
-willstop = convolve(isstop.astype(int), filfuture, mode='constant', cval=0) >= tfuture_frames
-willstop = same2valid(willstop, tfuture_frames)
+willstop = convolve(isstop.astype(int), filfuture, mode='constant', cval=0) >= tfuture_frames # same padding
+willstop = same2valid(willstop, tfuture_frames) # valid padding
+# shift to align with original frames. t = 0 should correspond to frames 1:tfuture_frames+1
+# so start at willstop[1]
+# last possible frame that can have willstop == True is nframes-1-tfuture_frames
 willstop = np.r_[willstop[1:],np.zeros((tfuture_frames, nflies), dtype=bool)]
 
-startsmoving = wasstopped & willwalk
-staysstopped = wasstopped & willstop
+startsmoving = wasstopped & willwalk # startsmoving = was stopped from t-tstopped_frames+1 to t, and will walk from t+1 to t+tfuture_frames
+staysstopped = wasstopped & willstop # staysstopped = was stopped from t-tstopped_frames+1 to t, and will stop from t+1 to t+tfuture_frames
 
 # tstartsmoving = np.nonzero(startsmoving)[0]
 # print(f'len(tstartsmoving) = {len(tstartsmoving)}')
