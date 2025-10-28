@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.17.1
+#       jupytext_version: 1.18.1
 #   kernelspec:
 #     display_name: transformer
 #     language: python
@@ -124,7 +124,7 @@ if np.isnan(last_val_loss):
 
 
 # %% [markdown]
-# ### some helper functions for profiling
+# ### some helper functions for profiling memory usage
 #
 
 # %%
@@ -160,25 +160,28 @@ def display_top(snapshot, key_type='lineno', limit=None):
 
 
 # %% [markdown]
-# ### profile example creation
+# ### profile init code
 
 # %%
 # import cProfile
 # import pstats
 
-# from flyllm.dataset import FlyMLMDataset
+# doprofile = True
 
 # def profile_test():
-#     train_dataset_small = FlyMLMDataset(X[:min(len(X),100)],**train_dataset_params,**dataset_params)
+#     res = init_flyllm(configfile=configfile,mode='train',restartmodelfile=restartmodelfile,
+#                 debug_uselessdata=debug_uselessdata)
 
-# if False:
+# if doprofile:
 
 #     cProfile.run('profile_test()','profile_test.out')
 #     p = pstats.Stats('profile_test.out')
-#     p.strip_dirs().sort_stats('cumtime').print_stats(20)
+#     p.sort_stats('cumtime').print_stats(100)
 
-# if False:
+# if not doprofile:
+#     st = time.time()
 #     profile_test()
+#     print("Total elapsed time:", time.time() - st)
 
 # %%
 # random debugging stuff

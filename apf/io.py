@@ -292,7 +292,7 @@ def compute_scale_all_agents(data, compute_scale_per_agent):
     scale_per_agent = None
 
     for agent_num in range(max_n_agents):
-        idscurr = np.unique(data['ids'][data['ids'][:, agent_num] >= 0, agent_num])
+        idscurr = np.unique(data['ids'][(data['ids'][:, agent_num] >= 0) & data['isdata'][:,agent_num], agent_num])
         for id in idscurr:
             idx = data['ids'][:, agent_num] == id
             s = compute_scale_per_agent(data['X'][..., idx, agent_num])
@@ -300,20 +300,25 @@ def compute_scale_all_agents(data, compute_scale_per_agent):
                 scale_per_agent = np.zeros((s.size, maxid + 1))
                 scale_per_agent[:] = np.nan
             else:
-                assert (np.all(np.isnan(scale_per_agent[:, id])))
+                assert (np.all(np.isnan(scale_per_agent[:, id]))), \
+                    f"Scale for agent id {id} already computed, cannot recompute"
             scale_per_agent[:, id] = s.flatten()
 
     return scale_per_agent
 
 
-def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_noise_params=None, keypointnames=None):
+def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_noise_params=None, keypointnames=None,
+                         debug=False, n_frames_per_video=None, max_n_videos=None):
     # load data
     LOG.info(f"loading raw data from {infile}...")
-    data = load_raw_npz_data(infile)
+    data = load_raw_npz_data(infile,debug=debug, n_frames_per_video=n_frames_per_video, max_n_videos=max_n_videos)
     LOG.info(f"loaded data with X.shape {data['X'].shape}")
+
+    scale_per_agent = None
 
     # compute noise parameters
     if type(config['discreteidx']) == list and (len(config['discreteidx']) > 0) and config['discretize_epsilon'] is None:
+        LOG.info('computing noise parameters...')
         if (config['all_discretize_epsilon'] is None):
             assert compute_noise_params is not None, \
                 "Need 'compute_noise_params' to compute 'all_discrete_epsilon'"
@@ -331,7 +336,7 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
         filter_data_by_categories(data, config['categories'])
         nframespost = np.count_nonzero(data['isdata'])
         nidspost = len(np.unique(data['ids'][data['isdata']]))
-        LOG.info(f"After filtering nids {nidspre} -> {nidspost}, nframes {nframespre} -> {nframespost}")
+        LOG.info(f"After filtering nids {nidspre} -> {nidspost}, n agent-frames {nframespre} -> {nframespost}")
 
     # augment by flipping
     if 'augment_flip' in config and config['augment_flip']:
@@ -360,7 +365,8 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
         return data, None
 
     LOG.info('computing scale parameters...')
-    scale_per_agent = compute_scale_all_agents(data, compute_scale_per_agent)
+    if scale_per_agent is None:
+        scale_per_agent = compute_scale_all_agents(data, compute_scale_per_agent)
 
     # throw out data that is missing scale information - not so many frames
     idsremove = np.nonzero(np.any(np.isnan(scale_per_agent), axis=0))[0]

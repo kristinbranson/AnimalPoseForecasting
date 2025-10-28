@@ -119,10 +119,10 @@ def load_data(
         compute_scale_per_agent=compute_scale_perfly,
         compute_noise_params=compute_noise_params,
         keypointnames=keypointnames,
+        debug=debug,
+        n_frames_per_video=45000,
+        max_n_videos=2
     )
-
-    if debug:
-        debug_less_data(data, n_frames_per_video=45000, max_n_videos=2)
 
     # Remove all NaN agents (sometimes the last one is a dummy)
     Xkp = data['X']

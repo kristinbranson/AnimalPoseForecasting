@@ -119,7 +119,6 @@ def compute_relpose_tspred(relposein, tspred_dct=[], discreteidx=[]):
 
     return relpose_tspred
 
-
 def compute_scale_perfly(Xkp: np.ndarray) -> np.ndarray:
     """Computes mean and std of the following keypoint based measures per fly:
         thorax width, thorax length, abdomen length, wing length, head width, head height
@@ -170,8 +169,11 @@ def compute_scale_perfly(Xkp: np.ndarray) -> np.ndarray:
 
     # Move to a numpy array with indices corresponding to the order of scalenames
     scale_perfly = np.zeros((len(scalenames), n_flies))
+    scale_perfly[:] = np.nan
     for scale_name, scale_value in scales.items():
-        scale_perfly[scalenames.index(scale_name)] = np.nanmedian(scale_value, axis=0)
+        goodidx = ~np.all(np.isnan(scale_value), axis=0)
+        if np.any(goodidx):
+            scale_perfly[scalenames.index(scale_name),goodidx] = np.nanmedian(scale_value[:,goodidx], axis=0)
 
         # TODO: In the previous code the head features were not using axis=0 for median and std, do we want that?
         #   lets keep it perfly for now until we see why this might have been
@@ -676,8 +678,9 @@ def compute_sensory(xeye_main, yeye_main, theta_main,
     # assert (np.any(np.isnan(xeye_main)) == False)
     # assert (np.any(np.isnan(yeye_main)) == False)
     # assert (np.any(np.isnan(theta_main)) == False)
-    if np.any(np.isnan(xeye_main)):
-        LOG.warning(f"{np.isnan(xeye_main).sum()} / {T} is nan")
+    # this is ok, no need to warn
+    # if np.any(np.isnan(xeye_main)):
+    #     LOG.warning(f"xeye_main is nan for {np.isnan(xeye_main).sum()} / {T} frames")
 
     # vision bin size
     step = 2. * np.pi / SENSORY_PARAMS['n_oma']
@@ -768,6 +771,8 @@ def compute_sensory(xeye_main, yeye_main, theta_main,
     if SENSORY_PARAMS['compute_otherflies_touch']:
         dx = xtouch_main.reshape((npts_touch, 1, 1, T)) - xtouch_other.reshape((1, npts_touch_other, nflies, T))
         dy = ytouch_main.reshape((npts_touch, 1, 1, T)) - ytouch_other.reshape((1, npts_touch_other, nflies, T))
+        dx[np.isnan(dx)] = np.inf
+        dy[np.isnan(dy)] = np.inf
         d = np.sqrt(np.nanmin(dx ** 2 + dy ** 2, axis=2)).reshape(npts_touch * npts_touch_other, T)
         otherflies_touch = 1. - np.minimum(1., SENSORY_PARAMS['otherflies_touch_mult'] * d ** SENSORY_PARAMS[
             'otherflies_touch_exp'])
