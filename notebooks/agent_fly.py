@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.11.2
+#       jupytext_version: 1.18.1
 #   kernelspec:
 #     display_name: transformer
 #     language: python
@@ -34,41 +34,68 @@ from flyllm.config import DEFAULTCONFIGFILE, posenames
 from flyllm.features import featglobal, get_sensory_feature_idx
 from flyllm.simulation import animate_pose
 from flyllm.plotting import plot_arena
+from flyllm.prepare import init_flyllm
 import time
+import logging
+import os
 
-from experiments.flyllm import make_dataset
+logging.basicConfig(level=logging.INFO)
+LOG = logging.getLogger(__name__)
+
 # %%
+if False:
+    # modernize model file
+    from apf.io import modernize_model_file
+    configfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/config_fly_llm_predvel_20251007.json"
 
+    res = init_flyllm(configfile=configfile,needtraindata=True,needvaldata=False,debug_uselessdata=False,mode='train')
+
+    eyrun_modelfile = '/groups/branson/home/eyjolfsdottire/data/flyllm/model_refactored_251002_newdata_cont_cont.pth'
+    modelfile = os.path.join('/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/llmnets',
+                            'predvel_20251007_20251002T000000_epoch200.pth')
+    state = modernize_model_file(eyrun_modelfile,res['train_dataset'],res['config'],res['device'])
+
+    torch.save(state, modelfile)
+
+# %%
 configfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/config_fly_llm_predvel_20251007.json"
-config = read_config(
-    configfile,
-    default_configfile=DEFAULTCONFIGFILE,
-    posenames=posenames,
-    featglobal=featglobal,
-    get_sensory_feature_idx=get_sensory_feature_idx,
-)
+mode = 'train' # can toggle to 'test'
 
-# Load datasets
-train_dataset, flyids, track, pose, velocity, sensory, dataset_params = make_dataset(config, 'intrainfile', return_all=True, debug=False)
+restartmodelfile = None
+loadmodelfile = '/groups/branson/home/eyjolfsdottire/data/flyllm/model_refactored_251002_newdata_cont_cont.pth'
+res = init_flyllm(configfile=configfile,mode=mode,restartmodelfile=restartmodelfile,
+                loadmodelfile=loadmodelfile,debug_uselessdata=True)
 
-val_dataset = make_dataset(config, 'invalfile', train_dataset, debug=False)
 
-# Wrap into dataloader
-train_dataloader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True, pin_memory=True)
-val_dataloader = DataLoader(val_dataset, batch_size=config['batch_size'], shuffle=False, pin_memory=True)
+# config = read_config(
+#     configfile,
+#     default_configfile=DEFAULTCONFIGFILE,
+#     posenames=posenames,
+#     featglobal=featglobal,
+#     get_sensory_feature_idx=get_sensory_feature_idx,
+# )
 
-# Initialize the model
-device = torch.device(config['device'])
-model, criterion = initialize_model(config, train_dataset, device)
+# # Load datasets
+# train_dataset, flyids, track, pose, velocity, sensory, dataset_params = make_dataset(config, 'intrainfile', return_all=True, debug=False)
 
-# Train the model
-train_args = function_args_from_config(config, train)
-init_loss_epoch = {}
-model, best_model, loss_epoch = train(train_dataloader, val_dataloader, model, loss_epoch=init_loss_epoch, **train_args)
+# val_dataset = make_dataset(config, 'invalfile', train_dataset, debug=False)
 
-# OR
-# model_file = 'agentfly_model_20251001T073751.pth'
-# model.load_state_dict(torch.load(model_file))
+# # Wrap into dataloader
+# train_dataloader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True, pin_memory=True)
+# val_dataloader = DataLoader(val_dataset, batch_size=config['batch_size'], shuffle=False, pin_memory=True)
+
+# # Initialize the model
+# device = torch.device(config['device'])
+# model, criterion = initialize_model(config, train_dataset, device)
+
+# # Train the model
+# train_args = function_args_from_config(config, train)
+# init_loss_epoch = {}
+# model, best_model, loss_epoch = train(train_dataloader, val_dataloader, model, loss_epoch=init_loss_epoch, **train_args)
+
+# # OR
+# # model_file = 'agentfly_model_20251001T073751.pth'
+# # model.load_state_dict(torch.load(model_file))
 
 # %%
 # Plot the losses

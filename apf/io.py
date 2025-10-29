@@ -5,6 +5,7 @@ import json
 import numpy as np
 import pathlib
 import logging
+import tqdm
 
 from apf.data import flip_agents, filter_data_by_categories, load_raw_npz_data
 
@@ -30,10 +31,21 @@ def save_model(savefile, model, lr_optimizer=None, scheduler=None, loss=None, co
     torch.save(tosave, savefile)
     return
 
+def modernize_model_file(loadfile,dataset,config,device):
+    LOG.info(f'Loading model from file {loadfile}...')
+    state = torch.load(loadfile, map_location=device, weights_only=False)
+    if 'model' not in state:
+        state = {'model': state}
+    if 'dataset_params' not in state['model']:
+        state['dataset_params'] = dataset.get_params()
+    if 'config' not in state:
+        state['config'] = config
+    return state    
+    
 
 def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, config=None):
     LOG.info(f'Loading model from file {loadfile}...')
-    state = torch.load(loadfile, map_location=device)
+    state = torch.load(loadfile, map_location=device, weights_only=False)
     if model is not None:
         model.load_state_dict(state['model'])
     if lr_optimizer is not None and ('lr_optimizer' in state):
@@ -236,11 +248,22 @@ def get_modeltype_str(config, dataset):
 
     return modeltype_str
 
+modelname_patterns = [r'^(.*)_(\d{8}T\d{6})_.*epoch(\d+)$', # new pattern 20251028, <modeltype_str>_<savetime>_epoch<epoch>
+                      r'^(.*)_epoch(\d+)_(\d{8}T\d{6})$', # old pattern <modeltype_str>_epoch<epoch>_<savetime>
+                      r'^(.*)_(\d{8}T\d{6})$'] # old pattern <modeltype_str>_<savetime>
 
-def parse_modelfile(modelfile, modelname_pattern=r'fly(.*)_epoch\d+_(\d{8}T\d{6})'):
+
+def parse_modelfile(modelfile, modelname_pattern=None):
     _, filestr = os.path.split(modelfile)
     filestr, _ = os.path.splitext(filestr)
-    m = re.match(modelname_pattern, filestr)
+    
+    if modelname_pattern is None:
+        for modelname_pattern in modelname_patterns:
+            m = re.match(modelname_pattern, filestr)
+            if m is not None:
+                break
+    else:
+        m = re.match(modelname_pattern, filestr)
     if m is None:
         modeltype_str = ''
         savetime = ''
@@ -253,8 +276,15 @@ def parse_modelfile(modelfile, modelname_pattern=r'fly(.*)_epoch\d+_(\d{8}T\d{6}
 def clean_intermediate_results(savedir):
     modelfiles = list(pathlib.Path(savedir).glob('*.pth'))
     modelfilenames = [p.name for p in modelfiles]
-    p = re.compile('^(?P<prefix>.+)_epoch(?P<epoch>\d+)_(?P<suffix>.*).pth$')
-    m = [p.match(n) for n in modelfilenames]
+    
+    pold = re.compile('^(?P<prefix>.+)_epoch(?P<epoch>\d+)_(?P<suffix>.*).pth$')
+    pnew = re.compile('^(?P<prefix>.+)_(?P<suffix>.*)_epoch(?P<epoch>\d+).pth$')
+    m = []
+    for modelfilename in modelfilenames:
+        mcurr = pnew.match(modelfilename)
+        if mcurr is None:
+            mcurr = pold.match(modelfilename)
+        m.append(mcurr)
     ids = np.array([x.group('prefix') + '___' + x.group('suffix') for x in m])
     epochs = np.array([int(x.group('epoch')) for x in m])
     uniqueids, idx = np.unique(ids, return_inverse=True)
@@ -291,7 +321,7 @@ def compute_scale_all_agents(data, compute_scale_per_agent):
     max_n_agents = data['X'].shape[-1]
     scale_per_agent = None
 
-    for agent_num in range(max_n_agents):
+    for agent_num in tqdm.trange(max_n_agents, desc='Computing scale per agent'):
         idscurr = np.unique(data['ids'][(data['ids'][:, agent_num] >= 0) & data['isdata'][:,agent_num], agent_num])
         for id in idscurr:
             idx = data['ids'][:, agent_num] == id
@@ -337,6 +367,8 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
         nframespost = np.count_nonzero(data['isdata'])
         nidspost = len(np.unique(data['ids'][data['isdata']]))
         LOG.info(f"After filtering nids {nidspre} -> {nidspost}, n agent-frames {nframespre} -> {nframespost}")
+        assert nidspost > 0, "No valid agents remain after filtering by categories"
+        assert nframespost > 0, "No valid data remains after filtering by categories"
 
     # augment by flipping
     if 'augment_flip' in config and config['augment_flip']:
@@ -371,5 +403,20 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
     # throw out data that is missing scale information - not so many frames
     idsremove = np.nonzero(np.any(np.isnan(scale_per_agent), axis=0))[0]
     data['isdata'][np.isin(data['ids'], idsremove)] = False
+    
+    # condense, only keep videos that have data, makes feature computation faster later...
+    hasdata = np.any(data['isdata'], axis=1)
+    videoidx = np.unique(data['videoidx'][hasdata])
+    keepidx = np.isin(data['videoidx'], videoidx)[:,0]
+    LOG.info(f'Condensing data: frames reduced from {len(keepidx)} to {np.count_nonzero(keepidx)}')
+    if not np.all(keepidx):
+        assert ~np.any(data['isdata'][~keepidx,:])
+        data['X'] = data['X'][:,:,keepidx,:]
+        data['y'] = data['y'][:,keepidx,:]
+        data['videoidx'] = data['videoidx'][keepidx]
+        data['ids'] = data['ids'][keepidx,:]
+        data['frames'] = data['frames'][keepidx]
+        data['isstart'] = data['isstart'][keepidx,:]
+        data['isdata'] = data['isdata'][keepidx,:]    
 
     return data, scale_per_agent

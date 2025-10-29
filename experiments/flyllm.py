@@ -18,6 +18,7 @@ from flyllm.config import featrelative, keypointnames, featangle
 from flyllm.features import (
     kp2feat, compute_sensory_wrapper, compute_scale_perfly, compute_noise_params, feat2kp
 )
+import tqdm
 
 LOG = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class Sensory(Operation):
             sensory_data: (n_agents,  n_frames, n_sensory_features) float array
         """
         feats = []
-        for flyid in range(Xkp.shape[0]):
+        for flyid in tqdm.trange(Xkp.shape[0], desc='Computing sensory features'):
             feat, idxinfo = compute_sensory_wrapper(Xkp.T, flyid, returnidx=True)
             feats.append(feat.T)
         self.idxinfo = idxinfo
@@ -120,8 +121,8 @@ def load_data(
         compute_noise_params=compute_noise_params,
         keypointnames=keypointnames,
         debug=debug,
-        n_frames_per_video=45000,
-        max_n_videos=2
+        n_frames_per_video=15000,
+        max_n_videos=5
     )
 
     # Remove all NaN agents (sometimes the last one is a dummy)
@@ -174,6 +175,7 @@ def make_dataset(
     Xkp, flyids, isstart, isdata, scale_perfly = load_data(config, config[filename], debug=debug)
 
     # Compute features
+    LOG.info('Computing input and label features for dataset...')
     track = Data('keypoints', Xkp.T, [])
     sensory = Sensory()(track)
     pose = Pose()(track, scale_perfly=scale_perfly, flyid=flyids)

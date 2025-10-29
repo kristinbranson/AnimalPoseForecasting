@@ -201,7 +201,7 @@ def train(
 
     # save best model
     if best_epoch is not None:
-        savefile = f'{savefilestr}_bestmodel_epoch{best_epoch + 1}.pth'
+        savefile = f'{savefilestr}_bestepoch{best_epoch + 1}.pth'
         print(f'Saving best model to file {savefile}')
         save_model(savefile, best_model,
                     lr_optimizer=optimizer,
