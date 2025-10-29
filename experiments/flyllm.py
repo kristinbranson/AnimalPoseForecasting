@@ -44,7 +44,7 @@ class Sensory(Operation):
             sensory_data: (n_agents,  n_frames, n_sensory_features) float array
         """
         feats = []
-        for flyid in tqdm.trange(Xkp.shape[0], desc='Computing sensory features'):
+        for flyid in range(Xkp.shape[0]):
             feat, idxinfo = compute_sensory_wrapper(Xkp.T, flyid, returnidx=True)
             feats.append(feat.T)
         self.idxinfo = idxinfo
@@ -177,10 +177,13 @@ def make_dataset(
     # Compute features
     LOG.info('Computing input and label features for dataset...')
     track = Data('keypoints', Xkp.T, [])
+    LOG.info('Computing sensory features...')
     sensory = Sensory()(track)
+    LOG.info('Computing pose features...')
     pose = Pose()(track, scale_perfly=scale_perfly, flyid=flyids)
     pose.array[isdata.T == 0] = np.nan
     sensory.array[isdata.T == 0] = np.nan
+    LOG.info('Computing velocity features...')
     velocity = Velocity(featrelative=featrelative, featangle=featangle)(pose, isstart=isstart)
 
     tspred_global = config['tspred_global']
@@ -194,6 +197,8 @@ def make_dataset(
     metadata = {'labels': { 'velocity': {'pose': flyids.T, 'velocity': pose.array} },
                 'inputs': { 'pose': {'pose': flyids.T},
                             'velocity': {'pose': flyids.T} }}
+
+    LOG.info('Assembling dataset...')
 
     # Assemble the dataset
     if ref_dataset is not None:

@@ -5,6 +5,7 @@ import logging
 
 from apf.dataset import Dataset, Data, get_post_operations, get_operation, apply_inverse_operations, apply_opers_from_data
 from apf.models import TransformerModel
+import tqdm
 
 LOG = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ def simulate(
 
     masksizeprev = 0
     model.eval()
-    while curr_frame < track_len:
+    for curr_frame in tqdm.trange(curr_frame, track_len, desc='Simulating'):
         # Make a motion prediction
         frame0 = 0
         if max_contextl is not None:
@@ -128,7 +129,5 @@ def simulate(
         inputs_proc = apply_opers_from_data(dataset.inputs, inputs)
         curr_in = np.concatenate(list(inputs_proc.values()), axis=-1)
         model_input[:, curr_frame, :] = torch.from_numpy(curr_in[:, 0, :].astype(np.float32)).to(device)
-
-        curr_frame += 1
 
     return gt_track, pred_track

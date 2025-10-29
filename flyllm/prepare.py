@@ -375,10 +375,13 @@ def init_model(config=None,somedataset=None,somedataloader=None,device=None,load
     if loadmodelfile is not None:
         modeltype_str, savetime = parse_modelfile(loadmodelfile)
         loss_epoch = load_model(loadmodelfile, model, device)
-        if np.any(np.isnan(loss_epoch['train'].cpu().numpy())):
-            epoch = np.nonzero(np.isnan(loss_epoch['train'].cpu().numpy()))[0][0]
+        if 'train' in loss_epoch and loss_epoch['train'] is not None:
+            if np.any(np.isnan(loss_epoch['train'].cpu().numpy())):
+                epoch = np.nonzero(np.isnan(loss_epoch['train'].cpu().numpy()))[0][0]
+            else:
+                epoch = loss_epoch['train'].shape[0]
         else:
-            epoch = loss_epoch['train'].shape[0]
+            epoch = config['num_train_epochs']
     else:
         modeltype_str = get_modeltype_str(config, somedataset)
         if ('model_nickname' in config) and (config['model_nickname'] is not None):
@@ -558,6 +561,7 @@ def init_flyllm(configfile=None,config=None,
             if mode in ['train',]:
                 args['somedataset'] = res['train_dataset']
                 args['somedataloader'] = res['train_dataloader']
+                loadmodelfile = None
                 #args['ntrain_batches'] = res['ntrain_batches']
             elif mode in ['test',]:
                 args['somedataset'] = res['val_dataset']

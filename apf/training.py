@@ -106,7 +106,7 @@ def train(
             loss_epoch[key][:] = torch.nan
         else:
             # overwrite future epochs with nan in case they are not nan
-            loss_epoch[key][epoch:] = torch.nan
+            loss_epoch[key][start_epoch:] = torch.nan
             
     last_val_loss = None
 

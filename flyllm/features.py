@@ -1048,8 +1048,6 @@ def feat2kp(Xfeat, scale_perfly, flyid=None):
         assert (scale_perfly.shape[1] == nflies)
         flyid = np.tile(np.arange(nflies, dtype=int)[np.newaxis, :], (T, 1))
         
-    LOG.info('Computing pose features...')
-
     Xfeat = Xfeat.reshape((Xfeat.shape[0], T, nflies))
 
     porigin = Xfeat[[posenames.index('thorax_front_x'), posenames.index('thorax_front_y')], ...]

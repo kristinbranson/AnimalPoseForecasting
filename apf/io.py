@@ -28,6 +28,12 @@ def save_model(savefile, model, lr_optimizer=None, scheduler=None, loss=None, co
         tosave['SENSORY_PARAMS'] = sensory_params
     if hasattr(model, 'dataset_params'):
         tosave['dataset_params'] = model.dataset_params
+        
+    # make sure parent directory exists
+    savedir = os.path.dirname(savefile)
+    if len(savedir) > 0 and (not os.path.exists(savedir)):
+        os.makedirs(savedir)
+        
     torch.save(tosave, savefile)
     return
 
@@ -55,7 +61,7 @@ def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, confi
     if config is not None:
         load_config_from_model_file(config=config, state=state)
 
-    loss = {}
+    loss = {'train': None, 'val': None}
     if 'loss' in state:
         if isinstance(loss, dict):
             loss = state['loss']
@@ -277,8 +283,8 @@ def clean_intermediate_results(savedir):
     modelfiles = list(pathlib.Path(savedir).glob('*.pth'))
     modelfilenames = [p.name for p in modelfiles]
     
-    pold = re.compile('^(?P<prefix>.+)_epoch(?P<epoch>\d+)_(?P<suffix>.*).pth$')
-    pnew = re.compile('^(?P<prefix>.+)_(?P<suffix>.*)_epoch(?P<epoch>\d+).pth$')
+    pold = re.compile(r'^(?P<prefix>.+)_epoch(?P<epoch>\d+)_(?P<suffix>.*).pth$')
+    pnew = re.compile(r'^(?P<prefix>.+)_(?P<suffix>.*)_epoch(?P<epoch>\d+).pth$')
     m = []
     for modelfilename in modelfilenames:
         mcurr = pnew.match(modelfilename)
