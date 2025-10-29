@@ -214,8 +214,6 @@ for agent_id in agent_ids:
 plt.show()
 # %%
 
-# %%
-
 savedir = "flyllm_animations"
 if not os.path.exists(savedir):
     os.makedirs(savedir)

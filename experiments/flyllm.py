@@ -34,18 +34,23 @@ class Sensory(Operation):
     localattrs = ['idxinfo']
     idxinfo: dict | None = None
     
-    def apply(self, Xkp: np.ndarray) -> np.ndarray:
+    def apply(self, Xkp: np.ndarray, isdata: np.ndarray | None = None) -> np.ndarray:
         """ Computes sensory features from keypoints.
 
         Args:
             Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array
+            isdata: indicates whether there is data for a given frame or agent, only used to speed up computation, (n_frames, n_agents) bool array
 
         Returns:
             sensory_data: (n_agents,  n_frames, n_sensory_features) float array
         """
         feats = []
         for flyid in range(Xkp.shape[0]):
-            feat, idxinfo = compute_sensory_wrapper(Xkp.T, flyid, returnidx=True)
+            if isdata is not None:
+                isdatacurr = isdata[:,flyid]
+            else:
+                isdatacurr = None
+            feat, idxinfo = compute_sensory_wrapper(Xkp.T, flyid, returnidx=True, isdata=isdatacurr)
             feats.append(feat.T)
         self.idxinfo = idxinfo
         return np.array(feats)
@@ -64,7 +69,7 @@ class Pose(Operation):
     localattrs = ['scale_perfly']
     scale_perfly: np.ndarray | None = None
 
-    def apply(self, Xkp: np.ndarray, scale_perfly: np.ndarray | None = None, flyid: np.ndarray | None = None):
+    def apply(self, Xkp: np.ndarray, scale_perfly: np.ndarray | None = None, flyid: np.ndarray | None = None, isdata: np.ndarray | None = None) -> np.ndarray:
         """ Computes pose features from keypoints.
 
         Args:
@@ -77,7 +82,7 @@ class Pose(Operation):
         """
         if scale_perfly is not None:
             self.scale_perfly = scale_perfly
-        return kp2feat(Xkp=Xkp.T, scale_perfly=scale_perfly, flyid=flyid).T
+        return kp2feat(Xkp=Xkp.T, scale_perfly=scale_perfly, flyid=flyid, isdata=isdata).T
 
     def invert(self, pose: np.ndarray, flyid: np.ndarray | int = None):
         """ Computes keypoints from pose features.
@@ -147,6 +152,7 @@ def make_dataset(
         ref_dataset: Dataset | None = None,
         return_all: bool = False,
         debug: bool = True,
+        indata: dict | None = None,
 ) -> Dataset | tuple[Dataset, np.ndarray, Data, Data, Data, Data]:
     """ Creates a dataset from config, for a given file name and optionally using a reference dataset.
 
@@ -172,17 +178,24 @@ def make_dataset(
         ]
     """
     # Load data
-    Xkp, flyids, isstart, isdata, scale_perfly = load_data(config, config[filename], debug=debug)
+    if indata is None:
+        Xkp, flyids, isstart, isdata, scale_perfly = load_data(config, config[filename], debug=debug)
+    else:
+        Xkp = indata['Xkp']
+        flyids = indata['flyids']
+        isstart = indata['isstart']
+        isdata = indata['isdata']
+        scale_perfly = indata['scale_perfly']
 
     # Compute features
     LOG.info('Computing input and label features for dataset...')
     track = Data('keypoints', Xkp.T, [])
     LOG.info('Computing sensory features...')
-    sensory = Sensory()(track)
+    sensory = Sensory()(track,isdata=isdata)
     LOG.info('Computing pose features...')
-    pose = Pose()(track, scale_perfly=scale_perfly, flyid=flyids)
-    pose.array[isdata.T == 0] = np.nan
-    sensory.array[isdata.T == 0] = np.nan
+    pose = Pose()(track, scale_perfly=scale_perfly, flyid=flyids, isdata=isdata)
+    assert not np.any(np.isnan(sensory.array[isdata.T])) and np.all(np.isnan(sensory.array[~isdata.T])), "Sensory features should be nan iff isdata == False"
+    assert not np.any(np.isnan(pose.array[isdata.T])) and np.all(np.isnan(pose.array[~isdata.T])), "Pose features should be nan iff isdata == False"
     LOG.info('Computing velocity features...')
     velocity = Velocity(featrelative=featrelative, featangle=featangle)(pose, isstart=isstart)
 
@@ -248,6 +261,6 @@ def make_dataset(
         )
     dataset_params = dataset.get_params()
     if return_all:
-        return dataset, flyids, track, pose, velocity, sensory, dataset_params
+        return dataset, flyids, track, pose, velocity, sensory, dataset_params, isdata, isstart
     else:
         return dataset

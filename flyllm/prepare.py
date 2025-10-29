@@ -295,8 +295,6 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
         'val_dataloader': torch DataLoader, validation data loader
         'ntrain_batches': int, number of training batches
         'nval_batches': int, number of validation batches
-        'train_sz': tuple, shape of training data
-        'val_sz': tuple, shape of validation data
     """
     
     assert config is not None, "No configuration provided"
@@ -308,29 +306,35 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
     res['val_dataloader'] = None
     res['ntrain_batches'] = None
     res['nval_batches'] = None
-    res['train_sz'] = None
-    res['val_sz'] = None
 
     if needtraindata:
         
         # create dataset
         res['train_data'] = {}
         res['train_dataset'], res['train_data']['flyids'], res['train_data']['track'], res['train_data']['pose'], \
-            res['train_data']['velocity'], res['train_data']['sensory'], res['config']['dataset_params'] = \
+            res['train_data']['velocity'], res['train_data']['sensory'], res['config']['dataset_params'], \
+            res['train_data']['isdata'], res['train_data']['isstart'] = \
             make_dataset(config,'intrainfile',return_all=True,debug=debug_uselessdata)
-
+        res['dataset_params'] = res['config']['dataset_params']
+        
         # create dataloader
         res['train_dataloader'] = DataLoader(res['train_dataset'], batch_size=config['batch_size'], shuffle=True, pin_memory=True)
+        
+        res['ntrain_batches'] = len(res['train_dataloader'])
         
     if needvaldata:
         
         # create dataset
         res['val_data'] = {}
         res['val_dataset'], res['val_data']['flyids'], res['val_data']['track'], res['val_data']['pose'], \
-            res['val_data']['velocity'], res['val_data']['sensory'], res['config']['dataset_params']= \
+            res['val_data']['velocity'], res['val_data']['sensory'], res['config']['dataset_params'], \
+            res['val_data']['isdata'], res['val_data']['isstart'] = \
             make_dataset(config,'invalfile',return_all=True,debug=debug_uselessdata)
+        res['dataset_params'] = res['config']['dataset_params']
+
+        # create dataloader
         res['val_dataloader'] = DataLoader(res['val_dataset'], batch_size=config['batch_size'], shuffle=False, pin_memory=True)
-        
+        res['nval_batches'] = len(res['val_dataloader'])
     return res
 
 def init_model(config=None,somedataset=None,somedataloader=None,device=None,loadmodelfile=None,
@@ -368,26 +372,32 @@ def init_model(config=None,somedataset=None,somedataloader=None,device=None,load
     assert device is not None, "No device provided"
     
     # create the model
+    LOG.info('Initializing model object from config parameters...')
     model, criterion = initialize_model(config, somedataset, device)
     res['criterion'] = criterion
 
     # load the model
     if loadmodelfile is not None:
+        LOG.info(f'Loading model from file {loadmodelfile}...')
         modeltype_str, savetime = parse_modelfile(loadmodelfile)
+        LOG.info(f'Parsed model type string: {modeltype_str}, savetime: {savetime}')
         loss_epoch = load_model(loadmodelfile, model, device)
         if 'train' in loss_epoch and loss_epoch['train'] is not None:
             if np.any(np.isnan(loss_epoch['train'].cpu().numpy())):
                 epoch = np.nonzero(np.isnan(loss_epoch['train'].cpu().numpy()))[0][0]
             else:
                 epoch = loss_epoch['train'].shape[0]
+            LOG.info(f'Loaded model has been trained for {epoch} epochs, based on train loss history')
         else:
             epoch = config['num_train_epochs']
+            LOG.info(f'Loaded model has no train loss history, setting epoch to {epoch} from config')
     else:
         modeltype_str = get_modeltype_str(config, somedataset)
         if ('model_nickname' in config) and (config['model_nickname'] is not None):
             modeltype_str = config['model_nickname']
         if mode in ['train',]:
             if restartmodelfile is not None:
+                LOG.info(f'Restarting model from file {restartmodelfile}...')
                 num_training_steps = config['num_train_epochs'] * len(somedataloader)
                 if optimizer is None or lr_scheduler is None:
                     optimizer, lr_scheduler = init_optimizer(num_training_steps, model, optimizer_args)
@@ -397,6 +407,7 @@ def init_model(config=None,somedataset=None,somedataloader=None,device=None,load
                     epoch = np.nonzero(np.isnan(loss_epoch['train'].cpu().numpy()))[0][0]
                 else:
                     epoch = loss_epoch['train'].shape[0]
+                LOG.info(f'Restarted model has been trained for {epoch} epochs, based on train loss history')
             else:
                 epoch = 0
                 # initialize structure to keep track of loss
@@ -531,6 +542,7 @@ def init_flyllm(configfile=None,config=None,
     # if loading from loadmodelfile, also sets res['config']['dataset_params']
     # note that dataset_params are NOT loaded from restartmodelfile
     if doinitconfig:
+        LOG.info('Initializing configuration...')
         try:
             init_config(configfile=configfile,config=config,mode=mode,loadmodelfile=loadmodelfile,overrideconfig=overrideconfig,res=res)
         except Exception as e:
@@ -539,6 +551,7 @@ def init_flyllm(configfile=None,config=None,
 
     ## setup device and random
     if doinitstate:
+        LOG.info('Initializing state...')
         try:
             # adds 'device' to res
             res = init_state(config=res['config'],seedrandom=seedrandom,res=res)
@@ -548,6 +561,7 @@ def init_flyllm(configfile=None,config=None,
         
     ## create training data sets
     if doinitdatasets:
+        LOG.info('Initializing datasets...')
         try:
             init_datasets(config=res['config'],needtraindata=needtraindata,needvaldata=needvaldata,debug_uselessdata=debug_uselessdata,res=res)
         except Exception as e:
@@ -555,6 +569,7 @@ def init_flyllm(configfile=None,config=None,
             return res
         
     if doinitmodel:
+        LOG.info('Initializing model...')
         try:
             # use training or test dataset to initialize, depending on mode
             args = {}

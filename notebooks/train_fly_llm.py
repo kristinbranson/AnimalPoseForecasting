@@ -68,10 +68,10 @@ print('Timestamp: ' + timestamp)
 # ### Set parameters
 
 # %%
-configfile = 'configs/config_fly_llm_predvel_20241125.json'
+configfile = 'configs/config_fly_llm_predvel_20251007.json'
 restartmodelfile = None
 outfigdir = 'figs'
-debug_uselessdata = True
+debug_uselessdata = False
 
 # path to config file based on code directory
 flyllmdir = flyllm.__path__[0]
@@ -89,7 +89,12 @@ res = init_flyllm(configfile=configfile,mode='train',restartmodelfile=restartmod
                 debug_uselessdata=debug_uselessdata)
 
 for key in res:
-    print(f'{key}: {type(res[key])}')
+    s = f'{key}: {type(res[key])}'
+    if hasattr(res[key], 'shape'):
+        s += f', shape: {res[key].shape}'
+    elif hasattr(res[key], '__len__') and not isinstance(res[key], str):
+        s += f', len: {len(res[key])}'
+    print(s)
 
 # unpack outputs
 config = res['config']
@@ -158,7 +163,6 @@ def display_top(snapshot, key_type='lineno', limit=None):
     total = sum(stat.size for stat in top_stats)
     print("Total allocated size: %.1f KiB" % (total / 1024))
 
-
 # %% [markdown]
 # ### profile init code
 
@@ -184,17 +188,17 @@ def display_top(snapshot, key_type='lineno', limit=None):
 #     print("Total elapsed time:", time.time() - st)
 
 # %%
-# random debugging stuff
+# # random debugging stuff
 
-example_curr = train_dataset[0]
-data_curr = train_dataset.item_to_data(example_curr)
-data_curr['labels']['velocity'].array.shape
-pose = apf.dataset.apply_inverse_operations(data_curr['labels']['velocity'])
-print(pose.shape)
-print(pose[0,0])
-print(example_curr['metadata'].keys())
-t0 = example_curr['metadata']['start_frame']
-flynum = example_curr['metadata']['agent_id']
+# example_curr = train_dataset[0]
+# data_curr = train_dataset.item_to_data(example_curr)
+# data_curr['labels']['velocity'].array.shape
+# pose = apf.dataset.apply_inverse_operations(data_curr['labels']['velocity'])
+# print(pose.shape)
+# print(pose[0,0])
+# print(example_curr['metadata'].keys())
+# t0 = example_curr['metadata']['start_frame']
+# flynum = example_curr['metadata']['agent_id']
 
 
 # %% [markdown]
