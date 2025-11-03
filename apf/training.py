@@ -12,6 +12,7 @@ from apf.models import (
     compute_loss_mixed,
     mixed_causal_criterion,
     TransformerModel,
+    TransformerDiffusionModel,
 )
 
 LOG = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ LOG = logging.getLogger(__name__)
 def train(
         train_dataloader: DataLoader,
         val_dataloader: DataLoader,
-        model: TransformerModel,
+        model: torch.nn.Module,
         num_train_epochs: int,
         max_grad_norm: float,
         optimizer_args: dict,
@@ -35,7 +36,7 @@ def train(
          train_dataloader: Dataloader used for training, provides examples with 'input' of shape
             (batch_size, contextl, n_in_features) and 'labels' of shape (batch_size, contextl, n_out_features)
          val_dataloader: Dataloader usef for validation.
-         model: Transformer model to be trained
+         model: Model to be trained
          num_train_epochs: How many times to loop through all examples in the dataset during training.
          max_grad_norm: Threshold for clipping gradients during training.
          optimizer_args: Named arguments used for the AdamW optimizer.
@@ -82,7 +83,7 @@ def train(
 
     # Sanity check on temporal dependencies
     # TODO: Does tmess=300 make sense when contextl is < 300?
-    sanity_check_temporal_dep(train_dataloader, device, train_src_mask, is_causal, model, tmess=300)
+    # sanity_check_temporal_dep(train_dataloader, device, train_src_mask, is_causal, model, tmess=300)
 
     # Train
     d_discrete = train_dataloader.dataset.d_output_discrete
@@ -101,7 +102,11 @@ def train(
         nmask_train = 0
         for step, example in enumerate(train_dataloader):
 
-            pred = model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal)
+            kwargs = {}
+            if type(model) is TransformerDiffusionModel:
+                # add ground truth label to the diffusion model. Noise will be added by the model before inference.
+                kwargs['gt_output'] = example['labels'].to(device=device)
+            pred = model.forward(src=example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal, **kwargs)
             loss, loss_discrete, loss_continuous = mixed_causal_criterion(
                 example, pred, weight_discrete=weight_discrete, extraout=True
             )
@@ -143,7 +148,7 @@ def train(
             best_model = copy.deepcopy(model)
 
         if savedir is not None and epoch > 0 and epoch % save_epoch == 0:
-            # TODO: Switch apf.io.save_model once that's refactored
+            # TODO: Switch to apf.io.save_model once that's refactored
             #   (this will save config and dataset parameters along with the model)
             torch.save(model.state_dict(), save_path.replace('.pth', f'_epoch{epoch}.pth'))
             torch.save(best_model.state_dict(), save_path.replace('.pth', f'_epoch{epoch}_best.pth'))

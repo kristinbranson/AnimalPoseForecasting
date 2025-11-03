@@ -45,7 +45,7 @@ from flyllm.simulation import animate_pose
 from flyllm.plotting import plot_arena
 import time
 
-from experiments.flyllm import make_dataset
+from experiments.flyllm import make_dataset, make_diffusion_dataset, make_diffusion_dataset2
 # -
 
 configfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/config_fly_llm_predvel_20251007.json"
@@ -57,30 +57,47 @@ config = read_config(
     get_sensory_feature_idx=get_sensory_feature_idx,
 )
 
-# Load datasets
-train_dataset, flyids, track, pose, velocity, sensory = make_dataset(config, 'intrainfile', return_all=True, debug=False)
+config['modelstatetype'] = None
+config['diffusion'] = True
 
-val_dataset = make_dataset(config, 'invalfile', train_dataset, debug=False)
+# Load datasets
+train_dataset, flyids, track, pose, velocity, sensory = make_diffusion_dataset2(config, 'intrainfile', return_all=True, debug=False)
+
+val_dataset = make_diffusion_dataset2(config, 'invalfile', train_dataset, debug=True)
 
 # Wrap into dataloader
 train_dataloader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True, pin_memory=True)
 val_dataloader = DataLoader(val_dataset, batch_size=config['batch_size'], shuffle=False, pin_memory=True)
 
+# +
 # Initialize the model
 device = torch.device(config['device'])
+
 model, criterion = initialize_model(config, train_dataset, device)
+# -
+
+model.decoder.t_embeddings.embeddings = model.decoder.t_embeddings.embeddings.to(device)
 
 # Train the model
 train_args = function_args_from_config(config, train)
 init_loss_epoch = {}
+train_args['model_nickname'] = 'predbodycentricvel_diffusion_20251023_round2'
+train_args['model_nickname'] = 'predbodycentric_diffusion_test'
+train_args['num_train_epochs'] = 10
+train_args['save_epoch'] = 100
 train_args
 
 model, best_model, loss_epoch, model_path = train(train_dataloader, val_dataloader, model, loss_epoch=init_loss_epoch, **train_args)
 
+example = train_dataset[0]
+example['labels'].shape
+
 # +
 # OR
-# model_file = 'agentfly_model_20251001T073751.pth'
-# model.load_state_dict(torch.load(model_file))
+model_path = 'flyllm_models/predbodycentricvel_diffusion_20251023_round2_20251027T062129_epoch160.pth'
+model.load_state_dict(torch.load(model_path))
+
+model.decoder.t_embeddings.embeddings = model.decoder.t_embeddings.embeddings.to(device)
 
 # +
 # Plot the losses
@@ -129,6 +146,32 @@ gt_track, pred_track = simulate(
 )
 time.time() - t0
 
+train_dataset.sessions
+
+# +
+from apf.simulation import simulate_new
+
+t0 = time.time()
+# Look at train_dataset.sessions to select valid fly_ids and frames
+agent_ids = [1, 2, 5, 6, 9]
+# agent_ids = [1]
+# start_frame = 117220
+start_frame = 20001
+gt_track, pred_track = simulate(
+    dataset=train_dataset,
+    model=model,
+    track=track,
+    pose=pose,
+    identities=flyids,
+    track_len=300 + config['contextl'] + 1,
+    burn_in=config['contextl'],
+    max_contextl=config['contextl'],
+    agent_ids=agent_ids,
+    start_frame=start_frame,
+    debug_with_gt=False
+)
+time.time() - t0
+
 # +
 plt.figure(figsize=(10, 5))
 for i in range(2):
@@ -146,8 +189,14 @@ for agent_id in agent_ids:
     x, y = pred_track[agent_id, first_frame:last_frame, :, 0].T
     plt.plot(x, y, '.', markersize=1)
     plt.axis('equal')
+plt.subplot(1,2,1)
+plt.title('gt')
+plt.subplot(1,2,2)
+plt.title('pred')
 plt.show()
 # -
+
+model_path
 
 savedir = "flyllm_animations"
 if not os.path.exists(savedir):
@@ -160,8 +209,10 @@ else:
     savevidfile = os.path.join(savedir, f"animation_{timestamp}.gif")
 
 ani = animate_pose(
-    {'Pred': pred_track.T.copy(), 'True': gt_track.T.copy()}, 
+    {'Pred': pred_track[:, first_frame:].T.copy(), 'True': gt_track[:, first_frame:].T.copy()}, 
     focusflies=agent_ids, 
     savevidfile=savevidfile,
     contextl=config['contextl']
 )
+
+

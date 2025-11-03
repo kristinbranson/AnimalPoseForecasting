@@ -39,11 +39,13 @@ class Operation(ABC):
             if input is Data, returns a new Data with processed array and this operation appended to operaitons.
         """
         if isinstance(data, Data):
-            return Data(
-                name=f"{data.name}_{self.__class__.__name__.lower()}",
-                array=self.apply(data.array, **kwargs),
-                operations=data.operations + [self]
-            )
+            operations = data.operations + [self]
+            name = f"{data.name}_{self.__class__.__name__.lower()}"
+            output_data = self.apply(data.array, **kwargs)
+            if isinstance(output_data, dict):
+                return [Data(name=key, array=array, operations=operations) for key, array in output_data.items()]
+            else:
+                return Data(name=name, array=output_data, operations=operations)
         elif isinstance(data, np.ndarray):
             return self.apply(data, **kwargs)
         else:
@@ -321,6 +323,18 @@ class Discretize(Operation):
             return labels_discrete_to_continuous(data.reshape((n_agents, n_frames, n_feat, n_bins)), self.bin_centers)
 
 
+class Split(Operation):
+    def __init__(self, indices_per_split):
+        self.indices_per_split = indices_per_split
+
+    def apply(self, data):
+        return {key: data[..., inds] for key, inds in self.indices_per_split.items()}
+
+    def invert(self, datas):
+        # Arrange data as expected before concatenating
+        return np.concatenate([datas[key] for key in self.indices_per_split], axis=-1)
+
+
 class Fusion(Operation):
     """ Apply different operations to different parts of the data.
 
@@ -359,7 +373,7 @@ class Fusion(Operation):
         """
         if kwargs_per_op is None:
             kwargs_per_op = [{} for _ in self.operations]
-        elif ~isinstance(kwargs_per_op, list):
+        elif not isinstance(kwargs_per_op, list):
             kwargs_per_op = [kwargs_per_op for _ in self.operations]
         processed = [op.apply(data[..., indices], **kwargs) for op, indices, kwargs in zip(self.operations, self.indices_per_op, kwargs_per_op)]
         self.dims_per_op = [proc.shape[-1] for proc in processed]
@@ -522,6 +536,10 @@ class GlobalVelocity(Operation):
         Returns:
             pose: (n_agents,  n_frames, n_pose_features) float array
         """
+        if len(self.tspred) > 1 or self.tspred[0] > 1:
+            LOG.error(f"Operation {self} is not invertible")
+            return None
+
         if x0 is None:
             n_agents, _, n_dim = velocity.shape
             x0 = np.zeros((n_agents, n_dim))
@@ -543,16 +561,23 @@ class Velocity(Operation):
         featrelative: Bool vector indicating whether pose index is a relative feature.
         featangle: Bool vector indicating whether pose index is an angle feature.
     """
-    def __init__(self, featrelative: np.ndarray, featangle: np.ndarray = None):
+    def __init__(self, featrelative: np.ndarray, featangle: np.ndarray = None, identity_for_local: bool = False):
         # Keep track of global and local indices for the pose features
         self.global_inds = np.where(~featrelative)[0]
         self.local_inds = np.where(featrelative)[0]
-        is_angle = featangle[featrelative] if featangle is not None else None
-        # Use Fusion to apply global vs local operations to the relevant feature dimensions
-        self.fusion = Fusion(
-            operations=[GlobalVelocity(tspred=[1]), LocalVelocity(is_angle=is_angle)],
-            indices_per_op=[self.global_inds, self.local_inds]
-        )
+        self.identity_for_local = identity_for_local
+        if identity_for_local:
+            self.fusion = Fusion(
+                operations=[GlobalVelocity(tspred=[1]), Identity()],
+                indices_per_op=[self.global_inds, self.local_inds]
+            )
+        else:
+            is_angle = featangle[featrelative] if featangle is not None else None
+            # Use Fusion to apply global vs local operations to the relevant feature dimensions
+            self.fusion = Fusion(
+                operations=[GlobalVelocity(tspred=[1]), LocalVelocity(is_angle=is_angle)],
+                indices_per_op=[self.global_inds, self.local_inds]
+            )
 
     def apply(self, pose: np.ndarray, isstart: np.ndarray | None = None):
         """ Compute global and local velocity from pose.
@@ -565,7 +590,10 @@ class Velocity(Operation):
         Returns:
             velocity: (n_agents,  n_frames, n_pose_features) float array
         """
-        return self.fusion.apply(pose, kwargs_per_op={'isstart': isstart})
+        if self.identity_for_local:
+            return self.fusion.apply(pose, kwargs_per_op=[{'isstart': isstart}, {}])
+        else:
+            return self.fusion.apply(pose, kwargs_per_op={'isstart': isstart})
 
     def invert(self, velocity: np.ndarray, x0: np.ndarray | None = None):
         """ Compute pose from pose velocity and an initial pose.
@@ -578,7 +606,10 @@ class Velocity(Operation):
             pose: (n_agents,  n_frames, n_pose_features) float array
         """
         if x0 is not None:
-            kwargs_per_op = [{'x0': x0[..., self.global_inds]}, {'x0': x0[..., self.local_inds]}]
+            if self.identity_for_local:
+                kwargs_per_op = [{'x0': x0[..., self.global_inds]}, {}]
+            else:
+                kwargs_per_op = [{'x0': x0[..., self.global_inds]}, {'x0': x0[..., self.local_inds]}]
         else:
             kwargs_per_op = None
         return self.fusion.invert(velocity, kwargs_per_op)

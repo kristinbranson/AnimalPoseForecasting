@@ -506,7 +506,7 @@ class TransformerModel(torch.nn.Module):
         self.d_model = d_model
 
         self.init_weights()
-        
+
     def init_weights(self) -> None:
         pass
 
@@ -1052,7 +1052,7 @@ def initialize_model(config, train_dataset, device):
         d_output = train_dataset.d_output_continuous
     else:
         d_output = train_dataset.d_output
-        
+
     if config['modelstatetype'] == 'prob':
         model = TransformerStateModel(d_input, d_output, **MODEL_ARGS).to(device)
         criterion = prob_causal_criterion
@@ -1060,7 +1060,10 @@ def initialize_model(config, train_dataset, device):
         model = TransformerBestStateModel(d_input, d_output, **MODEL_ARGS).to(device)
         criterion = min_causal_criterion
     else:
-        model = TransformerModel(d_input, d_output, **MODEL_ARGS).to(device)
+        if config.get('diffusion', False):
+            model = TransformerDiffusionModel(d_input, d_output, **MODEL_ARGS).to(device)
+        else:
+            model = TransformerModel(d_input, d_output, **MODEL_ARGS).to(device)
 
         if train_dataset.discretize:
             # Before refactor this was: config['weight_discrete'] = len(config['discreteidx']) / nfeatures
@@ -1219,3 +1222,172 @@ def sanity_check_temporal_dep(train_dataloader, device, train_src_mask, is_causa
     else:
         matches = torch.allclose(pred2[:, :tmess],pred[:, :tmess], atol=1e-2)
         assert matches
+
+
+""" DIFFUSION 
+
+    TODO: Move this to a separate module?
+"""
+
+from diffusers import DDPMScheduler
+
+
+class SinusoidalEmbeddings(torch.nn.Module):
+    def __init__(self, n_timesteps: int, embed_dim: int):
+        super().__init__()
+        position = torch.arange(n_timesteps).unsqueeze(1).float()
+        div = torch.exp(torch.arange(0, embed_dim, 2).float() * -(math.log(10000.0) / embed_dim))
+        embeddings = torch.zeros(n_timesteps, embed_dim, requires_grad=False)
+        embeddings[:, 0::2] = torch.sin(position * div)
+        embeddings[:, 1::2] = torch.cos(position * div)
+        self.embeddings = embeddings
+
+    def forward(self, t):
+        return self.embeddings[t]
+
+
+class MLP(torch.nn.Module):
+    def __init__(self, d_input, d_output, channels):
+        super(MLP, self).__init__()
+
+        layers = [torch.nn.Linear(d_input, channels[0])]
+        for i in range(1, len(channels)):
+            layers.append(torch.nn.Linear(channels[i - 1], channels[i]))
+        layers.append(torch.nn.Linear(channels[-1], d_output))
+        self.layers = torch.nn.ModuleList(layers)
+
+    def forward(self, x, t):
+        for layer in self.layers[:-1]:
+            x = torch.nn.functional.tanh(layer(x))
+        output = self.layers[-1](x)
+        return output
+
+
+class TimeEmbeddedMLP(torch.nn.Module):
+    def __init__(self, d_input, d_output, channels, n_timesteps, embed_weight=0.01):
+        super(TimeEmbeddedMLP, self).__init__()
+
+        self.embed_weight = embed_weight
+        self.t_embeddings = SinusoidalEmbeddings(n_timesteps=n_timesteps, embed_dim=max(channels))
+
+        layers = [torch.nn.Linear(d_input, channels[0])]
+        for i in range(1, len(channels)):
+            layers.append(torch.nn.Linear(channels[i - 1], channels[i]))
+        layers.append(torch.nn.Linear(channels[-1], d_output))
+        self.layers = torch.nn.ModuleList(layers)
+
+    def forward(self, x, t):
+        # Embed t into the same dimension as each layer vector, so that it can be added to each layer
+        # x can be of shape (n_seq_len, batch_size, d_input)
+        # t should be a scalar or a vector
+
+        for layer in self.layers[:-1]:
+            x = torch.nn.functional.tanh(layer(x))
+            embed = self.t_embeddings(t)[..., :x.shape[-1]]
+            x = x + embed * self.embed_weight
+        output = self.layers[-1](x)
+        return output
+
+
+class TransformerDiffusionModel(torch.nn.Module):
+    """ This is mostly the same as TransfomerModel, key differences are:
+
+        1) Removed support for discrete outputs (as diffusion removes the need for that)
+        2) Replaced linear decoder with diffusion decoder that takes the noisy output as
+            additional input.
+    """
+    def __init__(self, d_input: int, d_output: int,
+                 d_model: int = 2048, nhead: int = 8, d_hid: int = 512,
+                 nlayers: int = 12, dropout: float = 0.1,
+                 ntokens_per_timepoint: int = 1,
+                 input_idx=None, input_szs=None, embedding_types=None, embedding_params=None,
+                 n_timesteps=100, decoder_channels=(512, 256, 128, 64),
+                 ):
+        # TODO: try running pose diffusion with these default channels (these are reversed from what I did before)
+        super().__init__()
+        self.model_type = 'TransformerDiffusion'
+
+        # frequency-based representation of word position with dropout
+        self.pos_encoder = PositionalEncoding(d_model, dropout, ntokens_per_timepoint=ntokens_per_timepoint)
+
+        # create self-attention + feedforward network module
+        encoder_layers = myTransformerEncoderLayer(d_model, nhead, d_hid, dropout, batch_first=True)
+
+        # stack of nlayers self-attention + feedforward layers
+        self.transformer_encoder = torch.nn.TransformerEncoder(encoder_layers, nlayers)
+
+        # input embeddings
+        if input_idx is not None:
+            # this includes convolutions for  some layers
+            self.encoder = ObsEmbedding(d_model=d_model, input_idx=input_idx, input_szs=input_szs,
+                                        embedding_types=embedding_types, embedding_params=embedding_params)
+        else:
+            # fully-connected layer from input size to d_model
+            self.encoder = torch.nn.Linear(d_input, d_model)
+
+        # diffusion noise scheduler
+        self.noise_scheduler = DDPMScheduler(
+            num_train_timesteps=n_timesteps,
+            beta_schedule="squaredcos_cap_v2",
+            clip_sample=False,
+            thresholding=False,
+            prediction_type='sample',
+        )
+        # MLP from transformers hidden state and noisy output to output
+        self.decoder = TimeEmbeddedMLP(
+            d_input=d_model+d_output,
+            d_output=d_output,
+            channels=decoder_channels,
+            n_timesteps=n_timesteps
+        )
+
+        # store hyperparameters
+        self.d_model = d_model
+        self.d_input = d_input
+        self.d_output = d_output
+        self.n_timesteps = n_timesteps
+
+    def forward(
+            self, src: torch.Tensor,
+            mask: torch.Tensor = None,
+            is_causal: bool = False,
+            gt_output: torch.Tensor = None,
+    ) -> torch.Tensor:
+        """
+        Args:
+          src: Tensor, shape [batch_size, seq_len, dinput]
+          mask: Tensor, shape [seq_len, seq_len]
+          is_causal: Hint about whether mask is causal
+          gt_output: The true output that we are to add noise to. Shape [batch_size, seq_len, doutput]
+
+        Returns:
+          output: Tensor of shape [seq_len, batch_size, ntoken]
+        """
+        src = self.encoder(src) * math.sqrt(self.d_model)
+        src = self.pos_encoder(src)
+        transformer_out = self.transformer_encoder(src, mask=mask, is_causal=is_causal)
+
+        # generate random noise
+        seq_len, batch_size = src.shape[:2]
+        noise = torch.randn((seq_len, batch_size, self.d_output)).to(src.device)
+        if gt_output is not None:
+            # Training phase
+            # generate random t and add noise to the gt output
+            t = torch.randint(0, self.n_timesteps, (1, ))
+            noisy_gt = self.noise_scheduler.add_noise(gt_output, noise, t)
+            input = torch.concatenate([transformer_out, noisy_gt], dim=-1)
+            output = self.decoder(input, t)
+        else:
+            # Inference phase
+            # run the full diffusion denoising process
+            x = noise
+            input = torch.concatenate([transformer_out, x], dim=-1)
+            for i, t in enumerate(self.noise_scheduler.timesteps):
+                residual = self.decoder(input, torch.as_tensor([t]).to(src.device))
+                out = self.noise_scheduler.step(residual, t, x)
+                x = out.prev_sample
+                input[:, :, -self.d_output:] = x
+            output = out.pred_original_sample
+
+        # TODO: Does this need to be a dict?
+        return {'continuous': output}

@@ -12,10 +12,11 @@ from apf.dataset import (
     Velocity, GlobalVelocity, apply_opers_from_data
 )
 from apf.data import debug_less_data
+from apf.utils import rotate_2d_points
 
 from flyllm.config import featrelative, keypointnames, featangle
 from flyllm.features import (
-    kp2feat, compute_sensory_wrapper, compute_scale_perfly, compute_noise_params, feat2kp
+    kp2feat, compute_sensory_wrapper, compute_scale_perfly, compute_noise_params, feat2kp, body_centric_kp
 )
 
 LOG = logging.getLogger(__name__)
@@ -62,7 +63,7 @@ class Pose(Operation):
         """ Computes pose features from keypoints.
 
         Args:
-            Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array
+            Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, 2, n_keypoints) float array
             scale_perfly: Scale of each unique individual in the data. (n_individuals, n_scales) float array
             flyid: Identity of fly corresponding to Xkp, (n_frames, n_agents) int array
 
@@ -83,9 +84,28 @@ class Pose(Operation):
                 If it has multiple agents, it as a (n_frames, n_agents) int array.
 
         Returns:
-            Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array
+            Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, 2, n_keypoints) float array
         """
         return feat2kp(pose.T, scale_perfly=self.scale_perfly, flyid=flyid).T
+
+
+class BodyCentricKP(Operation):
+
+    def __init__(self):
+        pass
+
+    def apply(self, Xkp):
+        Xn, fthorax, thorax_theta = body_centric_kp(Xkp.T)
+        n_kp, dim, n_frames, n_flies = Xn.shape
+        return np.concatenate([Xn.reshape((-1, n_frames, n_flies)), fthorax, thorax_theta[None, :, :]], axis=0).T
+
+    def invert(self, body_centric: np.ndarray):
+        body_centricT = body_centric.T
+        fthorax = body_centricT[-3:-1]
+        thorax_theta = body_centricT[-1:]
+        _, n_frames, n_flies = body_centricT.shape
+        kpts = body_centricT[:-3].reshape((-1, 2, n_frames, n_flies))
+        return (rotate_2d_points(kpts, -thorax_theta) + fthorax).T
 
 
 def load_data(
@@ -219,5 +239,164 @@ def make_dataset(
         )
     if return_all:
         return dataset, flyids, track, pose, velocity, sensory
+    else:
+        return dataset
+
+
+def make_diffusion_dataset(
+        config: dict,
+        filename: str,
+        ref_dataset: Dataset | None = None,
+        return_all: bool = False,
+        debug: bool = True,
+) -> Dataset | tuple[Dataset, np.ndarray, Data, Data, Data, Data]:
+    """ Creates a dataset from config, for a given file name and optionally using a reference dataset.
+
+    Args:
+        config: Config for loading the data
+        filename: Name of file to read the data from (e.g. 'intrainfile', 'invalfile')
+        ref_dataset: Dataset to copy postprocessing operations from.
+            When loading validation/test set, provide training set.
+        return_all: Whether to return intermediate variables in addition to Dataset (see returns)
+        debug: Whether to use less data for debugging
+
+    Returns:
+        dataset: Dataset for flyllm experiment.
+        [
+        flyids: Identity of fly individuals (n_frames, n_agents) int array
+        track: Keypoint data
+        pose: Pose data
+        velocity: Velocity data
+        sensory: Sensory data
+        ]
+    """
+    # Load data
+    Xkp, flyids, isstart, isdata, scale_perfly = load_data(config, config[filename], debug=debug)
+
+    # Compute features
+    track = Data('keypoints', Xkp.T, [])
+
+    sensory = Sensory()(track)
+    sensory.array[isdata.T == 0] = np.nan
+
+    bodycentrickp = BodyCentricKP()(track)
+    bodycentrickp.array[isdata.T == 0] = np.nan
+
+    # is_relative = np.ones(pose.array.shape[-1], bool)
+    # is_angle = np.zeros(pose.array.shape[-1], bool)
+    # is_relative[-3:] = 0
+    # is_angle[-1] = 1
+    # velocity = Velocity(featrelative=is_relative, featangle=is_angle)(pose, isstart=isstart)
+
+    # Assemble the dataset
+    if ref_dataset is None:
+        # zscored_velocity = Zscore()(velocity)
+        # zscored_body_centric = Zscore()(pose)
+        # zscored_body_centric_local = Subset(is_relative)(zscored_body_centric)
+        # zscored_global_velocity = Subset(1-is_relative)(zscored_velocity)
+
+        dataset = Dataset(
+            inputs={
+                'bodycentrickp': Zscore()(bodycentrickp),
+                'sensory': Zscore()(sensory),
+            },
+            labels={
+                'bodycentrickp': Zscore()(Roll(dt=-1)(bodycentrickp)),
+            },
+            context_length=config['contextl'],
+            isstart=isstart,
+        )
+    else:
+        dataset = Dataset(
+            inputs=apply_opers_from_data(ref_dataset.inputs, {'bodycentrickp': bodycentrickp, 'sensory': sensory}),
+            labels=apply_opers_from_data(ref_dataset.labels, {'bodycentrickp': bodycentrickp}),
+            context_length=config['contextl'],
+            isstart=isstart,
+        )
+    if return_all:
+        return dataset, flyids, track, bodycentrickp, None, sensory
+    else:
+        return dataset
+
+    # TODO: this requires changing the simulation
+    #   Ideally there would be a main 'target', and an optional 'auxiliary', provided as labels
+    #   From 'target' one should be able to automatically go back to the base input by applying
+    #    operations in reverse order.
+    #
+
+
+def make_diffusion_dataset2(
+        config: dict,
+        filename: str,
+        ref_dataset: Dataset | None = None,
+        return_all: bool = False,
+        debug: bool = True,
+) -> Dataset | tuple[Dataset, np.ndarray, Data, Data, Data, Data]:
+    """ Creates a dataset from config, for a given file name and optionally using a reference dataset.
+
+    Args:
+        config: Config for loading the data
+        filename: Name of file to read the data from (e.g. 'intrainfile', 'invalfile')
+        ref_dataset: Dataset to copy postprocessing operations from.
+            When loading validation/test set, provide training set.
+        return_all: Whether to return intermediate variables in addition to Dataset (see returns)
+        debug: Whether to use less data for debugging
+
+    Returns:
+        dataset: Dataset for flyllm experiment.
+        [
+        flyids: Identity of fly individuals (n_frames, n_agents) int array
+        track: Keypoint data
+        pose: Pose data
+        velocity: Velocity data
+        sensory: Sensory data
+        ]
+    """
+    # Load data
+    Xkp, flyids, isstart, isdata, scale_perfly = load_data(config, config[filename], debug=debug)
+
+    # Compute features
+    track = Data('keypoints', Xkp.T, [])
+
+    sensory = Sensory()(track)
+    sensory.array[isdata.T == 0] = np.nan
+
+    bodycentrickp = BodyCentricKP()(track)
+    bodycentrickp.array[isdata.T == 0] = np.nan
+
+    featrelative = np.ones(bodycentrickp.array.shape[-1], bool)
+    featrelative[-3:] = 0
+    velocity_and_pose = Velocity(featrelative=featrelative, identity_for_local=True)(bodycentrickp)
+
+    # Assemble the dataset
+    if ref_dataset is None:
+
+        zscored_velocity_and_pose = Zscore()(velocity_and_pose)
+
+        global_inds = np.where(1-featrelative)[0]
+        local_inds = np.where(featrelative)[0]
+        fusion_input = Fusion(indices_per_op=[global_inds, local_inds], operations=[Roll(1), Identity()])
+        fusion_labels = Fusion(indices_per_op=[global_inds, local_inds], operations=[Identity(), Roll(-1)])
+
+        dataset = Dataset(
+            inputs={
+                'velocity': fusion_input(zscored_velocity_and_pose),
+                'sensory': Zscore()(sensory),
+            },
+            labels={
+                'velocity': fusion_labels(zscored_velocity_and_pose),
+            },
+            context_length=config['contextl'],
+            isstart=isstart,
+        )
+    else:
+        dataset = Dataset(
+            inputs=apply_opers_from_data(ref_dataset.inputs, {'velocity': velocity_and_pose, 'sensory': sensory}),
+            labels=apply_opers_from_data(ref_dataset.labels, {'velocity': velocity_and_pose}),
+            context_length=config['contextl'],
+            isstart=isstart,
+        )
+    if return_all:
+        return dataset, flyids, track, bodycentrickp, velocity_and_pose, sensory
     else:
         return dataset
