@@ -360,6 +360,11 @@ def get_batch_idx(example, idx):
     for kw, v in example.items():
         if isinstance(v, np.ndarray) or torch.is_tensor(v):
             example1[kw] = v[idx, ...]
+        elif isinstance(v, list):
+            if isinstance(idx, (int,np.integer)):
+                example1[kw] = v[idx]
+            else:
+                example1[kw] = [v[i] for i in idx]
         elif isinstance(v, dict):
             example1[kw] = get_batch_idx(v, idx)
 
@@ -449,7 +454,13 @@ def data_to_kp_from_metadata(data, metadata, ntimepoints):
     return datakp, id
 
 
-def debug_less_data(data, n_frames_per_video=10000, max_n_videos=1):
+def debug_less_data(data, n_frames_per_video=None, max_n_videos=None):
+    
+    if n_frames_per_video is None:
+        n_frames_per_video = 10000
+    if max_n_videos is None:
+        max_n_videos = 1
+    
     frame_ids = [np.where(data['videoidx'] == idx)[0][:n_frames_per_video] for idx in np.unique(data['videoidx'])]
     frame_ids = np.concatenate(frame_ids[:max_n_videos])
 
@@ -471,7 +482,7 @@ def debug_less_data(data, n_frames_per_video=10000, max_n_videos=1):
 """
 
 
-def load_raw_npz_data(infile: str) -> dict:
+def load_raw_npz_data(infile: str, debug: bool = False, n_frames_per_video: int | None = None, max_n_videos: int | None = None) -> dict:
     """ Loads tracking data.
     Args
         infile: Datafile with .npz extension. Data is expected to have the following fields:
@@ -510,6 +521,9 @@ def load_raw_npz_data(infile: str) -> dict:
 
     data['isdata'] = data['ids'] >= 0
     data['categories'] = list(data['categories'])
+    
+    if debug:
+        debug_less_data(data, n_frames_per_video=n_frames_per_video, max_n_videos=max_n_videos)
 
     return data
 
