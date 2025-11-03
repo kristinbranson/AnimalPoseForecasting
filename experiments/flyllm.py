@@ -5,11 +5,12 @@
 
 import numpy as np
 import logging
+from dataclasses import dataclass, field
 
 from apf.io import load_and_filter_data
 from apf.dataset import (
     Zscore, Discretize, Data, Dataset, Operation, Fusion, Subset, Roll, Identity,
-    Velocity, GlobalVelocity, apply_opers_from_data
+    Velocity, GlobalVelocity, apply_opers_from_data, apply_opers_from_data_params
 )
 from apf.data import debug_less_data
 
@@ -17,31 +18,39 @@ from flyllm.config import featrelative, keypointnames, featangle
 from flyllm.features import (
     kp2feat, compute_sensory_wrapper, compute_scale_perfly, compute_noise_params, feat2kp
 )
+import tqdm
 
 LOG = logging.getLogger(__name__)
 
-
+@dataclass
 class Sensory(Operation):
     """ Computes sensory features for the flies.
 
     NOTE: this operation is not invertible.
+    Attributes: 
+        idxinfo: Keeps track of which dimensions of the sensory output correspond to what (e.g. wall, otherflies, ...)        
     """
-    def __init__(self):
-        # Keeps track of which dimensions of the sensory output correspond to what (e.g. wall, otherflies, ...)
-        self.idxinfo = None
-
-    def apply(self, Xkp: np.ndarray) -> np.ndarray:
+    
+    localattrs = ['idxinfo']
+    idxinfo: dict | None = None
+    
+    def apply(self, Xkp: np.ndarray, isdata: np.ndarray | None = None) -> np.ndarray:
         """ Computes sensory features from keypoints.
 
         Args:
             Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array
+            isdata: indicates whether there is data for a given frame or agent, only used to speed up computation, (n_frames, n_agents) bool array
 
         Returns:
             sensory_data: (n_agents,  n_frames, n_sensory_features) float array
         """
         feats = []
         for flyid in range(Xkp.shape[0]):
-            feat, idxinfo = compute_sensory_wrapper(Xkp.T, flyid, returnidx=True)
+            if isdata is not None:
+                isdatacurr = isdata[:,flyid]
+            else:
+                isdatacurr = None
+            feat, idxinfo = compute_sensory_wrapper(Xkp.T, flyid, returnidx=True, isdata=isdatacurr)
             feats.append(feat.T)
         self.idxinfo = idxinfo
         return np.array(feats)
@@ -51,27 +60,29 @@ class Sensory(Operation):
         return None
 
 
+@dataclass
 class Pose(Operation):
     """ Computes fly pose from keypoints.
+    Attributes:
+        scale_perfly: Scale of each unique individual in the data. (n_individuals, n_scales) float array
     """
-    def __init__(self):
-        # Keep track of scale_perfly, needed for inverting operation.
-        self.scale_perfly = None
+    localattrs = ['scale_perfly']
+    scale_perfly: np.ndarray | None = None
 
-    def apply(self, Xkp: np.ndarray, scale_perfly: np.ndarray = None, flyid: np.ndarray = None):
+    def apply(self, Xkp: np.ndarray, scale_perfly: np.ndarray | None = None, flyid: np.ndarray | None = None, isdata: np.ndarray | None = None) -> np.ndarray:
         """ Computes pose features from keypoints.
 
         Args:
-            Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array
-            scale_perfly: Scale of each unique individual in the data. (n_individuals, n_scales) float array
-            flyid: Identity of fly corresponding to Xkp, (n_frames, n_agents) int array
+            Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array or (n_frames, n_keypoints, 2) float array
+            scale_perfly: Scale of each unique individual in the data. (n_individuals, n_scales) float array or (n_scales,) float array
+            flyid: Identity of fly corresponding to Xkp, (n_frames, n_agents) int array or (n_frames,) int array
 
         Returns:
-            pose: (n_agents,  n_frames, n_pose_features) float array
+            pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
         if scale_perfly is not None:
             self.scale_perfly = scale_perfly
-        return kp2feat(Xkp=Xkp.T, scale_perfly=scale_perfly, flyid=flyid).T
+        return kp2feat(Xkp=Xkp.T, scale_perfly=scale_perfly, flyid=flyid, isdata=isdata).T
 
     def invert(self, pose: np.ndarray, flyid: np.ndarray | int = None):
         """ Computes keypoints from pose features.
@@ -101,7 +112,7 @@ def load_data(
         debug: Whether to use less data for debugging
 
     Returns:
-        X: (n_keypoints, 2, n_frames, n_agents) float array
+        X: (2, n_keypoints, n_frames, n_agents) float array
         flyids: Identity of fly individuals (n_frames, n_agents) int array
         isstart: indicates whether a new track starts at a give frame for each fly, (n_frames, n_agents) bool array
         isdata: indicates whether data should be used, (n_frames, n_agents) bool array
@@ -114,10 +125,10 @@ def load_data(
         compute_scale_per_agent=compute_scale_perfly,
         compute_noise_params=compute_noise_params,
         keypointnames=keypointnames,
+        debug=debug,
+        n_frames_per_video=15000,
+        max_n_videos=5
     )
-
-    if debug:
-        debug_less_data(data, n_frames_per_video=10000, max_n_videos=5)
 
     # Remove all NaN agents (sometimes the last one is a dummy)
     Xkp = data['X']
@@ -141,6 +152,7 @@ def make_dataset(
         ref_dataset: Dataset | None = None,
         return_all: bool = False,
         debug: bool = True,
+        indata: dict | None = None,
 ) -> Dataset | tuple[Dataset, np.ndarray, Data, Data, Data, Data]:
     """ Creates a dataset from config, for a given file name and optionally using a reference dataset.
 
@@ -166,30 +178,66 @@ def make_dataset(
         ]
     """
     # Load data
-    Xkp, flyids, isstart, isdata, scale_perfly = load_data(config, config[filename], debug=debug)
+    if indata is None:
+        Xkp, flyids, isstart, isdata, scale_perfly = load_data(config, config[filename], debug=debug)
+    else:
+        Xkp = indata['Xkp']
+        flyids = indata['flyids']
+        isstart = indata['isstart']
+        isdata = indata['isdata']
+        scale_perfly = indata['scale_perfly']
 
     # Compute features
+    LOG.info('Computing input and label features for dataset...')
     track = Data('keypoints', Xkp.T, [])
-    sensory = Sensory()(track)
-    pose = Pose()(track, scale_perfly=scale_perfly, flyid=flyids)
-    pose.array[isdata.T == 0] = np.nan
-    sensory.array[isdata.T == 0] = np.nan
+    LOG.info('Computing sensory features...')
+    sensory = Sensory()(track,isdata=isdata)
+    LOG.info('Computing pose features...')
+    pose = Pose()(track, scale_perfly=scale_perfly, flyid=flyids, isdata=isdata)
+    assert not np.any(np.isnan(sensory.array[isdata.T])) and np.all(np.isnan(sensory.array[~isdata.T])), "Sensory features should be nan iff isdata == False"
+    assert not np.any(np.isnan(pose.array[isdata.T])) and np.all(np.isnan(pose.array[~isdata.T])), "Pose features should be nan iff isdata == False"
+    LOG.info('Computing velocity features...')
     velocity = Velocity(featrelative=featrelative, featangle=featangle)(pose, isstart=isstart)
 
     tspred_global = config['tspred_global']
     aux_tspred = [dt for dt in tspred_global if dt > 1]
     if len(aux_tspred) > 0:
+        LOG.warning('!!!Auxiliary prediction is currently commented out!!!')
         auxiliary = GlobalVelocity(tspred=aux_tspred)(pose, isstart=isstart)
     else:
         auxiliary = None
 
+    metadata = {'labels': { 'velocity': {'pose': flyids.T, 'velocity': pose.array} },
+                'inputs': { 'pose': {'pose': flyids.T},
+                            'velocity': {'pose': flyids.T} }}
+
+    LOG.info('Assembling dataset...')
+
     # Assemble the dataset
-    if ref_dataset is None:
+    if ref_dataset is not None:
+        dataset = Dataset(
+            inputs=apply_opers_from_data(ref_dataset.inputs, {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
+            labels=apply_opers_from_data(ref_dataset.labels, {'velocity': velocity}), #, 'auxiliary': auxiliary}),
+            context_length=config['contextl'],
+            isstart=isstart,
+            metadata=metadata
+        )
+    elif 'dataset_params' in config and config['dataset_params'] is not None and \
+        ('inputs' in config['dataset_params']) and ('labels' in config['dataset_params']):
+        dataset = Dataset(
+            inputs=apply_opers_from_data_params(config['dataset_params']['inputs'], {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
+            labels=apply_opers_from_data_params(config['dataset_params']['labels'], {'velocity': velocity}), #, 'auxiliary': auxiliary}),
+            context_length=config['contextl'],
+            isstart=isstart, 
+            metadata=metadata
+        )
+    else:
         # velocity = OddRoot(5)(velocity)
 
         discreteidx = config['discreteidx']
         continuousidx = np.setdiff1d(np.arange(velocity.array.shape[-1]), discreteidx)
         indices_per_op = [discreteidx, continuousidx]
+    
 
         # Need to zscore before binning, otherwise bin_epsilon values need to be divided by zscore stds
         zscored_velocity = Zscore()(velocity)
@@ -209,15 +257,10 @@ def make_dataset(
             },
             context_length=config['contextl'],
             isstart=isstart,
+            metadata=metadata
         )
-    else:
-        dataset = Dataset(
-            inputs=apply_opers_from_data(ref_dataset.inputs, {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
-            labels=apply_opers_from_data(ref_dataset.labels, {'velocity': velocity}), #, 'auxiliary': auxiliary}),
-            context_length=config['contextl'],
-            isstart=isstart,
-        )
+    dataset_params = dataset.get_params()
     if return_all:
-        return dataset, flyids, track, pose, velocity, sensory
+        return dataset, flyids, track, pose, velocity, sensory, dataset_params, isdata, isstart
     else:
         return dataset

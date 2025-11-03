@@ -539,3 +539,29 @@ def compute_ylim(h,margin=0.1):
     ylim[0] -= margin*dy
     ylim[1] += margin*dy
     return ylim
+
+def is_notebook():
+    try:
+        from IPython import get_ipython
+        if get_ipython() is not None and 'IPKernelApp' in get_ipython().config:
+            return True
+    except:
+        pass
+    return False
+
+def set_mpl_backend(backend='tkAgg',force=False):
+    # Only set non-interactive backend if not in Jupyter
+    import matplotlib
+    if force or not is_notebook():
+        matplotlib.use(backend)
+        return
+        
+def recursive_dict_eval(d, fun: Callable, *args, **kwargs) -> dict | np.ndarray | torch.Tensor:
+    """
+    dict_eval(d,fun,*args,**kwargs)
+    Subindex all arrays in a dict. Recurses into sub-dicts.
+    """
+    if isinstance(d, dict):
+        return {k: recursive_dict_eval(v, fun, *args, **kwargs) for k, v in d.items()}
+    else:
+        return fun(d, *args, **kwargs)
