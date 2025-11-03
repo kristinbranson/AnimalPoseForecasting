@@ -757,6 +757,7 @@ class GlobalVelocity(Operation):
         
         return inverted
 
+# no dataclass decorator, directly defined __init__
 class Velocity(Operation):
     """ Combines global and local velocity.
 

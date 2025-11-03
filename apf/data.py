@@ -454,12 +454,7 @@ def data_to_kp_from_metadata(data, metadata, ntimepoints):
     return datakp, id
 
 
-def debug_less_data(data, n_frames_per_video=None, max_n_videos=None):
-    
-    if n_frames_per_video is None:
-        n_frames_per_video = 10000
-    if max_n_videos is None:
-        max_n_videos = 1
+def debug_less_data(data, n_frames_per_video=10000, max_n_videos=1):
     
     frame_ids = [np.where(data['videoidx'] == idx)[0][:n_frames_per_video] for idx in np.unique(data['videoidx'])]
     frame_ids = np.concatenate(frame_ids[:max_n_videos])
@@ -482,7 +477,7 @@ def debug_less_data(data, n_frames_per_video=None, max_n_videos=None):
 """
 
 
-def load_raw_npz_data(infile: str, debug: bool = False, n_frames_per_video: int | None = None, max_n_videos: int | None = None) -> dict:
+def load_raw_npz_data(infile: str, debug: bool = False, n_frames_per_video: int | None = None, **kwargs) -> dict:
     """ Loads tracking data.
     Args
         infile: Datafile with .npz extension. Data is expected to have the following fields:
@@ -523,7 +518,7 @@ def load_raw_npz_data(infile: str, debug: bool = False, n_frames_per_video: int 
     data['categories'] = list(data['categories'])
     
     if debug:
-        debug_less_data(data, n_frames_per_video=n_frames_per_video, max_n_videos=max_n_videos)
+        debug_less_data(data, **kwargs)
 
     return data
 
