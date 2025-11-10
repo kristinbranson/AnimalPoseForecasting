@@ -877,6 +877,8 @@ def compute_chunk_indices(sessions: list[Session], chunk_length: int, start_offs
             data intervals from a unique agent.
         chunk_length: Desired length of chunk.
         start_offset: Index of first frame to be used.
+        useoutputmask: (n_frames, n_agents) bool array indicating whether output data is valid.
+            If provided, only chunks that have at least one valid output frame will be kept.
 
     Returns:
         chunk_indices: (n_chunks, 2) int array, each row contains (start_frame, agent_id)

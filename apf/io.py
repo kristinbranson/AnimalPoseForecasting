@@ -378,7 +378,7 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
         assert nframespost > 0, "No valid data remains after filtering by categories"
         
     # set useoutputmask
-    if config['output_categories'] is not None and len(config['output_categories']) > 0:
+    if ('output_categories' in config) and (config['output_categories'] is not None) and (len(config['output_categories']) > 0):
         fn = 'useoutputmask'
         LOG.info(f"filtering {fn} by categories {config['output_categories']}")
         nframespre = np.count_nonzero(data['isdata']&data[fn])
