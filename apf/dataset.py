@@ -887,7 +887,7 @@ def compute_chunk_indices(sessions: list[Session], chunk_length: int, start_offs
         t1 = session.start_frame + session.duration - chunk_length + 1
         
         # If useoutputmask is provided, only keep chunks that have at least one valid output frame
-        if useoutputmask is None or np.all(useoutputmask[t0:t1, session.agent_id]):
+        if useoutputmask is None or np.all(useoutputmask[t0:t1+chunk_length-1, session.agent_id]):
             start_frames = np.arange(t0, t1, chunk_length)
         else:
             start_frames = []
