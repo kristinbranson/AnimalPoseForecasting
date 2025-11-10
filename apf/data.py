@@ -520,7 +520,7 @@ def load_raw_npz_data(infile: str, debug: bool = False, n_frames_per_video: int 
     
     # frames for which the output is penalized during training/validation
     # e.g. BadTracking == 0
-    data['useoutputmask'] = np.ones(data['isdata'].shape,dtype=bool)
+    data['useoutputmask'] = np.ones(data['isdata'].shape, dtype=bool)
     
     if debug:
         debug_less_data(data, **kwargs)
