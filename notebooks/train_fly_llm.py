@@ -86,7 +86,6 @@ if not os.path.exists(outfigdir):
 # ### Load configuration and data 
 
 # %%
-debug_uselessdata = True
 res = init_flyllm(configfile=configfile,mode='train',restartmodelfile=restartmodelfile,
                 debug_uselessdata=debug_uselessdata)
 
