@@ -68,7 +68,7 @@ print('Timestamp: ' + timestamp)
 # ### Set parameters
 
 # %%
-configfile = 'configs/config_fly_llm_predvel_20251007.json'
+configfile = 'configs/config_fly_llm_predvel_goodtracking_20251110.json'
 restartmodelfile = None
 outfigdir = 'figs'
 debug_uselessdata = False
@@ -76,6 +76,7 @@ debug_uselessdata = False
 # path to config file based on code directory
 flyllmdir = flyllm.__path__[0]
 configfile = os.path.join(flyllmdir,configfile)
+assert os.path.exists(configfile), f'Config file {configfile} does not exist!'
 
 # make directory if it doesn't exist
 if not os.path.exists(outfigdir):

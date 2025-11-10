@@ -526,11 +526,15 @@ def load_raw_npz_data(infile: str, debug: bool = False, n_frames_per_video: int 
 def filter_data_by_categories(data, categories):
     iscategory = np.ones(data['y'].shape[1:], dtype=bool)
     for category in categories:
+        # search for == and split into category and value
+        val = 1
+        match = re.search(r'(\w+)==(\w+)', category)
+        if match is not None:
+            category = match.group(1).strip()
+            val = int(match.group(2).strip())
         if category == 'male':
             category = 'female'
-            val = 0
-        else:
-            val = 1
+            val = ~val
         catidx = data['categories'].index(category)
         iscategory = iscategory & (data['y'][catidx, ...] == val)
     data['isdata'] = data['isdata'] & iscategory
