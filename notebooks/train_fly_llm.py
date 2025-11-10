@@ -86,6 +86,7 @@ if not os.path.exists(outfigdir):
 # ### Load configuration and data 
 
 # %%
+debug_uselessdata = True
 res = init_flyllm(configfile=configfile,mode='train',restartmodelfile=restartmodelfile,
                 debug_uselessdata=debug_uselessdata)
 
@@ -96,6 +97,8 @@ for key in res:
     elif hasattr(res[key], '__len__') and not isinstance(res[key], str):
         s += f', len: {len(res[key])}'
     print(s)
+    
+assert res['success'], 'init_flyllm failed!'
 
 # unpack outputs
 config = res['config']

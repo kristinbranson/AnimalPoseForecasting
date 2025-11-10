@@ -869,7 +869,7 @@ def compute_sessions(datas: list[Data], isstart: np.ndarray) -> list[Session]:
     return sessions
 
 
-def compute_chunk_indices(sessions: list[Session], chunk_length: int, start_offset: int = 0) -> np.ndarray:
+def compute_chunk_indices(sessions: list[Session], chunk_length: int, start_offset: int = 0, useoutputmask: np.ndarray | None = None) -> np.ndarray:
     """ Extracts chunk indices from session data, with chunks non-overlapping.
 
     Args:
@@ -885,7 +885,17 @@ def compute_chunk_indices(sessions: list[Session], chunk_length: int, start_offs
     for session in sessions:
         t0 = session.start_frame + start_offset
         t1 = session.start_frame + session.duration - chunk_length + 1
-        start_frames = np.arange(t0, t1, chunk_length)
+        
+        # If useoutputmask is provided, only keep chunks that have at least one valid output frame
+        if useoutputmask is None or np.all(useoutputmask[t0:t1, session.agent_id]):
+            start_frames = np.arange(t0, t1, chunk_length)
+        else:
+            start_frames = []
+            for t in range(t0, t1, chunk_length):
+                if np.any(useoutputmask[t:t + chunk_length, session.agent_id]):
+                    start_frames.append(t)
+            start_frames = np.array(start_frames)
+
         session_chunks = np.zeros((len(start_frames), 2), dtype=int)
         session_chunks[:, 0] = start_frames
         session_chunks[:, 1] = session.agent_id
@@ -1213,6 +1223,8 @@ class Dataset(torch.utils.data.Dataset):
             should be a value for each agent and frame. This is a dict with keys 'inputs' and 'labels', each containing a dict
             mapping metadata keys to (n_frames, n_agents) arrays. If any key is missing, metadata for that key is assumed to
             be empty. Default: None
+        useoutputmask: (n_frames, n_agents) bool array indicating which frames/agents to use for output loss computation.
+            If None, all frames/agents with valid data are used. Default: None
 
     NOTE: currently assumes that discrete data in labels all have the same number of bins.
     """
@@ -1222,13 +1234,15 @@ class Dataset(torch.utils.data.Dataset):
             labels: dict[str, Data],
             isstart: np.ndarray,
             context_length: int,
-            metadata: dict | None = None
+            metadata: dict | None = None,
+            useoutputmask: np.ndarray | None = None,
     ):
         self.inputs = inputs
         self.labels = labels
         self.isstart = isstart
         self.context_length = context_length
         self.metadata = metadata
+        self.useoutputmask = useoutputmask
 
         # Compute sessions with continuous valid data per agent
         self.sessions = compute_sessions(
@@ -1237,7 +1251,7 @@ class Dataset(torch.utils.data.Dataset):
         )
 
         # Compute chunking indices
-        self.chunk_indices = compute_chunk_indices(self.sessions, self.context_length, start_offset=0)
+        self.chunk_indices = compute_chunk_indices(self.sessions, self.context_length, start_offset=0, useoutputmask=self.useoutputmask)
 
         # Annotate which dimensions of chunked labels are bins
         self.label_bin_indices, self.label_n_bins = get_bin_indices(self.labels)
@@ -1334,6 +1348,10 @@ class Dataset(torch.utils.data.Dataset):
             chunk['labels'] = labels_continuous.astype(np.float32)
         if labels_discrete.shape[-1] > 0:
             chunk['labels_discrete'] = labels_discrete.astype(np.float32)
+        if self.useoutputmask is None:
+            chunk['useoutputmask'] = np.ones((duration,), dtype=bool)
+        else:
+            chunk['useoutputmask'] = self.useoutputmask[start_frame:(start_frame + duration), agent_id]
         chunk['metadata'] = {
             'start_frame': start_frame,
             'duration': duration,
