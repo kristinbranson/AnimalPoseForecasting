@@ -301,11 +301,18 @@ if device.type == 'cuda':
     model = model.to(device='cpu')
     gc.collect()
     torch.cuda.empty_cache()
-    model = model.to(device=device)
+
     memalloc = torch.cuda.memory_allocated() / 1e9
     print(f'Initial cuda memory allocated: {memalloc:.3f} GB')
     memreserved = torch.cuda.memory_reserved() / 1e9
     print(f'Initial cuda memory reserved: {memreserved:.3f} GB')
+
+    model = model.to(device=device)
+
+    memalloc = torch.cuda.memory_allocated() / 1e9
+    print(f'Cuda memory allocated for model: {memalloc:.3f} GB')
+    memreserved = torch.cuda.memory_reserved() / 1e9
+    print(f'Cuda memory reserved for model: {memreserved:.3f} GB')
 
 savefilestr = os.path.join(config['savedir'], f"fly{modeltype_str}_{savetime}")
 

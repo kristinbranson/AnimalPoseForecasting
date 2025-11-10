@@ -894,6 +894,8 @@ def compute_chunk_indices(sessions: list[Session], chunk_length: int, start_offs
             for t in range(t0, t1, chunk_length):
                 if np.any(useoutputmask[t:t + chunk_length, session.agent_id]):
                     start_frames.append(t)
+            if len(start_frames) == 0:
+                continue
             start_frames = np.array(start_frames)
 
         session_chunks = np.zeros((len(start_frames), 2), dtype=int)
