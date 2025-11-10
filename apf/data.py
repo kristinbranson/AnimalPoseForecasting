@@ -517,14 +517,19 @@ def load_raw_npz_data(infile: str, debug: bool = False, n_frames_per_video: int 
     data['isdata'] = data['ids'] >= 0
     data['categories'] = list(data['categories'])
     
+    # frames for which the output is penalized during training/validation
+    # e.g. BadTracking == 0
+    data['useoutputmask'] = np.ones(data['isdata'].shape,dtype=bool)
+    
     if debug:
         debug_less_data(data, **kwargs)
 
     return data
 
 
-def filter_data_by_categories(data, categories):
+def filter_data_by_categories(data, categories, fn='isdata'):
     iscategory = np.ones(data['y'].shape[1:], dtype=bool)
+    LOG.info(f'Filtering data by categories, initially {np.count_nonzero(data[fn])} frames')
     for category in categories:
         # search for == and split into category and value
         val = 1
@@ -534,10 +539,11 @@ def filter_data_by_categories(data, categories):
             val = int(match.group(2).strip())
         if category == 'male':
             category = 'female'
-            val = ~val
+            val = val == 0
         catidx = data['categories'].index(category)
         iscategory = iscategory & (data['y'][catidx, ...] == val)
-    data['isdata'] = data['isdata'] & iscategory
+        LOG.info(f'{category}=={val} -> {np.count_nonzero(data[fn] & iscategory)} frames')
+    data[fn] = data[fn] & iscategory
 
 
 def get_real_agents(x, tgtdim=-1):
