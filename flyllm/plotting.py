@@ -1437,7 +1437,8 @@ def update_debug_plots(hdebug, config, model, dataset, example, pred, criterion=
                                                            fig=hdebug['figstate'])
         hdebug['axstate'][0].set_title(name)
 
-    hdebug['axtraj'][0].set_title(name)
+    ti = hdebug['axtraj'][0].get_title()
+    hdebug['axtraj'][0].set_title(f'{name}: {ti}')
 
 
 def initialize_loss_plots(loss_epoch):
