@@ -285,7 +285,9 @@ def end_epoch_hook(loss_epoch=None, epoch=None, **kwargs):
 
 # test the hooks
 if False:
-    trainexample = next(iter(train_dataloader))
+    for i,trainexample in enumerate(train_dataloader):
+        if i >= 1:
+            break
     valexample = next(iter(val_dataloader))
     contextl = trainexample['input'].shape[1]
     train_src_mask = torch.nn.Transformer.generate_square_subsequent_mask(contextl, device=device)

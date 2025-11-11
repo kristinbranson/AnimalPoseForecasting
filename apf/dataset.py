@@ -1135,6 +1135,24 @@ def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data,
         
     return data
 
+def invert_to_named(data: Data, name: str, **kwargs) -> np.ndarray | torch.Tensor:
+    """ Inverts data to the state after operation name has been applied. 
+
+    Args:
+        data: Data to invert.
+        name: Name of operation to invert to.
+    Any extra args passed to apply_inverse_operations.
+
+    Returns:
+        array: Data inverted to the state after operation name has been applied, ndarray or Tensor
+    """
+    post_opers = get_post_operations(data.operations, name)
+    if post_opers is None:
+        raise ValueError(f"Operation '{name}' not found in data operations")
+    array = apply_inverse_operations(data, operations=post_opers, extraargs=kwargs)
+
+    return array
+
 def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict[str, Data]) -> dict[str, Data]:
     """ Applies post processing operations from reference datas to datas, for each key.
 
@@ -1521,7 +1539,7 @@ class Dataset(torch.utils.data.Dataset):
         if 'labels_discrete' in item:
             discrete_key = 'labels_discrete'
         elif 'discrete' in item:
-            discrete_key = 'discrete'
+            discrete_key = 'discrete'            
         if continuous_key is not None or discrete_key is not None:
             datadict['labels'] = {}
             output_dict = self.split_output_by_names(item,continuous_key=continuous_key,discrete_key=discrete_key)
@@ -1532,6 +1550,8 @@ class Dataset(torch.utils.data.Dataset):
                     metadatacurr = None
                 datadict['labels'][k] = Data(name=self.labels[k].name, array=v, operations=self.labels[k].operations, invertdata=metadatacurr)
         datadict['metadata'] = {k: v for k,v in item.get('metadata',{}).items() if k not in ['inputs','labels']}        
+        if 'useoutputmask' in item:
+            datadict['useoutputmask'] = item['useoutputmask']
         
         return datadict
 
