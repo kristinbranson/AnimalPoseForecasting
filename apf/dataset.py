@@ -360,7 +360,7 @@ class Discretize(Operation):
             
         super().__post_init__()
 
-    def compute(self, data: np.ndarray):
+    def compute(self, data: np.ndarray, valid: np.ndarray | None = None):
         """ Computes the bin edges for the data.
 
         Args:
@@ -369,7 +369,10 @@ class Discretize(Operation):
         """
         n_feat = data.shape[-1]
         data_flat = data.reshape((-1, n_feat))
-        valid = ~np.isnan(data_flat.sum(-1))
+        if valid is None:
+            valid = ~np.isnan(data_flat.sum(-1))
+        else:
+            valid = valid.flatten()
         data_valid = data_flat[valid, :]
         bin_edges, samples, bin_means, bin_medians = fit_discretize_data(data_valid, **self.fit_discretize_data_args)
         self.bin_edges = bin_edges
@@ -377,7 +380,7 @@ class Discretize(Operation):
         self.bin_centers = bin_medians
         self.bin_samples = samples
 
-    def apply(self, data: np.ndarray) -> np.ndarray:
+    def apply(self, data: np.ndarray, compute_args: dict = {}) -> np.ndarray:
         """ Bins the data.
 
         Args:
@@ -389,7 +392,7 @@ class Discretize(Operation):
             or (n_frames, n_features * n_bins) float array
         """
         if self.bin_edges is None:
-            self.compute(data)
+            self.compute(data,**compute_args)
         sz_rest = data.shape[:-1]
         n_feat = data.shape[-1]
         data_flat = data.reshape((-1, n_feat))

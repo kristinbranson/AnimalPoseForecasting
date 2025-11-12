@@ -244,6 +244,8 @@ def fit_discretize_data(data, nbins=50, bin_epsilon=None, outlierprct=.001, frac
         data: n_frames x n_feat, float
         ...
     """
+    
+    LOG.info(f'Selecting discretization bin edges from data, shape = {data.shape}, bin_epsilon = {bin_epsilon}')
     # compute percentiles
     nfeat = data.shape[1]
     prctiles_compute = np.linspace(0, 100, nbins + 1)
