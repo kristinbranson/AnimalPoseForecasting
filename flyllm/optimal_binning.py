@@ -1224,7 +1224,7 @@ def main(args=[]):
         # number of bins
         K = 50
         # target number of timepoints for subsampling (None = use all data)
-        target_timepoints = 1_000_000  # 1M timepoints
+        target_timepoints = None #1_000_000
 
         filepath = 'notebooks/zscored_velocity.npz'
         feature_idx = 2
