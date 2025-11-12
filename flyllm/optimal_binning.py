@@ -9,8 +9,10 @@ the likelihood under a binned Markov model:
 import numpy as np
 from scipy.optimize import minimize
 import sys
+from scipy.optimize import minimize_scalar
 
-def compute_boundary_edges(X, percentile=0.001):
+
+def compute_boundary_edges(X,epsilon=1e-6):
     """
     Compute boundary edges from data based on percentile.
 
@@ -27,12 +29,16 @@ def compute_boundary_edges(X, percentile=0.001):
         Minimum and maximum edge values
     """
     all_data = np.concatenate(X)
-    e_min = np.percentile(all_data, percentile)
-    e_max = np.percentile(all_data, 100 - percentile)
-    return (e_min, e_max)
+    e_min = np.min(all_data)
+    e_max = np.max(all_data)
+
+    # offset by a tiny amount
+    d = e_max - e_min
+    
+    return (e_min-d*epsilon, e_max+d*epsilon)
 
 
-def initialize_edges_quantile(X, K, boundary_edges):
+def initialize_edges_quantile(X, K, boundary_edges, edges_fixed=None):
     """
     Initialize K bin edges using quantiles (uniform over data distribution).
 
@@ -50,7 +56,8 @@ def initialize_edges_quantile(X, K, boundary_edges):
     edges : ndarray of shape (K+1,)
         Initial bin edges
     """
-    # Concatenate all sequences
+    
+    # Concatenate all sequenceslik:.6f}\n")
     all_data = np.concatenate(X)
 
     # Clip data to boundary edges
@@ -58,19 +65,37 @@ def initialize_edges_quantile(X, K, boundary_edges):
 
     # Compute K-1 interior edges using quantiles
     print(f"Computing {K-1} interior edges using quantiles on {len(all_data)} points...")
-    percentiles = np.linspace(0, 100, K + 1)[1:-1]  # Exclude 0 and 100
-    interior_edges = np.percentile(all_data, percentiles)
+    
+    if edges_fixed is None or np.all(np.isnan(edges_fixed)):
+    
+        percentiles = np.linspace(0, 100, K + 1)[1:-1]  # Exclude 0 and 100
+        interior_edges = np.percentile(all_data, percentiles)
 
-    # Create full edges array
-    edges = np.zeros(K + 1)
-    edges[0] = boundary_edges[0]
-    edges[-1] = boundary_edges[1]
-    edges[1:-1] = interior_edges
+        # Create full edges array
+        edges = np.zeros(K + 1)
+        edges[0] = boundary_edges[0]
+        edges[-1] = boundary_edges[1]
+        edges[1:-1] = interior_edges
+        
+    else:
+        # for now, this only works if edges at the ends are fixed
+        isfree = np.isnan(edges_fixed)
+        idx = np.nonzero(isfree)[0]
+        i0 = idx[0]
+        i1 = idx[-1]
+        assert np.any(isfree[i0:i1]), "Only fixed edges at the beginning and end are supported"        
+        nfree = np.count_nonzero(isfree)
+        frac0 = np.count_nonzero(all_data <= edges_fixed[i0-1]) / len(all_data)
+        frac1 = np.count_nonzero(all_data <= edges_fixed[i1+1]) / len(all_data)
+        percentiles = np.linspace(frac0*100, frac1*100, nfree + 2)[1:-1]  # Exclude ends
+        interior_edges = np.percentile(all_data, percentiles)
+        edges = edges_fixed.copy()
+        edges[i0:i1+1] = interior_edges        
 
     return edges
 
 
-def initialize_edges_uniform(K, boundary_edges):
+def initialize_edges_uniform(K, boundary_edges, edges_fixed=None):
     """
     Initialize K bin edges with uniform bin widths.
 
@@ -87,15 +112,28 @@ def initialize_edges_uniform(K, boundary_edges):
         Initial bin edges with uniform spacing
     """
     print(f"Creating {K} bins with uniform widths...")
-    edges = np.linspace(boundary_edges[0], boundary_edges[1], K + 1)
+    if edges_fixed is None or np.all(np.isnan(edges_fixed)):
+        edges = np.linspace(boundary_edges[0], boundary_edges[1], K + 1)
+    else:
+        # for now, this only works if edges at the ends are fixed
+        isfree = np.isnan(edges_fixed)
+        idx = np.nonzero(isfree)[0]
+        i0 = idx[0]
+        i1 = idx[-1]
+        assert np.any(isfree[i0:i1]), "Only fixed edges at the beginning and end are supported"
+        nfree = np.count_nonzero(isfree)
+        edges = edges_fixed.copy()
+        edges[i0:i1+1] = np.linspace(edges_fixed[i0-1], edges_fixed[i1+1], nfree + 2)[1:-1]
     return edges
 
 
-def initialize_edges_kmeans(X, K, boundary_edges):
+def initialize_edges_kmeans(X, K, boundary_edges, edges_fixed=None):
     """
-    Initialize K bin edges using k-means clustering.
+    Initialize K bin edges using k-means clustering.lik:.6f}\n")
+    return initial_log_lik, binned_sequences, counts, prob_matrix
 
-    Note: This function requires sklearn. If not available, use initialize_edges_quantile instead.
+
+    Note: This function requires sklearn. 
 
     Parameters:
     -----------
@@ -111,11 +149,9 @@ def initialize_edges_kmeans(X, K, boundary_edges):
     edges : ndarray of shape (K+1,)
         Initial bin edges
     """
-    try:
-        from sklearn.cluster import KMeans
-    except ImportError:
-        print("sklearn not available, falling back to quantile initialization")
-        return initialize_edges_quantile(X, K, boundary_edges)
+    from sklearn.cluster import KMeans
+
+    assert edges_fixed is None, 'edges_fixed parameter not supported for k-means initialization'
 
     # Concatenate all sequences
     all_data = np.concatenate(X)
@@ -232,7 +268,8 @@ def compute_transition_matrix(binned_sequences, K):
     # Compute probabilities (vectorized)
     row_sums = counts.sum(axis=1, keepdims=True)
     # Avoid division by zero
-    prob_matrix = np.where(row_sums > 0, counts / row_sums, 0)
+    row_sums[row_sums == 0] = 1
+    prob_matrix = counts / row_sums
 
     return counts, prob_matrix
 
@@ -324,7 +361,7 @@ def compute_log_likelihood(X, edges, prob_matrix):
     return log_likelihood
 
 
-def _initialize_edges(X, K, boundary_edges, initial_edges, init_method, verbose):
+def _initialize_edges(X, K, boundary_edges, initial_edges, init_method, verbose, edges_fixed=None):
     """
     Helper function to initialize edges.
 
@@ -346,7 +383,7 @@ def _initialize_edges(X, K, boundary_edges, initial_edges, init_method, verbose)
             print("="*60)
 
         if init_method == 'uniform':
-            return initialize_edges_uniform(K, boundary_edges)
+            return initialize_edges_uniform(K, boundary_edges, edges_fixed)
         elif init_method == 'quantile':
             return initialize_edges_quantile(X, K, boundary_edges)
         elif init_method == 'kmeans':
@@ -499,7 +536,8 @@ def _compute_log_likelihood_from_counts(counts, widths, K):
     # Compute log-likelihood
     # Only include terms where counts > 0
     log_widths = np.log(widths)
-    log_probs = np.where(valid_mask, np.log(probs), 0)
+    log_probs = np.zeros_like(probs)
+    log_probs[valid_mask] = np.log(probs[valid_mask])
 
     # Broadcast log_widths to match counts shape
     log_widths_matrix = np.broadcast_to(log_widths[np.newaxis, :], counts.shape)
@@ -575,7 +613,7 @@ def _update_bins_and_counts_for_edge_k(X, current_bins, current_counts, current_
     return new_bins, new_counts
 
 
-def _optimize_coordinate_descent_iteration(X, K, boundary_edges, initial_edges, max_iter, verbose, min_width, tol=1e-6):
+def _optimize_coordinate_descent_iteration(X, K, boundary_edges, initial_edges, max_iter, verbose, min_width, tol=1e-6, edges_fixed=None):
     """
     Run coordinate descent optimization iteration with incremental updates.
 
@@ -586,8 +624,6 @@ def _optimize_coordinate_descent_iteration(X, K, boundary_edges, initial_edges, 
     iteration_info : dict
         Information about the optimization
     """
-    from scipy.optimize import minimize_scalar
-
     current_edges = initial_edges.copy()
 
     # Compute initial binning and counts (do this ONCE)
@@ -602,12 +638,15 @@ def _optimize_coordinate_descent_iteration(X, K, boundary_edges, initial_edges, 
         print("="*60)
 
     iteration_count = 0
+    if edges_fixed is None:
+        edge_indices = np.arange(1, K)  # All interior edges
+    else:
+        edge_indices = np.nonzero(np.isnan(edges_fixed))[0]
 
     for outer_iter in range(max_iter):
         prev_log_lik = current_log_lik
 
         # Cycle through each interior edge in random order
-        edge_indices = np.arange(1, K)  # Skip boundary edges (0 and K)
         np.random.shuffle(edge_indices)
         for k in edge_indices:
             # Define bounds for this edge
@@ -670,6 +709,7 @@ def _optimize_coordinate_descent_iteration(X, K, boundary_edges, initial_edges, 
 
         if verbose and (outer_iter + 1) % 1 == 0:
             print(f"  Pass {outer_iter+1:4d}: log-likelihood = {current_log_lik:.6f}, improvement = {improvement:.6f}")
+            print(f"    Edges: " + ", ".join(f"{edge:.6f}" for edge in current_edges))
 
         if improvement < tol:
             if verbose:
@@ -684,7 +724,8 @@ def _optimize_coordinate_descent_iteration(X, K, boundary_edges, initial_edges, 
 
 
 def optimize_bin_edges(X, K, boundary_edges, max_iter=100, verbose=True, min_width=1e-6,
-                       initial_edges=None, init_method='uniform', method='coordinate_descent', tol=1e-6):
+                       initial_edges=None, init_method='uniform', method='coordinate_descent', tol=1e-6,
+                       edges_fixed=None):
     """
     Optimize bin edges to maximize likelihood of Markovian time series.
 
@@ -712,6 +753,9 @@ def optimize_bin_edges(X, K, boundary_edges, max_iter=100, verbose=True, min_wid
         Optimization method: 'coordinate_descent' or 'lbfgsb'
     tol : float
         Convergence tolerance (for coordinate_descent)
+    edges_fixed : ndarray of floats, shape (K+1)
+        Values to fix certain edges to. Use NaN for edges that are free to optimize. If None,
+        no edges are fixed. Default: None
 
     Returns:
     --------
@@ -723,7 +767,7 @@ def optimize_bin_edges(X, K, boundary_edges, max_iter=100, verbose=True, min_wid
         Final log-likelihood
     """
     # Initialize edges
-    edges = _initialize_edges(X, K, boundary_edges, initial_edges, init_method, verbose)
+    edges = _initialize_edges(X, K, boundary_edges, initial_edges, init_method, verbose, edges_fixed)
 
     # Compute and report initial likelihood
     initial_log_lik, _, _, _ = _compute_and_report_initial(X, edges, K, verbose)
@@ -735,7 +779,7 @@ def optimize_bin_edges(X, K, boundary_edges, max_iter=100, verbose=True, min_wid
         )
     elif method == 'coordinate_descent':
         final_edges, iteration_info = _optimize_coordinate_descent_iteration(
-            X, K, boundary_edges, edges, max_iter, verbose, min_width, tol
+            X, K, boundary_edges, edges, max_iter, verbose, min_width, tol, edges_fixed
         )
     else:
         raise ValueError(f"Unknown method: {method}. Choose 'lbfgsb' or 'coordinate_descent'")
@@ -766,12 +810,13 @@ def load_and_split_sequences(filepath, feature_idx=2):
 
     print(f"\nExtracting feature index {feature_idx}")
     feature_data = data['zscored_velocity'][:,:,feature_idx]  # (nflies, T, nfeatures)
+    useoutputmask = data['useoutputmask'].T  # (nflies,T)
     print(f"Data shape: {feature_data.shape}")
     print(f"  nflies={feature_data.shape[0]}")
     print(f"  T={feature_data.shape[1]}")
 
     # Count NaNs
-    nan_mask = np.isnan(feature_data)
+    nan_mask = np.isnan(feature_data) | ~useoutputmask
     nan_count = nan_mask.sum()
     total_count = feature_data.size
     print(f"NaN count: {nan_count} / {total_count} ({100*nan_count/total_count:.2f}%)")
@@ -982,6 +1027,7 @@ def generate_synthetic_data(n_sequences=10, seq_length=1000, K=20,
 def test_incremental_updates(sequences=None, K=10):
     """
     Sanity check: verify incremental updates match full recomputation.
+    Also verify vectorized versions match original loop-based versions.
     """
     print("\n" + "="*70)
     print("SANITY CHECK: Testing incremental vs full computation")
@@ -999,13 +1045,51 @@ def test_incremental_updates(sequences=None, K=10):
 
     # Compute initial bins and counts
     current_bins = assign_bins(sequences, edges)
-    counts, _ = compute_transition_matrix(current_bins, K)
 
-    # Test updating edge k
+    # Test 1: compare compute_transition_matrix versions
+    print("\n[Test 1] Comparing compute_transition_matrix versions...")
+    counts_old, prob_old = compute_transition_matrix0(current_bins, K)
+    counts_new, prob_new = compute_transition_matrix(current_bins, K)
+    counts_match = np.allclose(counts_old, counts_new)
+    prob_match = np.allclose(prob_old, prob_new)
+    print(f"  Counts match: {counts_match}")
+    print(f"  Probabilities match: {prob_match}")
+    if not (counts_match and prob_match):
+        print("  ✗ FAILED!")
+        return False
+
+    counts = counts_new
+
+    # Test 2: compare compute_log_likelihood versions
+    print("\n[Test 2] Comparing compute_log_likelihood versions...")
+    lik_old = compute_log_likelihood0(sequences, edges, prob_new)
+    lik_new = compute_log_likelihood(sequences, edges, prob_new)
+    lik_match = np.isclose(lik_old, lik_new)
+    print(f"  Log-likelihood (old): {lik_old:.6f}")
+    print(f"  Log-likelihood (new): {lik_new:.6f}")
+    print(f"  Match: {lik_match}")
+    if not lik_match:
+        print("  ✗ FAILED!")
+        return False
+
+    # Test 3: compare _compute_log_likelihood_from_counts versions
+    print("\n[Test 3] Comparing _compute_log_likelihood_from_counts versions...")
+    widths = np.diff(edges)
+    lik_from_counts_old = _compute_log_likelihood_from_counts0(counts, widths, K)
+    lik_from_counts_new = _compute_log_likelihood_from_counts(counts, widths, K)
+    lik_from_counts_match = np.isclose(lik_from_counts_old, lik_from_counts_new)
+    print(f"  Log-likelihood from counts (old): {lik_from_counts_old:.6f}")
+    print(f"  Log-likelihood from counts (new): {lik_from_counts_new:.6f}")
+    print(f"  Match: {lik_from_counts_match}")
+    if not lik_from_counts_match:
+        print("  ✗ FAILED!")
+        return False
+
+    # Test 4: incremental updates for edge k
     k = 5
     new_edge_k = edges[k] + 0.5
 
-    print(f"\nTesting edge {k} move from {edges[k]:.3f} to {new_edge_k:.3f}")
+    print(f"\n[Test 4] Testing edge {k} move from {edges[k]:.3f} to {new_edge_k:.3f}")
 
     # Method 1: Incremental update
     new_bins_incr, new_counts_incr = _update_bins_and_counts_for_edge_k(
@@ -1020,24 +1104,24 @@ def test_incremental_updates(sequences=None, K=10):
 
     # Compare bins
     bins_match = all(np.array_equal(b1, b2) for b1, b2 in zip(new_bins_incr, new_bins_full))
-    print(f"Bins match: {bins_match}")
+    print(f"  Bins match: {bins_match}")
 
     # Compare counts
     counts_match = np.allclose(new_counts_incr, new_counts_full)
-    print(f"Counts match: {counts_match}")
-    print(f"Max count difference: {np.abs(new_counts_incr - new_counts_full).max()}")
+    print(f"  Counts match: {counts_match}")
+    print(f"  Max count difference: {np.abs(new_counts_incr - new_counts_full).max()}")
 
     # Compare likelihoods
     widths_incr = np.diff(edges_full)
     lik_incr = _compute_log_likelihood_from_counts(new_counts_incr, widths_incr, K)
     lik_full = _compute_log_likelihood_from_counts(new_counts_full, widths_incr, K)
 
-    print(f"Likelihood (incremental): {lik_incr:.6f}")
-    print(f"Likelihood (full):        {lik_full:.6f}")
-    print(f"Difference:               {abs(lik_incr - lik_full):.2e}")
+    print(f"  Likelihood (incremental): {lik_incr:.6f}")
+    print(f"  Likelihood (full):        {lik_full:.6f}")
+    print(f"  Difference:               {abs(lik_incr - lik_full):.2e}")
 
     if bins_match and counts_match and abs(lik_incr - lik_full) < 1e-10:
-        print("\n✓ SANITY CHECK PASSED!")
+        print("\n✓ ALL SANITY CHECKS PASSED!")
     else:
         print("\n✗ SANITY CHECK FAILED!")
         return False
@@ -1045,7 +1129,69 @@ def test_incremental_updates(sequences=None, K=10):
     print("="*70 + "\n")
     return True
 
-def main(args):
+def _synthetic_comparison_report(sequences,true_edges,true_prob_matrix,
+                                 edges, prob_matrix, log_lik,
+                                 edges_true_init, prob_matrix_true_init, log_lik_true_init):
+
+    # Compare with ground truth if synthetic
+    print("\n" + "="*70)
+    print("COMPARISON WITH GROUND TRUTH")
+    print("="*70)
+
+    # Compute likelihood under true model
+    true_log_lik = compute_log_likelihood(sequences, true_edges, true_prob_matrix)
+
+    print(f"\nLog-likelihood comparison:")
+    print(f"  True model:              {true_log_lik:.6f}")
+    print(f"  Fitted (uniform init):  {log_lik:.6f}")
+    print(f"  Difference:              {log_lik - true_log_lik:.6f}")
+    if log_lik > true_log_lik:
+        print(f"  (Fitted model has HIGHER likelihood)")
+    else:
+        print(f"  (Fitted model has LOWER likelihood)")
+
+    print(f"\n  Fitted (true init):      {log_lik_true_init:.6f}")
+    print(f"  Difference:              {log_lik_true_init - true_log_lik:.6f}")
+    if log_lik_true_init > true_log_lik:
+        print(f"  (Fitted model has HIGHER likelihood)")
+    else:
+        print(f"  (Fitted model has LOWER likelihood)")
+
+    # Edge comparison for quantile init
+    edge_error = np.abs(edges - true_edges)
+    print(f"\nEdge errors (quantile init):")
+    print(f"  Mean: {edge_error.mean():.6f}")
+    print(f"  Max: {edge_error.max():.6f}")
+    print(f"  RMS: {np.sqrt((edge_error**2).mean()):.6f}")
+
+    # Edge comparison for true init
+    edge_error_true = np.abs(edges_true_init - true_edges)
+    print(f"\nEdge errors (true init):")
+    print(f"  Mean: {edge_error_true.mean():.6f}")
+    print(f"  Max: {edge_error_true.max():.6f}")
+    print(f"  RMS: {np.sqrt((edge_error_true**2).mean()):.6f}")
+
+    # Transition matrix comparison for quantile init
+    prob_error = np.abs(prob_matrix - true_prob_matrix)
+    print(f"\nTransition matrix errors (quantile init):")
+    print(f"  Mean: {prob_error.mean():.6f}")
+    print(f"  Max: {prob_error.max():.6f}")
+    print(f"  RMS: {np.sqrt((prob_error**2).mean()):.6f}")
+    frobenius_norm = np.linalg.norm(prob_matrix - true_prob_matrix, 'fro')
+    print(f"  Frobenius norm: {frobenius_norm:.6f}")
+
+    # Transition matrix comparison for true init
+    prob_error_true = np.abs(prob_matrix_true_init - true_prob_matrix)
+    print(f"\nTransition matrix errors (true init):")
+    print(f"  Mean: {prob_error_true.mean():.6f}")
+    print(f"  Max: {prob_error_true.max():.6f}")
+    print(f"  RMS: {np.sqrt((prob_error_true**2).mean()):.6f}")
+    frobenius_norm_true = np.linalg.norm(prob_matrix_true_init - true_prob_matrix, 'fro')
+    print(f"  Frobenius norm: {frobenius_norm_true:.6f}")
+
+    print("="*70)
+
+def main(args=[]):
 
     # maximum optimization iterations
     max_iter = 200
@@ -1057,10 +1203,15 @@ def main(args):
 
         # number of bins
         K = 10
-        # boundary edge percentile
-        percentile = 0.
+        
+        # minimum bin width
+        min_width = 1e-6
 
-        sequences, true_edges, true_prob_matrix = generate_synthetic_data(K=K)
+        boundary_edges = (-10.0, 10.0)
+        sequences, true_edges, true_prob_matrix = generate_synthetic_data(K=K,data_range=boundary_edges)
+        edges_fixed = np.zeros(K+1) + np.nan
+        edges_fixed[0] = boundary_edges[0]
+        edges_fixed[-1] = boundary_edges[1]
 
         # Run sanity check first
         if not test_incremental_updates(sequences=sequences, K=K):
@@ -1072,14 +1223,21 @@ def main(args):
     else:
         # number of bins
         K = 50
-        # boundary edge percentile
-        percentile = .001
         # target number of timepoints for subsampling (None = use all data)
         target_timepoints = 1_000_000  # 1M timepoints
 
         filepath = 'notebooks/zscored_velocity.npz'
         feature_idx = 2
+        zstd = 0.03285892
+        outlier_thresh = 135*np.pi/180/zstd*np.array([-1,1]) # force one bin to cover outliers
+        min_width=.1*np.pi/180/zstd # .1 deg in zscores
         sequences = load_and_split_sequences(filepath, feature_idx=feature_idx)
+        boundary_edges = compute_boundary_edges(sequences)
+        edges_fixed = np.zeros(K+1) + np.nan
+        edges_fixed[0] = boundary_edges[0]
+        edges_fixed[1] = outlier_thresh[0]
+        edges_fixed[-1] = boundary_edges[1]
+        edges_fixed[-2] = outlier_thresh[1]
 
         # Subsample sequences if needed
         sequences = subsample_sequences(sequences, target_timepoints=target_timepoints)
@@ -1088,13 +1246,17 @@ def main(args):
         is_synthetic = False
         true_edges = None
         true_prob_matrix = None
+    
+    # Threshold data at boundary edges
+    for seq in sequences:
+        seq[seq < boundary_edges[0]] = boundary_edges[0]
+        seq[seq > boundary_edges[1]] = boundary_edges[1]
 
-    # Compute boundary edges
-    print("\n" + "="*70)
-    print(f"Computing boundary edges at {percentile} percentile...")
-    print("="*70)
-    boundary_edges = compute_boundary_edges(sequences, percentile=percentile)
+    # offset by a tiny amount so that everything is in bounds
+    d = boundary_edges[1] - boundary_edges[0]
+    boundary_edges = (boundary_edges[0] - d*1e-6,boundary_edges[1] + d*1e-6)
     print(f"Boundary edges: [{boundary_edges[0]:.6f}, {boundary_edges[1]:.6f}]")
+    
 
     # Optimize binning
     print("\n" + "="*70)
@@ -1104,9 +1266,11 @@ def main(args):
         sequences,
         K=K,
         boundary_edges=boundary_edges,
+        min_width=min_width,
         max_iter=max_iter,
         verbose=True,
-        method=method
+        method=method,
+        edges_fixed=edges_fixed
     )
 
     # If synthetic, also try with true initialization
@@ -1123,6 +1287,8 @@ def main(args):
             initial_edges=true_edges,
             method=method
         )
+        _synthetic_comparison_report(sequences,true_edges,true_prob_matrix, edges, prob_matrix, log_lik,
+                                     edges_true_init, prob_matrix_true_init, log_lik_true_init)
 
     if output_file is not None:
         # Save results
@@ -1153,66 +1319,6 @@ def main(args):
     print("\nOptimal bin edges:")
     for i in range(0, len(edges), 10):
         print("  " + ", ".join(f"{edge:.6f}" for edge in edges[i:i+10]))
-
-    # Compare with ground truth if synthetic
-    if is_synthetic:
-        print("\n" + "="*70)
-        print("COMPARISON WITH GROUND TRUTH")
-        print("="*70)
-
-        # Compute likelihood under true model
-        true_log_lik = compute_log_likelihood(sequences, true_edges, true_prob_matrix)
-
-        print(f"\nLog-likelihood comparison:")
-        print(f"  True model:              {true_log_lik:.6f}")
-        print(f"  Fitted (quantile init):  {log_lik:.6f}")
-        print(f"  Difference:              {log_lik - true_log_lik:.6f}")
-        if log_lik > true_log_lik:
-            print(f"  (Fitted model has HIGHER likelihood)")
-        else:
-            print(f"  (Fitted model has LOWER likelihood)")
-
-        print(f"\n  Fitted (true init):      {log_lik_true_init:.6f}")
-        print(f"  Difference:              {log_lik_true_init - true_log_lik:.6f}")
-        if log_lik_true_init > true_log_lik:
-            print(f"  (Fitted model has HIGHER likelihood)")
-        else:
-            print(f"  (Fitted model has LOWER likelihood)")
-
-        # Edge comparison for quantile init
-        edge_error = np.abs(edges - true_edges)
-        print(f"\nEdge errors (quantile init):")
-        print(f"  Mean: {edge_error.mean():.6f}")
-        print(f"  Max: {edge_error.max():.6f}")
-        print(f"  RMS: {np.sqrt((edge_error**2).mean()):.6f}")
-
-        # Edge comparison for true init
-        edge_error_true = np.abs(edges_true_init - true_edges)
-        print(f"\nEdge errors (true init):")
-        print(f"  Mean: {edge_error_true.mean():.6f}")
-        print(f"  Max: {edge_error_true.max():.6f}")
-        print(f"  RMS: {np.sqrt((edge_error_true**2).mean()):.6f}")
-
-        # Transition matrix comparison for quantile init
-        prob_error = np.abs(prob_matrix - true_prob_matrix)
-        print(f"\nTransition matrix errors (quantile init):")
-        print(f"  Mean: {prob_error.mean():.6f}")
-        print(f"  Max: {prob_error.max():.6f}")
-        print(f"  RMS: {np.sqrt((prob_error**2).mean()):.6f}")
-        frobenius_norm = np.linalg.norm(prob_matrix - true_prob_matrix, 'fro')
-        print(f"  Frobenius norm: {frobenius_norm:.6f}")
-
-        # Transition matrix comparison for true init
-        prob_error_true = np.abs(prob_matrix_true_init - true_prob_matrix)
-        print(f"\nTransition matrix errors (true init):")
-        print(f"  Mean: {prob_error_true.mean():.6f}")
-        print(f"  Max: {prob_error_true.max():.6f}")
-        print(f"  RMS: {np.sqrt((prob_error_true**2).mean()):.6f}")
-        frobenius_norm_true = np.linalg.norm(prob_matrix_true_init - true_prob_matrix, 'fro')
-        print(f"  Frobenius norm: {frobenius_norm_true:.6f}")
-
-        print("="*70)
-
 
 if __name__ == "__main__":
     main(sys.argv)
