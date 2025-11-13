@@ -565,6 +565,10 @@ def subsample_batch(example, nsamples=1, samples=None, dataset=None):
                                                                 invertdata=invertdata)
             if 'metadata' in example:
                 examplecurr['metadata'] = apf.utils.recursive_dict_eval(example['metadata'], lambda x: x[samplei])
+                
+            if 'useoutputmask' in example:
+                examplecurr['useoutputmask'] = example['useoutputmask'][samplei]
+
             examplelist.append(examplecurr)
 
     elif example_type == 'flyexample':
@@ -583,6 +587,7 @@ def example2discrcont(examplecurr):
     unfuseddata = fusionop.unfuse(fuseddata)
     unfuseddata['discretize'] = discrop.unflatten(unfuseddata['discretize'])
     return (unfuseddata['discretize'],unfuseddata['identity'])
+    
 
 def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None,
                           pred=None, data=None, nsamplesplot=3,
@@ -602,13 +607,14 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
         mask = example_in['mask']
     else:
         mask = None
-
+        
     if ax is None:
         if fig is None:
-          fig, ax = plt.subplots(1, nsamplesplot, squeeze=False, figsize=(3 * nsamplesplot, 6))
+            fig, ax = plt.subplots(1, nsamplesplot, squeeze=False, figsize=(8 * nsamplesplot, 10),sharey=True,sharex=True)
         else:
-          ax = fig.subplots(1, nsamplesplot, squeeze=False)
+            ax = fig.subplots(1, nsamplesplot, squeeze=False)
         ax = ax[0, :]
+        fig.tight_layout()
 
     examplecurr = example[0]
     if isflymlm:
@@ -646,6 +652,7 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
             rawlabelstrue = examplecurr.labels.get_train_labels()
             zmovement_continuous_true = rawlabelstrue['continuous']
             zmovement_discrete_true = rawlabelstrue['discrete']
+            useoutputmask = None
         else:
             rawlabelstrue = get_batch_idx(example_in, iplot)
             zmovement_discrete_true, zmovement_continuous_true = example2discrcont(examplecurr)
@@ -653,7 +660,9 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
                 zmovement_discrete_true = torch.from_numpy(zmovement_discrete_true)
             if isinstance(zmovement_continuous_true,np.ndarray):
                 zmovement_continuous_true = torch.from_numpy(zmovement_continuous_true)
-
+            useoutputmask = examplecurr.get('useoutputmask')
+            print(f'sample {iplot}: nzero = {torch.count_nonzero(~useoutputmask)} out of {useoutputmask.numel()}')
+        
         err_total = None
         if isflymlm:
             maskcurr = examplecurr.labels.get_mask()
@@ -681,6 +690,10 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
                                                                             train_dataset, config)
             # err_movement = torch.abs(zmovement_true[maskidx,:]-zmovement_pred[maskidx,:])/nmask
             # err_total = torch.sum(err_movement).item()/d
+
+            if useoutputmask is not None:
+                if zmovement_continuous_pred is not None:
+                    zmovement_continuous_pred[~useoutputmask] = np.nan
 
         elif data is not None:
             # for i in range(nsamplesplot):
@@ -712,6 +725,9 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
                 zpred = zpred - torch.min(zpred)
                 zpred = zpred / torch.max(zpred)
                 im[:, :, 1] = 1. - zpred
+            # mask out areas where loss is not computed
+            if useoutputmask is not None:
+                im[:, ~useoutputmask, :] = .8
             ax[i].imshow(im, extent=(0, contextl, (featii - .5) * mult, (featii + .5) * mult), origin='lower',
                          aspect='auto')
 
@@ -937,14 +953,17 @@ def debug_plot_pose_prob(example, train_dataset, predcpu, tplot, fig=None, ax=No
     return h, ax, fig
 
 
-def debug_plot_sample(example_in, dataset=None, nplot=3):
+def debug_plot_sample(example_in, dataset=None, nplot=3, pred=None, fig=None, ax=None):
     
     isflymlm = isflymlm_dataset(dataset)
     
     example, samplesplot = subsample_batch(example_in, nsamples=nplot, dataset=dataset)
     nplot = len(example)
 
-    fig, ax = plt.subplots(nplot, 2, squeeze=False, figsize=(15, 4 * nplot))
+    if fig is None:
+        fig, ax = plt.subplots(nplot, 3, squeeze=False, figsize=(15, 4 * nplot))
+    elif ax is None:
+        ax = fig.get_axes()
 
     if isflymlm:
         idx = example[0].inputs.get_sensory_feature_idx()
@@ -958,8 +977,9 @@ def debug_plot_sample(example_in, dataset=None, nplot=3):
     inputidxtype = list(idx.keys())
 
     for iplot, samplei in enumerate(samplesplot):
-        ax[iplot, 0].cla()
-        ax[iplot, 1].cla()
+        for i in range(3):
+            ax[iplot, i].cla()
+        
         if isflymlm:
             inputs = example[iplot].inputs.get_raw_inputs()
             labels = example[iplot].labels.get_multi(zscored=True)
@@ -967,7 +987,7 @@ def debug_plot_sample(example_in, dataset=None, nplot=3):
             inputs = example[iplot]['inputs']['sensory'].array
             labels = []
             for v in example[iplot]['labels'].values():
-                zlabels_curr = apf.dataset.apply_inverse_operations(v,apf.dataset.get_post_operations(v.operations,'zscore'))
+                zlabels_curr = apf.dataset.invert_to_named(v,'zscore')
                 labels.append(zlabels_curr)
             labels = np.concatenate(labels,axis=-1)
         ax[iplot, 0].imshow(inputs, vmin=-3, vmax=3, cmap='coolwarm', aspect='auto')
@@ -983,6 +1003,17 @@ def debug_plot_sample(example_in, dataset=None, nplot=3):
         ax[iplot, 1].imshow(labels,
                             vmin=-3, vmax=3, cmap='coolwarm', aspect='auto')
         ax[iplot, 1].set_title(f'Labels {samplei}')
+        
+        if pred is not None:
+            assert isflymlm == False, "Prediction plotting not implemented for FlyMLM"
+            predcurr = get_batch_idx(pred, samplei)
+            predcurrdata = dataset.item_to_data(predcurr)
+            zscored_velocity = apf.dataset.invert_to_named(predcurrdata['labels']['velocity'],'zscore')
+            ax[iplot,2].imshow(zscored_velocity,
+                               vmin=-3, vmax=3, cmap='coolwarm', aspect='auto')
+            ax[iplot,2].set_title(f'Pred {samplei}')
+
+        
     return fig, ax
 
 
@@ -1385,7 +1416,7 @@ def initialize_debug_plots(dataset, dataloader, data, name='', tsplot=None, traj
 
 
     # plot to visualize input features
-    fig, ax = debug_plot_sample(example, dataset)
+    figsample, axsample = debug_plot_sample(example, dataset)
 
     # plot to check that we can get poses from examples
     hpose, ax, fig = debug_plot_pose(example, dataset, data=data, tsplot=tsplot)
@@ -1402,6 +1433,8 @@ def initialize_debug_plots(dataset, dataloader, data, name='', tsplot=None, traj
     figtraj.tight_layout()
 
     hdebug = {
+        'figsample': figsample,
+        'axsample': axsample,
         'figpose': fig,
         'axpose': ax,
         'hpose': hpose,
@@ -1427,6 +1460,7 @@ def update_debug_plots(hdebug, config, model, dataset, example, pred, criterion=
             pred1 = {k: v.detach().cpu() for k, v in pred.items()}
         else:
             pred1 = pred.detach().cpu()
+    debug_plot_sample(example,dataset,fig=hdebug['figsample'],ax=hdebug['axsample'],pred=pred1)
     debug_plot_pose(example, dataset, predin=pred1, h=hdebug['hpose'], ax=hdebug['axpose'], fig=hdebug['figpose'],
                           tsplot=tsplot)
     debug_plot_batch_traj(example, dataset, criterion=criterion, config=config, pred=pred1, ax=hdebug['axtraj'],
@@ -1437,7 +1471,8 @@ def update_debug_plots(hdebug, config, model, dataset, example, pred, criterion=
                                                            fig=hdebug['figstate'])
         hdebug['axstate'][0].set_title(name)
 
-    hdebug['axtraj'][0].set_title(name)
+    ti = hdebug['axtraj'][0].get_title()
+    hdebug['axtraj'][0].set_title(f'{name}: {ti}')
 
 
 def initialize_loss_plots(loss_epoch):

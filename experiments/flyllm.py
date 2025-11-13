@@ -137,13 +137,14 @@ def load_data(
     flyids = data['ids'][..., valid]
     isstart = data['isstart'][..., valid]
     isdata = data['isdata'][..., valid]
+    useoutputmask = data['useoutputmask'][..., valid]
 
     n_kpts = len(keypointnames)
     if n_kpts < Xkp.shape[0]:
         LOG.warning(f"Removing last {Xkp.shape[0] - n_kpts} keypoints from the data")
         Xkp = Xkp[:n_kpts]
 
-    return Xkp, flyids, isstart, isdata, scale_perfly
+    return Xkp, flyids, isstart, isdata, scale_perfly, useoutputmask
 
 
 def make_dataset(
@@ -179,12 +180,13 @@ def make_dataset(
     """
     # Load data
     if indata is None:
-        Xkp, flyids, isstart, isdata, scale_perfly = load_data(config, config[filename], debug=debug)
+        Xkp, flyids, isstart, isdata, scale_perfly, useoutputmask = load_data(config, config[filename], debug=debug)
     else:
         Xkp = indata['Xkp']
         flyids = indata['flyids']
         isstart = indata['isstart']
         isdata = indata['isdata']
+        useoutputmask = indata['useoutputmask']
         scale_perfly = indata['scale_perfly']
 
     # Compute features
@@ -213,23 +215,26 @@ def make_dataset(
 
     LOG.info('Assembling dataset...')
 
+    args = {
+        'context_length': config['contextl'],
+        'isstart': isstart,
+        'metadata': metadata,
+        'useoutputmask': useoutputmask
+    }
+
     # Assemble the dataset
     if ref_dataset is not None:
         dataset = Dataset(
             inputs=apply_opers_from_data(ref_dataset.inputs, {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
             labels=apply_opers_from_data(ref_dataset.labels, {'velocity': velocity}), #, 'auxiliary': auxiliary}),
-            context_length=config['contextl'],
-            isstart=isstart,
-            metadata=metadata
+            **args
         )
     elif 'dataset_params' in config and config['dataset_params'] is not None and \
         ('inputs' in config['dataset_params']) and ('labels' in config['dataset_params']):
         dataset = Dataset(
             inputs=apply_opers_from_data_params(config['dataset_params']['inputs'], {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
             labels=apply_opers_from_data_params(config['dataset_params']['labels'], {'velocity': velocity}), #, 'auxiliary': auxiliary}),
-            context_length=config['contextl'],
-            isstart=isstart, 
-            metadata=metadata
+            **args
         )
     else:
         # velocity = OddRoot(5)(velocity)
@@ -255,12 +260,10 @@ def make_dataset(
                 # 'velocity': Fusion([Discretize(**bin_config), Zscore()], indices_per_op)(velocity),
                 # 'auxiliary': Discretize()(auxiliary)
             },
-            context_length=config['contextl'],
-            isstart=isstart,
-            metadata=metadata
+            **args
         )
     dataset_params = dataset.get_params()
     if return_all:
-        return dataset, flyids, track, pose, velocity, sensory, dataset_params, isdata, isstart
+        return dataset, flyids, track, pose, velocity, sensory, dataset_params, isdata, isstart, useoutputmask
     else:
         return dataset
