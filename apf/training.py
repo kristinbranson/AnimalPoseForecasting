@@ -178,16 +178,20 @@ def train(
             # progress_bar.update(1)
         progress_bar.update(len(train_dataloader))
 
-        # training epoch complete
-        loss_epoch['train'][epoch] = tr_loss.item() / nmask_train
-        loss_epoch['train_discrete'][epoch] = tr_loss_discrete.item() / nmask_train
-        loss_epoch['train_continuous'][epoch] = tr_loss_continuous.item() / nmask_train
+        # # training epoch complete
+        # loss_epoch['train'][epoch] = tr_loss.item() / nmask_train
+        # loss_epoch['train_discrete'][epoch] = tr_loss_discrete.item() / nmask_train
+        # loss_epoch['train_continuous'][epoch] = tr_loss_continuous.item() / nmask_train
+
+        # compute training loss after this epoch
+        loss_epoch['train'][epoch], loss_epoch['train_discrete'][epoch], loss_epoch['train_continuous'][epoch] = \
+            compute_loss_mixed(model, train_dataloader, device, train_src_mask, weight_discrete=weight_discrete)
 
         # compute validation loss after this epoch
         loss_epoch['val'][epoch], loss_epoch['val_discrete'][epoch], loss_epoch['val_continuous'][epoch] = \
             compute_loss_mixed(model, val_dataloader, device, train_src_mask, weight_discrete=weight_discrete)
         last_val_loss = loss_epoch['val'][epoch].item()
-        
+
         if end_epoch_hook is not None:
             end_epoch_hook(model=model, epoch=epoch, loss_epoch=loss_epoch)
 

@@ -122,7 +122,7 @@ class BodyCentricKP(Operation):
 def load_data(
         config: dict,
         filename: str,
-        debug: bool = False
+        debug: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """ Loads the data and computes scale per fly.
 
@@ -139,6 +139,12 @@ def load_data(
             Data can be unused because it is invalid (nans) or because it was filtered on fly type.
         scale_perfly: Scale of each unique individual in the data. (n_individuals, n_scales) float array
     """
+    if 'train' in filename:
+        keep_video_ids = [53, 25, 10, 47, 8, 34, 37, 3, 32, 6, 51, 19, 1, 2, 7, 55, 43, 13, 23, 38, 44, 12,
+                          64, 46, 66, 57, 26, 9, 39, 5, 28, 52, 0, 18, 48, 61, 59, 15, 65, 36]
+    else:
+        keep_video_ids = [18, 14, 5, 4, 13, 3, 26, 31, 19, 0, 24, 17, 25, 11, 12, 23, 9, 29, 1, 30, 8, 32]
+
     data, scale_perfly = load_and_filter_data(
         filename,
         config,
@@ -147,7 +153,8 @@ def load_data(
         keypointnames=keypointnames,
         debug=debug,
         n_frames_per_video=15000,
-        max_n_videos=5
+        max_n_videos=5,
+        keep_video_ids=keep_video_ids,
     )
 
     # Remove all NaN agents (sometimes the last one is a dummy)
@@ -206,6 +213,10 @@ def make_dataset(
         isstart = indata['isstart']
         isdata = indata['isdata']
         scale_perfly = indata['scale_perfly']
+
+    print(f"isdata.shape = {isdata.shape}")
+    print(f"isdata.sum(0) = {isdata.sum(0)}")
+    print(f"isdata.sum(1) = {isdata.sum(1)}")
 
     # Compute features
     LOG.info('Computing input and label features for dataset...')

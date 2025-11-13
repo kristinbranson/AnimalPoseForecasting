@@ -1307,6 +1307,7 @@ class TimeEmbeddedMLP(torch.nn.Module):
         # t should be a scalar or a vector
 
         for layer in self.layers[:-1]:
+            # TODO: Try swapping out for relu
             x = torch.nn.functional.tanh(layer(x))
             embed = self.t_embeddings(t)[..., :x.shape[-1]]
             x = x + embed * self.embed_weight

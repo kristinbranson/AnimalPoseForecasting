@@ -77,7 +77,7 @@ def load_config_from_model_file(loadmodelfile=None, config=None, state=None, no_
     if state is None:
         assert loadmodelfile is not None
         LOG.info(f'Loading config from file {loadmodelfile}...')
-        state = torch.load(loadmodelfile)
+        state = torch.load(loadmodelfile, weights_only=False)
     if config is not None and 'config' in state:
         overwrite_config(config, state['config'], no_overwrite=no_overwrite)
     else:
@@ -344,10 +344,10 @@ def compute_scale_all_agents(data, compute_scale_per_agent):
 
 
 def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_noise_params=None, keypointnames=None,
-                         debug=False, n_frames_per_video=None, max_n_videos=None):
+                         debug=False, n_frames_per_video=None, max_n_videos=None, keep_video_ids=None):
     # load data
     LOG.info(f"loading raw data from {infile}...")
-    data = load_raw_npz_data(infile,debug=debug, n_frames_per_video=n_frames_per_video, max_n_videos=max_n_videos)
+    data = load_raw_npz_data(infile,debug=debug, n_frames_per_video=n_frames_per_video, max_n_videos=max_n_videos, keep_video_ids=keep_video_ids)
     LOG.info(f"loaded data with X.shape {data['X'].shape}")
 
     scale_per_agent = None

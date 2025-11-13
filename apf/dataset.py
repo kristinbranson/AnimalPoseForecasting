@@ -762,7 +762,6 @@ class GlobalVelocity(Operation):
         return inverted
 
 
-@dataclass
 class Velocity(Operation):
     """ Combines global and local velocity.
 

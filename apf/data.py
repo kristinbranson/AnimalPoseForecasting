@@ -478,11 +478,29 @@ def debug_less_data(data, n_frames_per_video=None, max_n_videos=None):
     return
 
 
+def filter_video_ids(data, video_ids):
+    valid_frames = np.zeros(data['videoidx'].shape[0], bool)
+    for idx in video_ids:
+        valid_frames[data['videoidx'][:, 0] == idx] = 1
+    frame_ids = np.where(valid_frames)[0]
+
+    data['videoidx'] = data['videoidx'][frame_ids, :]
+    data['ids'] = data['ids'][frame_ids, :]
+    data['frames'] = data['frames'][frame_ids, :]
+    data['X'] = data['X'][:, :, frame_ids, :]
+    data['y'] = data['y'][:, frame_ids, :]
+    data['isdata'] = data['isdata'][frame_ids, :]
+    data['isstart'] = data['isstart'][frame_ids, :]
+    nframes = np.count_nonzero(data['isdata'])
+    nids = len(np.unique(data['ids'][data['isdata']]))
+    LOG.info(f'After filter video ids: nframes = {nframes}, nids = {nids}, X.shape = {data["X"].shape}')
+
+
 """ Load and filter data
 """
 
 
-def load_raw_npz_data(infile: str, debug: bool = False, n_frames_per_video: int | None = None, max_n_videos: int | None = None) -> dict:
+def load_raw_npz_data(infile: str, debug: bool = False, n_frames_per_video: int | None = None, max_n_videos: int | None = None, keep_video_ids=None) -> dict:
     """ Loads tracking data.
     Args
         infile: Datafile with .npz extension. Data is expected to have the following fields:
@@ -521,7 +539,10 @@ def load_raw_npz_data(infile: str, debug: bool = False, n_frames_per_video: int 
 
     data['isdata'] = data['ids'] >= 0
     data['categories'] = list(data['categories'])
-    
+
+    if keep_video_ids is not None:
+        filter_video_ids(data, keep_video_ids)
+
     if debug:
         debug_less_data(data, n_frames_per_video=n_frames_per_video, max_n_videos=max_n_videos)
 
@@ -533,6 +554,9 @@ def filter_data_by_categories(data, categories):
     for category in categories:
         if category == 'male':
             category = 'female'
+            val = 0
+        elif category == 'GoodTracking':
+            category = 'BadTracking'
             val = 0
         else:
             val = 1
