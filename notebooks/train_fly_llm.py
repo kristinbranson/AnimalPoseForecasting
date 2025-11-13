@@ -34,6 +34,7 @@ from apf.training import train
 from apf.utils import function_args_from_config, set_mpl_backend, is_notebook
 from apf.simulation import simulate
 from apf.models import initialize_model
+import apf.utils as utils
 import matplotlib.pyplot as plt
 
 import flyllm
@@ -96,6 +97,8 @@ for key in res:
     elif hasattr(res[key], '__len__') and not isinstance(res[key], str):
         s += f', len: {len(res[key])}'
     print(s)
+    
+assert res['success'], 'init_flyllm failed!'
 
 # unpack outputs
 config = res['config']
@@ -216,30 +219,30 @@ hdebug['train'] = initialize_debug_plots(train_dataset, train_dataloader, train_
 hdebug['val'] = initialize_debug_plots(val_dataset, val_dataloader, val_data, name='Val', **debug_params)
 hloss = initialize_loss_plots(loss_epoch)
 
-def refresh_plots(hdebug):
+def refresh_plots(hdebugin,prefix=''):
     
     if ISNOTEBOOK:
-        if 'display_handles' not in hdebug:
-            hdebug['display_handles'] = {}
-        for k,fig in hdebug.items():
+        if 'display_handles' not in hdebugin:
+            hdebugin['display_handles'] = {}
+        for k,fig in hdebugin.items():
             if not k.startswith('fig') or fig is None:
                 continue 
-            if k in hdebug['display_handles']:
-                hdebug['display_handles'][k].update(fig)
+            if k in hdebugin['display_handles']:
+                hdebugin['display_handles'][k].update(fig)
             else:
-                hdebug['display_handles'][k] = display(fig,display_id=k)
+                hdebugin['display_handles'][k] = display(fig,display_id=f'{prefix}__{k}')
 
     else:
-        for k,fig in hdebug.items():
+        for k,fig in hdebugin.items():
             if not k.startswith('fig') or fig is None:
                 continue 
             fig.canvas.draw()
             fig.canvas.flush_events()
 
 if ISNOTEBOOK:
-    refresh_plots(hdebug['train'])
-    refresh_plots(hdebug['val'])
-    refresh_plots(hloss)
+    refresh_plots(hdebug['train'],'train')
+    refresh_plots(hdebug['val'],'val')
+    refresh_plots(hloss,'loss')
 else:
     plt.ion()
     plt.show(block=False)
@@ -281,30 +284,39 @@ def end_epoch_hook(loss_epoch=None, epoch=None, **kwargs):
     return
 
 # test the hooks
+if False:
+    for i,trainexample in enumerate(train_dataloader):
+        if i >= 1:
+            break
+    valexample = next(iter(val_dataloader))
+    contextl = trainexample['input'].shape[1]
+    train_src_mask = torch.nn.Transformer.generate_square_subsequent_mask(contextl, device=device)
 
-# trainexample = next(iter(train_dataloader))
-# valexample = next(iter(val_dataloader))
-# contextl = trainexample['input'].shape[1]
-# train_src_mask = torch.nn.Transformer.generate_square_subsequent_mask(contextl, device=device)
-
-# end_iter_hook(model=model,step=0,example=trainexample,predfn=lambda input: model.output(input, mask=train_src_mask, is_causal=True))
-# end_epoch_hook(loss_epoch=loss_epoch)
-
+    end_iter_hook(model=model,step=0,example=trainexample,predfn=lambda input: model.output(input, mask=train_src_mask, is_causal=True))
+    end_epoch_hook(loss_epoch=loss_epoch)
 
 # %%
 # clean up memory allocation before training, particularly if running in a notebook
 # and things have crashed before...
-if device.type == 'cuda':
-    import gc
-    model = model.to(device='cpu')
-    gc.collect()
-    torch.cuda.empty_cache()
-    model = model.to(device=device)
-    memalloc = torch.cuda.memory_allocated() / 1e9
-    print(f'Initial cuda memory allocated: {memalloc:.3f} GB')
-    memreserved = torch.cuda.memory_reserved() / 1e9
-    print(f'Initial cuda memory reserved: {memreserved:.3f} GB')
 
+import gc
+
+model = model.to(device='cpu')
+model.zero_grad()
+torch.cuda.empty_cache()
+gc.collect()
+    
+utils.torch_mem_report(model)
+
+model = model.to(device=device)
+
+memalloc = torch.cuda.memory_allocated() / 1e9
+print(f'Cuda memory allocated for model: {memalloc:.3f} GB')
+memreserved = torch.cuda.memory_reserved() / 1e9
+print(f'Cuda memory reserved for model: {memreserved:.3f} GB')
+
+
+# %%
 savefilestr = os.path.join(config['savedir'], f"fly{modeltype_str}_{savetime}")
 
 train_args = function_args_from_config(config,train)

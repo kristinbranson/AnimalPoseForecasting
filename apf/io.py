@@ -366,13 +366,27 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
     # filter out data
     LOG.info('filtering data...')
     if config['categories'] is not None and len(config['categories']) > 0:
-        LOG.info(f"filtering data by categories {config['categories']}")
-        nframespre = np.count_nonzero(data['isdata'])
-        nidspre = len(np.unique(data['ids'][data['isdata']]))
-        filter_data_by_categories(data, config['categories'])
-        nframespost = np.count_nonzero(data['isdata'])
-        nidspost = len(np.unique(data['ids'][data['isdata']]))
-        LOG.info(f"After filtering nids {nidspre} -> {nidspost}, n agent-frames {nframespre} -> {nframespost}")
+        fn = 'isdata'
+        LOG.info(f"filtering {fn} by categories {config['categories']}")
+        nframespre = np.count_nonzero(data[fn])
+        nidspre = len(np.unique(data['ids'][data[fn]]))
+        filter_data_by_categories(data, config['categories'],fn)
+        nframespost = np.count_nonzero(data[fn])
+        nidspost = len(np.unique(data['ids'][data[fn]]))
+        LOG.info(f"After filtering {fn} nids {nidspre} -> {nidspost}, n agent-frames {nframespre} -> {nframespost}")
+        assert nidspost > 0, "No valid agents remain after filtering by categories"
+        assert nframespost > 0, "No valid data remains after filtering by categories"
+        
+    # set useoutputmask
+    if ('output_categories' in config) and (config['output_categories'] is not None) and (len(config['output_categories']) > 0):
+        fn = 'useoutputmask'
+        LOG.info(f"filtering {fn} by categories {config['output_categories']}")
+        nframespre = np.count_nonzero(data['isdata']&data[fn])
+        nidspre = len(np.unique(data['ids'][data['isdata']&data[fn]]))
+        filter_data_by_categories(data, config['output_categories'],fn)
+        nframespost = np.count_nonzero(data['isdata']&data[fn])
+        nidspost = len(np.unique(data['ids'][data['isdata']&data[fn]]))
+        LOG.info(f"After filtering {fn} nids {nidspre} -> {nidspost}, n agent-frames {nframespre} -> {nframespost}")
         assert nidspost > 0, "No valid agents remain after filtering by categories"
         assert nframespost > 0, "No valid data remains after filtering by categories"
 
@@ -380,8 +394,8 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
     if 'augment_flip' in config and config['augment_flip']:
         assert keypointnames is not None, "Need keypointnames to perform flip augmentation"
         LOG.info('augmenting data by flipping...')
-        nframespre = np.count_nonzero(data['isdata'])
-        nidspre = len(np.unique(data['ids'][data['isdata']]))
+        nframespre = np.count_nonzero(data['isdata']&data['useoutputmask'])
+        nidspre = len(np.unique(data['ids'][data['isdata']&data['useoutputmask']]))
         flipvideoidx = np.max(data['videoidx']) + 1 + data['videoidx']
         data['videoidx'] = np.concatenate((data['videoidx'], flipvideoidx), axis=0)
         firstid = np.max(data['ids']) + 1
@@ -394,8 +408,9 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
         data['y'] = np.tile(data['y'], (1, 2, 1))
         data['isdata'] = np.tile(data['isdata'], (2, 1))
         data['isstart'] = np.tile(data['isstart'], (2, 1))
-        nframespost = np.count_nonzero(data['isdata'])
-        nidspost = len(np.unique(data['ids'][data['isdata']]))
+        data['useoutputmask'] = np.tile(data['useoutputmask'], (2, 1))
+        nframespost = np.count_nonzero(data['isdata']&data['useoutputmask'])
+        nidspost = len(np.unique(data['ids'][data['isdata']&data['useoutputmask']]))
         LOG.info(f"After flip augmentation nids {nidspre} -> {nidspost}, nframes {nframespre} -> {nframespost}")
 
     # compute scale parameters
@@ -424,5 +439,6 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
         data['frames'] = data['frames'][keepidx]
         data['isstart'] = data['isstart'][keepidx,:]
         data['isdata'] = data['isdata'][keepidx,:]    
+        data['useoutputmask'] = data['useoutputmask'][keepidx,:]
 
     return data, scale_per_agent

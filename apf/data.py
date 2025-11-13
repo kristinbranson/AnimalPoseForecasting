@@ -466,6 +466,7 @@ def debug_less_data(data, n_frames_per_video=10000, max_n_videos=1):
     data['y'] = data['y'][:, frame_ids, :]
     data['isdata'] = data['isdata'][frame_ids, :]
     data['isstart'] = data['isstart'][frame_ids, :]
+    data['useoutputmask'] = data['useoutputmask'][frame_ids, :]
     nframes = np.count_nonzero(data['isdata'])
     nids = len(np.unique(data['ids'][data['isdata']]))
     LOG.info(f'After less data: nframes = {nframes}, nids = {nids}, X.shape = {data["X"].shape}')
@@ -538,14 +539,19 @@ def load_raw_npz_data(infile: str, debug: bool = False, n_frames_per_video: int 
     if keep_video_ids is not None:
         filter_video_ids(data, keep_video_ids)
 
+    # frames for which the output is penalized during training/validation
+    # e.g. BadTracking == 0
+    data['useoutputmask'] = np.ones(data['isdata'].shape, dtype=bool)
+
     if debug:
         debug_less_data(data, **kwargs)
 
     return data
 
 
-def filter_data_by_categories(data, categories):
+def filter_data_by_categories(data, categories, fn='isdata'):
     iscategory = np.ones(data['y'].shape[1:], dtype=bool)
+    LOG.info(f'Filtering data by categories, initially {np.count_nonzero(data[fn])} frames')
     for category in categories:
         # search for == and split into category and value
         val = 1
@@ -555,10 +561,11 @@ def filter_data_by_categories(data, categories):
             val = int(match.group(2).strip())
         if category == 'male':
             category = 'female'
-            val = ~val
+            val = val == 0
         catidx = data['categories'].index(category)
         iscategory = iscategory & (data['y'][catidx, ...] == val)
-    data['isdata'] = data['isdata'] & iscategory
+        LOG.info(f'{category}=={val} -> {np.count_nonzero(data[fn] & iscategory)} frames')
+    data[fn] = data[fn] & iscategory
 
 
 def get_real_agents(x, tgtdim=-1):

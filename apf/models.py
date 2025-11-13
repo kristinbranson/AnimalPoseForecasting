@@ -25,7 +25,10 @@ def unpack_input(input, featidx, sz, dim=-1):
     return res
 
 
-def causal_criterion(tgt, pred):
+def causal_criterion(tgt, pred, useoutputmask=None):
+    if useoutputmask is not None:
+        pred = pred[useoutputmask.to(device=pred.device)]
+        tgt = tgt[useoutputmask.to(device=tgt.device)]
     assert torch.isnan(tgt).any() == False, 'tgt contains nans'
     assert torch.isnan(pred).any() == False, 'pred contains nans'
     d = tgt.shape[-1]
@@ -39,9 +42,19 @@ def mixed_causal_criterion(tgt, pred, weight_discrete=.5, extraout=False):
     tgt_discrete = tgt.get('labels_discrete', None)
     pred_continuous = pred.get('continuous', None)
     pred_discrete = pred.get('discrete', None)
+    useoutputmask = tgt.get('useoutputmask', None)
 
     iscontinuous = tgt_continuous is not None and tgt_continuous.shape[-1] > 0
     isdiscrete = tgt_discrete is not None
+
+    if useoutputmask is not None:
+        assert torch.any(useoutputmask).item(), 'useoutputmask is all false'
+        if iscontinuous:
+            pred_continuous = pred_continuous[useoutputmask.to(device=pred_continuous.device)]
+            tgt_continuous = tgt_continuous[useoutputmask]
+        if isdiscrete:
+            pred_discrete = pred_discrete[useoutputmask.to(device=pred_discrete.device)]
+            tgt_discrete = tgt_discrete[useoutputmask]
 
     if iscontinuous:
         n = np.prod(tgt_continuous.shape[:-1])
@@ -72,21 +85,32 @@ def dct_consistency(pred):
     return
 
 
-def prob_causal_criterion(tgt, pred):
+def prob_causal_criterion(tgt, pred, useoutputmask=None):
+    stateprob = pred['stateprob']
+    perstate = pred['perstate']
+    if useoutputmask is not None:
+        stateprob = stateprob[useoutputmask.to(device=stateprob.device)]
+        perstate = perstate[useoutputmask.to(device=perstate.device)]
+        tgt = tgt[useoutputmask.to(device=tgt.device)]
     d = tgt.shape[-1]
     err = torch.sum(
-        pred['stateprob'] * torch.sum(torch.abs(tgt[..., None] - pred['perstate']) / d, keepdim=False, axis=-2))
+        stateprob * torch.sum(torch.abs(tgt[..., None] - perstate) / d, keepdim=False, axis=-2))
     return err
 
 
-def min_causal_criterion(tgt, pred):
+def min_causal_criterion(tgt, pred, useoutputmask=None):
     d = tgt.shape[-1]
+    if useoutputmask is not None:
+        pred = pred[useoutputmask.to(device=pred.device)]
+        tgt = tgt[useoutputmask.to(device=tgt.device)]
     errperstate = torch.sum(torch.abs(tgt[..., None] - pred) / d, keepdim=False, dim=tuple(range(pred.ndim - 1)))
     err = torch.min(errperstate, dim=-1)
     return err
 
 
-def masked_criterion(tgt, pred, mask):
+def masked_criterion(tgt, pred, mask, useoutputmask=None):
+    if useoutputmask is not None:
+        mask = mask & useoutputmask.to(device=mask.device)
     d = tgt.shape[-1]
     err = torch.sum(torch.abs(tgt[mask, :] - pred[mask, :])) / d
     return err
@@ -123,7 +147,7 @@ def criterion_wrapper(example, pred, criterion, dataset, config):
         tgt_discrete = example['labels_discrete']
     else:
         tgt_discrete = None
-    tgt = {'labels': tgt_continuous, 'labels_discrete': tgt_discrete}
+    tgt = {'labels': tgt_continuous, 'labels_discrete': tgt_discrete, 'useoutputmask': example.get('useoutputmask', None)}
 
     if 'continuous' in pred:
         pred_continuous = pred['continuous']
@@ -154,7 +178,7 @@ def criterion_wrapper(example, pred, criterion, dataset, config):
                                                              weight_discrete=config['weight_discrete'], extraout=True)
         else:
             loss = criterion(tgt_continuous.to(device=pred.device), pred_continuous,
-                             example['mask'].to(pred.device))
+                             example['mask'].to(pred.device), useoutputmask=tgt['useoutputmask'])
             loss_continuous = loss
             loss_discrete = 0.
     else:
@@ -162,7 +186,7 @@ def criterion_wrapper(example, pred, criterion, dataset, config):
             loss, loss_discrete, loss_continuous = criterion(tgt, pred1, weight_discrete=config['weight_discrete'],
                                                              extraout=True)
         else:
-            loss = criterion(tgt_continuous.to(device=pred_continuous.device), pred_continuous)
+            loss = criterion(tgt_continuous.to(device=pred_continuous.device), pred_continuous, useoutputmask=tgt['useoutputmask'])
             loss_continuous = loss
             loss_discrete = 0.
     return loss, loss_discrete, loss_continuous
@@ -181,7 +205,7 @@ def mixed_criterion_wrapper(example, pred, criterion, dataset, config):
         tgt_discrete = example['labels_discrete']
     else:
         tgt_discrete = None
-    tgt = {'labels': tgt_continuous, 'labels_discrete': tgt_discrete}
+    tgt = {'labels': tgt_continuous, 'labels_discrete': tgt_discrete, 'useoutputmask': example.get('useoutputmask', None)}
 
     if 'continuous' in pred:
         pred_continuous = pred['continuous']
@@ -201,7 +225,7 @@ def mixed_criterion_wrapper(example, pred, criterion, dataset, config):
         loss, loss_discrete, loss_continuous = criterion(tgt, pred1, weight_discrete=config['weight_discrete'],
                                                          extraout=True)
     else:
-        loss = criterion(tgt_continuous.to(device=pred_continuous.device), pred_continuous)
+        loss = criterion(tgt_continuous.to(device=pred_continuous.device), pred_continuous, useoutputmask=tgt['useoutputmask'])
         loss_continuous = loss
         loss_discrete = 0.
     return loss, loss_discrete, loss_continuous

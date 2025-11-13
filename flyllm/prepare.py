@@ -313,7 +313,7 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
         res['train_data'] = {}
         res['train_dataset'], res['train_data']['flyids'], res['train_data']['track'], res['train_data']['pose'], \
             res['train_data']['velocity'], res['train_data']['sensory'], res['config']['dataset_params'], \
-            res['train_data']['isdata'], res['train_data']['isstart'] = \
+            res['train_data']['isdata'], res['train_data']['isstart'], res['train_data']['useoutputmask'] = \
             make_dataset(config,'intrainfile',return_all=True,debug=debug_uselessdata)
         res['dataset_params'] = res['config']['dataset_params']
         
@@ -328,7 +328,7 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
         res['val_data'] = {}
         res['val_dataset'], res['val_data']['flyids'], res['val_data']['track'], res['val_data']['pose'], \
             res['val_data']['velocity'], res['val_data']['sensory'], res['config']['dataset_params'], \
-            res['val_data']['isdata'], res['val_data']['isstart'] = \
+            res['val_data']['isdata'], res['val_data']['isstart'], res['val_data']['useoutputmask'] = \
             make_dataset(config,'invalfile',return_all=True,debug=debug_uselessdata)
         res['dataset_params'] = res['config']['dataset_params']
 
@@ -537,6 +537,8 @@ def init_flyllm(configfile=None,config=None,
     if (needvaldata is None):
         needvaldata = mode in ['train','test']
         
+    res['success'] = False
+        
     ## load config from configfile and/or loadmodelfile
     # sets res['config']
     # if loading from loadmodelfile, also sets res['config']['dataset_params']
@@ -599,4 +601,6 @@ def init_flyllm(configfile=None,config=None,
         except Exception as e:
             LOG.exception(f'Error in init_model: {e}\nAborting init_flyllm')
             return res
+        
+    res['success'] = True
     return res

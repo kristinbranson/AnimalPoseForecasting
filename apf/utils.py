@@ -8,6 +8,7 @@ import tqdm
 import torch
 import h5py
 import scipy.io
+import gc
 
 
 def modrange(x, l, u):
@@ -565,3 +566,118 @@ def recursive_dict_eval(d, fun: Callable, *args, **kwargs) -> dict | np.ndarray 
         return {k: recursive_dict_eval(v, fun, *args, **kwargs) for k, v in d.items()}
     else:
         return fun(d, *args, **kwargs)
+    
+    
+def torch_mem_report(model=None):
+    """
+    torch_mem_report(model)
+    Report GPU memory usage in the current global namespace, and trace back mystery tensors to their owners
+
+    Args:
+        model (torch.nn.Module): model whose parameters and buffers are not considered mystery tensors
+    """
+
+    def find_obj_name(target_obj, namespace=None, ignore=[]):
+        """Find variable name(s) that reference this object"""
+        if namespace is None:
+            namespace = globals()
+
+        names = []
+        for name, obj in namespace.items():
+            if name in ignore:
+                continue
+            if obj is target_obj:
+                names.append(name)
+        return names
+
+    def find_tensor_owners(target_tensor, max_depth=3, namespace={}, ignore=[]):
+        """Trace back from tensor to find what global variable owns it"""
+        visited = set()
+        namespace = globals()|namespace
+
+        def trace(obj, depth=0, path=""):
+            if depth > max_depth or id(obj) in visited:
+                return
+            visited.add(id(obj))
+
+            # Check if this object is a global variable
+            names = find_obj_name(obj,namespace,ignore=ignore)
+            if names:
+                print(f"  {path} -> global '{names[0]}'")
+                return True
+
+            # Recurse through referrers
+            for ref in gc.get_referrers(obj):
+                ref_type = type(ref).__name__
+                #print(f"{depth}, {path}: {ref_type})")
+                trace(ref, depth + 1, f"{path}/{ref_type}")
+
+        print(f"Tracing tensor {target_tensor.size()}:")
+        trace(target_tensor)
+        print(f"End of trace")
+
+    # Get model param IDs (even though it's on CPU now, just in case)
+    if model is None:
+        model_params = set()
+        model_buffers = set()
+    else:
+        model_params = set(id(p) for p in model.parameters())
+        model_buffers = set(id(b) for b in model.buffers())
+
+
+    # Find all variables on GPU
+    for name in list(globals().keys()):
+        obj = globals()[name]
+        try:
+            if torch.is_tensor(obj) and (obj.requires_grad or obj.is_cuda):
+                print(f"GPU tensor '{name}': {obj.size()}, {obj.device}, requires_grad={obj.requires_grad}")
+                # Optionally delete it:
+                # del globals()[name]
+            elif isinstance(obj, torch.nn.Module) and any(p.is_cuda for p in obj.parameters()):
+                print(f"Model '{name}' on GPU")
+            elif isinstance(obj, list) or isinstance(obj, tuple):
+                for i, item in enumerate(obj):
+                    if torch.is_tensor(item) and (item.requires_grad or item.is_cuda):
+                        print(f"GPU tensor '{name}[{i}]': {item.size()}, {item.device}, requires_grad={item.requires_grad}")
+                del item
+            elif isinstance(obj, dict):
+                for key in obj:
+                    item = obj[key]
+                    if torch.is_tensor(item) and (item.requires_grad or item.is_cuda):
+                        print(f"GPU tensor '{name}['{key}']': {item.size()}, {item.device}, requires_grad={item.requires_grad}")
+                del item
+        except:
+            pass
+        
+    count = 0
+    nmystery = 0
+    mystery_tensors = []
+    for obj in gc.get_objects():
+        try:
+            if torch.is_tensor(obj) and obj.is_cuda:            
+                count += 1
+                if id(obj) not in model_params and id(obj) not in model_buffers:
+                    nmystery += 1
+                    mystery_tensors.append(obj)
+
+        except:
+            pass
+    print(f"GPU tensors remaining: {count}, mystery: {nmystery}")
+    print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+
+    print(f"Found {len(mystery_tensors)} mystery GPU tensors")
+    print("\nLargest 20 by memory:")
+    sorted_tensors = sorted(mystery_tensors, key=lambda x: x.numel() * x.element_size(), reverse=True)
+    del mystery_tensors
+    total_mem = 0
+    for i, t in enumerate(sorted_tensors[:20]):
+        mem_mb = t.element_size() * t.numel() / 1e6
+        total_mem += mem_mb
+        print(f"{i+1}. shape: {t.size()}, dtype: {t.dtype}, {mem_mb:.1f} MB, grad: {t.requires_grad}")
+    i = 0
+    t = sorted_tensors[i]
+    del sorted_tensors
+    find_tensor_owners(t, max_depth=4, namespace=locals(), ignore=['t','sorted_tensors','mystery_tensors'])
+    del t
+
+    print(f"Total GPU memory: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
