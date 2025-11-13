@@ -454,12 +454,7 @@ def data_to_kp_from_metadata(data, metadata, ntimepoints):
     return datakp, id
 
 
-def debug_less_data(data, n_frames_per_video=None, max_n_videos=None):
-    
-    if n_frames_per_video is None:
-        n_frames_per_video = 10000
-    if max_n_videos is None:
-        max_n_videos = 1
+def debug_less_data(data, n_frames_per_video=10000, max_n_videos=1):
     
     frame_ids = [np.where(data['videoidx'] == idx)[0][:n_frames_per_video] for idx in np.unique(data['videoidx'])]
     frame_ids = np.concatenate(frame_ids[:max_n_videos])
@@ -500,7 +495,7 @@ def filter_video_ids(data, video_ids):
 """
 
 
-def load_raw_npz_data(infile: str, debug: bool = False, n_frames_per_video: int | None = None, max_n_videos: int | None = None, keep_video_ids=None) -> dict:
+def load_raw_npz_data(infile: str, debug: bool = False, n_frames_per_video: int | None = None, keep_video_ids=None, **kwargs) -> dict:
     """ Loads tracking data.
     Args
         infile: Datafile with .npz extension. Data is expected to have the following fields:
@@ -544,7 +539,7 @@ def load_raw_npz_data(infile: str, debug: bool = False, n_frames_per_video: int 
         filter_video_ids(data, keep_video_ids)
 
     if debug:
-        debug_less_data(data, n_frames_per_video=n_frames_per_video, max_n_videos=max_n_videos)
+        debug_less_data(data, **kwargs)
 
     return data
 
@@ -552,14 +547,15 @@ def load_raw_npz_data(infile: str, debug: bool = False, n_frames_per_video: int 
 def filter_data_by_categories(data, categories):
     iscategory = np.ones(data['y'].shape[1:], dtype=bool)
     for category in categories:
+        # search for == and split into category and value
+        val = 1
+        match = re.search(r'(\w+)==(\w+)', category)
+        if match is not None:
+            category = match.group(1).strip()
+            val = int(match.group(2).strip())
         if category == 'male':
             category = 'female'
-            val = 0
-        elif category == 'GoodTracking':
-            category = 'BadTracking'
-            val = 0
-        else:
-            val = 1
+            val = ~val
         catidx = data['categories'].index(category)
         iscategory = iscategory & (data['y'][catidx, ...] == val)
     data['isdata'] = data['isdata'] & iscategory
