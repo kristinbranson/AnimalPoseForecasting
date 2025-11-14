@@ -46,7 +46,6 @@ utils.set_mpl_backend('tkAgg')
 ISNOTEBOOK = utils.is_notebook()
 if ISNOTEBOOK:
     from IPython.display import HTML, display, clear_output
-    plt.ioff()
 else:
     plt.ion()
 
@@ -61,7 +60,7 @@ print('Timestamp: ' + timestamp)
 # ### Set parameters
 
 # %%
-configfile = 'configs/config_fly_llm_predvel_goodtracking_20251110.json'
+configfile = 'configs/config_fly_llm_predvel_optimalbinning_20251113.json'
 restartmodelfile = None
 outfigdir = 'figs'
 debug_uselessdata = False
@@ -122,6 +121,17 @@ last_val_loss = loss_epoch['val'][epoch].item()
 if np.isnan(last_val_loss):
     last_val_loss = None
 
+
+# %%
+# check flipping
+
+# print(train_data['track'].array.shape)
+# T = train_data['track'].array.shape[1]
+# t = 123
+# print(f'{t} -> {t+T//2}')
+# plt.plot(train_data['track'].array[:,t,0,:].T, train_data['track'].array[:,t,1,:].T,'r.-')
+# plt.plot(train_data['track'].array[:,t+T//2,0,:].T, train_data['track'].array[:,t+T//2,1,:].T,'b.-')
+# plt.axis('equal')
 
 # %% [markdown]
 # ### some helper functions for profiling memory usage

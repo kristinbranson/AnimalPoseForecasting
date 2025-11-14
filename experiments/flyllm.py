@@ -6,6 +6,7 @@
 import numpy as np
 import logging
 from dataclasses import dataclass, field
+import time
 
 from apf.io import load_and_filter_data
 from apf.dataset import (
@@ -19,7 +20,9 @@ from flyllm.features import (
     kp2feat, compute_sensory_wrapper, compute_scale_perfly, compute_noise_params, feat2kp
 )
 import tqdm
+import apf.utils as utils
 
+DOTIME = True
 LOG = logging.getLogger(__name__)
 
 @dataclass
@@ -139,11 +142,6 @@ def load_data(
     isdata = data['isdata'][..., valid]
     useoutputmask = data['useoutputmask'][..., valid]
 
-    n_kpts = len(keypointnames)
-    if n_kpts < Xkp.shape[0]:
-        LOG.warning(f"Removing last {Xkp.shape[0] - n_kpts} keypoints from the data")
-        Xkp = Xkp[:n_kpts]
-
     return Xkp, flyids, isstart, isdata, scale_perfly, useoutputmask
 
 
@@ -153,7 +151,7 @@ def make_dataset(
         ref_dataset: Dataset | None = None,
         return_all: bool = False,
         debug: bool = True,
-        indata: dict | None = None,
+        indata: dict | None = None
 ) -> Dataset | tuple[Dataset, np.ndarray, Data, Data, Data, Data]:
     """ Creates a dataset from config, for a given file name and optionally using a reference dataset.
 
@@ -178,7 +176,10 @@ def make_dataset(
         sensory: Sensory data
         ]
     """
+    
     # Load data
+    if DOTIME:
+        start_time = utils.tic()
     if indata is None:
         Xkp, flyids, isstart, isdata, scale_perfly, useoutputmask = load_data(config, config[filename], debug=debug)
     else:
@@ -188,24 +189,49 @@ def make_dataset(
         isdata = indata['isdata']
         useoutputmask = indata['useoutputmask']
         scale_perfly = indata['scale_perfly']
+    if DOTIME:
+        LOG.info(f"Data loading took {utils.toc(start_time):.2f} seconds")
 
     # Compute features
     LOG.info('Computing input and label features for dataset...')
+    if DOTIME:
+        start_time = utils.tic()
     track = Data('keypoints', Xkp.T, [])
+    if DOTIME:
+        LOG.info(f"Track creation took {utils.toc(start_time):.2f} seconds")
+
     LOG.info('Computing sensory features...')
+    if DOTIME:
+        start_time = utils.tic()
     sensory = Sensory()(track,isdata=isdata)
+    if DOTIME:
+        LOG.info(f"Sensory computation took {utils.toc(start_time):.2f} seconds")
+
     LOG.info('Computing pose features...')
-    pose = Pose()(track, scale_perfly=scale_perfly, flyid=flyids, isdata=isdata)
+    if DOTIME:
+        start_time = utils.tic()
+    pose = Pose()(track, scale_perfly=scale_perfly, flyid=flyids, isdata=isdata)    
     assert not np.any(np.isnan(sensory.array[isdata.T])) and np.all(np.isnan(sensory.array[~isdata.T])), "Sensory features should be nan iff isdata == False"
     assert not np.any(np.isnan(pose.array[isdata.T])) and np.all(np.isnan(pose.array[~isdata.T])), "Pose features should be nan iff isdata == False"
+    if DOTIME:
+        LOG.info(f"Pose computation took {utils.toc(start_time):.2f} seconds")
+    
     LOG.info('Computing velocity features...')
+    if DOTIME:
+        start_time = utils.tic()
     velocity = Velocity(featrelative=featrelative, featangle=featangle)(pose, isstart=isstart)
+    if DOTIME:
+        LOG.info(f"Velocity computation took {utils.toc(start_time):.2f} seconds")
 
     tspred_global = config['tspred_global']
     aux_tspred = [dt for dt in tspred_global if dt > 1]
     if len(aux_tspred) > 0:
         LOG.warning('!!!Auxiliary prediction is currently commented out!!!')
+        if DOTIME:
+            start_time = utils.tic()
         auxiliary = GlobalVelocity(tspred=aux_tspred)(pose, isstart=isstart)
+        if DOTIME:
+            LOG.info(f"Auxiliary computation took {utils.toc(start_time):.2f} seconds")
     else:
         auxiliary = None
 
@@ -224,18 +250,26 @@ def make_dataset(
 
     # Assemble the dataset
     if ref_dataset is not None:
+        if DOTIME:
+            start_time = utils.tic()
         dataset = Dataset(
             inputs=apply_opers_from_data(ref_dataset.inputs, {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
             labels=apply_opers_from_data(ref_dataset.labels, {'velocity': velocity}), #, 'auxiliary': auxiliary}),
             **args
         )
+        if DOTIME:
+            LOG.info(f"Applying ref_dataset operations took {utils.toc(start_time):.2f} seconds")
     elif 'dataset_params' in config and config['dataset_params'] is not None and \
         ('inputs' in config['dataset_params']) and ('labels' in config['dataset_params']):
+        if DOTIME:
+            start_time = utils.tic()
         dataset = Dataset(
             inputs=apply_opers_from_data_params(config['dataset_params']['inputs'], {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
             labels=apply_opers_from_data_params(config['dataset_params']['labels'], {'velocity': velocity}), #, 'auxiliary': auxiliary}),
             **args
         )
+        if DOTIME:
+            LOG.info(f"Applying dataset_params operations took {utils.toc(start_time):.2f} seconds")
     else:
         # velocity = OddRoot(5)(velocity)
 
@@ -245,7 +279,12 @@ def make_dataset(
     
 
         # Need to zscore before binning, otherwise bin_epsilon values need to be divided by zscore stds
+        if DOTIME:
+            start_time = utils.tic()
         zscored_velocity = Zscore()(velocity)
+        if DOTIME:
+            LOG.info(f"Zscoring velocity took {utils.toc(start_time):.2f} seconds")
+
         zsig = zscored_velocity.operations[-1].std
         bin_config = {'nbins': config['discretize_nbins'],
                       'bin_epsilon': config['discretize_epsilon'] / zsig[discreteidx]}
@@ -253,8 +292,10 @@ def make_dataset(
         if 'bin_edges_absolute' in config and config['bin_edges_absolute'] is not None and len(config['bin_edges_absolute']) > 0:
             # check that all discreteidx are present
             assert all(idx in config['bin_edges_absolute'] for idx in discreteidx), "Not all discreteidx are present in bin_edges_absolute"
-            bin_config['bin_edges'] = np.hstack((config['bin_edges_absolute'][featidx]/zsig[featidx] for featidx in discreteidx))
+            bin_config['bin_edges'] = np.vstack([config['bin_edges_absolute'][featidx]/zsig[featidx] for featidx in discreteidx]) # nfeat x nbins + 1
 
+        if DOTIME:
+            start_time = utils.tic()
         dataset = Dataset(
             inputs={
                 'velocity': Zscore()(Roll(dt=1)(velocity)),
@@ -268,6 +309,8 @@ def make_dataset(
             },
             **args
         )
+        if DOTIME:
+            LOG.info(f"Creating dataset with new operations took {utils.toc(start_time):.2f} seconds")
     dataset_params = dataset.get_params()
     if return_all:
         return dataset, flyids, track, pose, velocity, sensory, dataset_params, isdata, isstart, useoutputmask

@@ -8,6 +8,9 @@ import logging
 import tqdm
 
 from apf.data import flip_agents, filter_data_by_categories, load_raw_npz_data
+from apf.utils import tic, toc
+
+DOTIME = True
 
 LOG = logging.getLogger(__name__)
 
@@ -350,8 +353,12 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
                          debug=False, n_frames_per_video=None, max_n_videos=None):
     # load data
     LOG.info(f"loading raw data from {infile}...")
+    if DOTIME:
+        start_time = tic()
     data = load_raw_npz_data(infile,debug=debug, n_frames_per_video=n_frames_per_video, max_n_videos=max_n_videos)
     LOG.info(f"loaded data with X.shape {data['X'].shape}")
+    if DOTIME:
+        LOG.info(f"Loading raw data took {toc(start_time):.2f} seconds")
 
     scale_per_agent = None
 
@@ -361,9 +368,13 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
         if (config['all_discretize_epsilon'] is None):
             assert compute_noise_params is not None, \
                 "Need 'compute_noise_params' to compute 'all_discrete_epsilon'"
+            if DOTIME:
+                start_time = tic()
             scale_per_agent = compute_scale_all_agents(data, compute_scale_per_agent)
             config['all_discretize_epsilon'] = compute_noise_params(data, scale_per_agent,
                                                                     simplify_out=config['simplify_out'])
+            if DOTIME:
+                LOG.info(f"discrete_epsilon computation took {toc(start_time):.2f} seconds")
         config['discretize_epsilon'] = config['all_discretize_epsilon'][config['discreteidx']]
 
     # filter out data
@@ -371,12 +382,16 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
     if config['categories'] is not None and len(config['categories']) > 0:
         fn = 'isdata'
         LOG.info(f"filtering {fn} by categories {config['categories']}")
+        if DOTIME:
+            start_time = tic()
         nframespre = np.count_nonzero(data[fn])
         nidspre = len(np.unique(data['ids'][data[fn]]))
         filter_data_by_categories(data, config['categories'],fn)
         nframespost = np.count_nonzero(data[fn])
         nidspost = len(np.unique(data['ids'][data[fn]]))
         LOG.info(f"After filtering {fn} nids {nidspre} -> {nidspost}, n agent-frames {nframespre} -> {nframespost}")
+        if DOTIME:
+            LOG.info(f"filtering by categories took {toc(start_time):.2f} seconds")
         assert nidspost > 0, "No valid agents remain after filtering by categories"
         assert nframespost > 0, "No valid data remains after filtering by categories"
         
@@ -384,52 +399,25 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
     if ('output_categories' in config) and (config['output_categories'] is not None) and (len(config['output_categories']) > 0):
         fn = 'useoutputmask'
         LOG.info(f"filtering {fn} by categories {config['output_categories']}")
+        if DOTIME:
+            LOG.info(f"discrete_epsilon computation took {toc(start_time):.2f} seconds")
         nframespre = np.count_nonzero(data['isdata']&data[fn])
         nidspre = len(np.unique(data['ids'][data['isdata']&data[fn]]))
         filter_data_by_categories(data, config['output_categories'],fn)
         nframespost = np.count_nonzero(data['isdata']&data[fn])
         nidspost = len(np.unique(data['ids'][data['isdata']&data[fn]]))
         LOG.info(f"After filtering {fn} nids {nidspre} -> {nidspost}, n agent-frames {nframespre} -> {nframespost}")
+        if DOTIME:
+            LOG.info(f"filtering by output_categories took {toc(start_time):.2f} seconds")
         assert nidspost > 0, "No valid agents remain after filtering by categories"
         assert nframespost > 0, "No valid data remains after filtering by categories"
 
-    # augment by flipping
-    if 'augment_flip' in config and config['augment_flip']:
-        assert keypointnames is not None, "Need keypointnames to perform flip augmentation"
-        LOG.info('augmenting data by flipping...')
-        nframespre = np.count_nonzero(data['isdata']&data['useoutputmask'])
-        nidspre = len(np.unique(data['ids'][data['isdata']&data['useoutputmask']]))
-        flipvideoidx = np.max(data['videoidx']) + 1 + data['videoidx']
-        data['videoidx'] = np.concatenate((data['videoidx'], flipvideoidx), axis=0)
-        firstid = np.max(data['ids']) + 1
-        flipids = data['ids'].copy()
-        flipids[flipids >= 0] += firstid
-        data['ids'] = np.concatenate((data['ids'], flipids), axis=0)
-        data['frames'] = np.tile(data['frames'], (2, 1))
-        flipX = flip_agents(data['X'], keypointnames)
-        data['X'] = np.concatenate((data['X'], flipX), axis=2)
-        data['y'] = np.tile(data['y'], (1, 2, 1))
-        data['isdata'] = np.tile(data['isdata'], (2, 1))
-        data['isstart'] = np.tile(data['isstart'], (2, 1))
-        data['useoutputmask'] = np.tile(data['useoutputmask'], (2, 1))
-        nframespost = np.count_nonzero(data['isdata']&data['useoutputmask'])
-        nidspost = len(np.unique(data['ids'][data['isdata']&data['useoutputmask']]))
-        LOG.info(f"After flip augmentation nids {nidspre} -> {nidspost}, nframes {nframespre} -> {nframespost}")
-
-    # compute scale parameters
-    if compute_scale_per_agent is None:
-        return data, None
-
-    LOG.info('computing scale parameters...')
-    if scale_per_agent is None:
-        scale_per_agent = compute_scale_all_agents(data, compute_scale_per_agent)
-
-    # throw out data that is missing scale information - not so many frames
-    idsremove = np.nonzero(np.any(np.isnan(scale_per_agent), axis=0))[0]
-    data['isdata'][np.isin(data['ids'], idsremove)] = False
-    
     # condense, only keep videos that have data, makes feature computation faster later...
+    if DOTIME:
+        start_time = tic()
     hasdata = np.any(data['isdata'], axis=1)
+    maxvideoidx = np.max(data['videoidx'])
+    maxid = np.max(data['ids'])
     videoidx = np.unique(data['videoidx'][hasdata])
     keepidx = np.isin(data['videoidx'], videoidx)[:,0]
     LOG.info(f'Condensing data: frames reduced from {len(keepidx)} to {np.count_nonzero(keepidx)}')
@@ -443,5 +431,65 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
         data['isstart'] = data['isstart'][keepidx,:]
         data['isdata'] = data['isdata'][keepidx,:]    
         data['useoutputmask'] = data['useoutputmask'][keepidx,:]
+    if DOTIME:
+        LOG.info(f"data condensing took {toc(start_time):.2f} seconds")
 
+    # augment by flipping
+    if 'augment_flip' in config and config['augment_flip']:
+        assert keypointnames is not None, "Need keypointnames to perform flip augmentation"
+
+        # there are some extra keypoints added, remove them to match keypointnames
+        n_kpts = len(keypointnames)
+        if n_kpts < data['X'].shape[0]:
+            LOG.warning(f"Removing last {data['X'].shape[0] - n_kpts} keypoints from the data")
+            data['X'] = data['X'][:n_kpts]
+
+        LOG.info('augmenting data by flipping...')
+        if DOTIME:
+            start_time = tic()  
+        nframespre = np.count_nonzero(data['isdata']&data['useoutputmask'])
+        nidspre = len(np.unique(data['ids'][data['isdata']&data['useoutputmask']]))
+        T = data['videoidx'].shape[0]
+        data['videoidx'] = np.tile(data['videoidx'],(2,1))
+        data['videoidx'][T:] += maxvideoidx + 1
+        data['ids'] = np.tile(data['ids'],(2,1))
+        data['ids'][T:]+= maxid + 1
+        data['frames'] = np.tile(data['frames'],(2,1))
+        data['X'] = np.tile(data['X'],(1,1,2,1))
+        flip_agents(data['X'], keypointnames, inplace=True, t0=T)
+        data['y'] = np.tile(data['y'], (1, 2, 1))
+        data['isdata'] = np.tile(data['isdata'], (2, 1))
+        data['isstart'] = np.tile(data['isstart'], (2, 1))
+        data['useoutputmask'] = np.tile(data['useoutputmask'], (2, 1))
+        nframespost = np.count_nonzero(data['isdata']&data['useoutputmask'])
+        nidspost = len(np.unique(data['ids'][data['isdata']&data['useoutputmask']]))
+        LOG.info(f"After flip augmentation nids {nidspre} -> {nidspost}, nframes {nframespre} -> {nframespost}")
+        if DOTIME:
+            LOG.info(f"data augmentation took {toc(start_time):.2f} seconds")
+    tic()
+    np.repeat(data['X'],2,axis=3)
+    print(toc())
+    tic()
+    np.tile(data['X'], (1, 1, 2, 1))
+    print(toc())
+    tic()
+    flip_agents(data['X'], keypointnames)
+    toc()
+
+    # compute scale parameters
+    if compute_scale_per_agent is None:
+        return data, None
+
+    LOG.info('computing scale parameters...')
+    if scale_per_agent is None:
+        if DOTIME:
+            start_time = tic()
+        scale_per_agent = compute_scale_all_agents(data, compute_scale_per_agent)
+        if DOTIME:
+            LOG.info(f"scale computation took {toc(start_time):.2f} seconds")
+
+    # throw out data that is missing scale information - not so many frames
+    idsremove = np.nonzero(np.any(np.isnan(scale_per_agent), axis=0))[0]
+    data['isdata'][np.isin(data['ids'], idsremove)] = False
+    
     return data, scale_per_agent

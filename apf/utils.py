@@ -9,7 +9,7 @@ import torch
 import h5py
 import scipy.io
 import gc
-
+import time
 
 def modrange(x, l, u):
     return np.mod(x - l, u - l) + l
@@ -681,3 +681,16 @@ def torch_mem_report(model=None):
     del t
 
     print(f"Total GPU memory: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+    
+def tic():
+    """ Start a timer"""
+    global _tic_time
+    _tic_time = time.time()
+    return _tic_time
+
+def toc(start_time=None):
+    """ Stop a timer and return elapsed time since last tic() call"""
+    if start_time is None:
+        global _tic_time
+        start_time = _tic_time
+    return time.time() - start_time
