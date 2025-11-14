@@ -225,6 +225,9 @@ def read_config(jsonfile, default_configfile=None, get_sensory_feature_idx=None,
         
         if ('test_batch_size' not in config) and ('batch_size' in config):
             config['test_batch_size'] = config['batch_size']
+            
+        if 'bin_edges_absolute' in config:
+            config['bin_edges_absolute'] = {int(k): np.array(v) for k, v in config['bin_edges_absolute'].items()}
 
     return config
 
@@ -241,7 +244,7 @@ def overwrite_config(config0, config1, no_overwrite=()):
     return
 
 
-def get_modeltype_str(config, dataset):
+def get_modeltype_str(config):
     if config['modelstatetype'] is not None:
         modeltype_str = f"{config['modelstatetype']}_{config['modeltype']}"
     else:

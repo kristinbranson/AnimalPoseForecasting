@@ -10,7 +10,10 @@ import numpy as np
 from scipy.optimize import minimize
 import sys
 from scipy.optimize import minimize_scalar
+import logging
 
+logging.basicConfig(level=logging.INFO)
+LOG = logging.getLogger(__name__)
 
 def compute_boundary_edges(X,epsilon=1e-6):
     """
@@ -64,7 +67,7 @@ def initialize_edges_quantile(X, K, boundary_edges, edges_fixed=None):
     all_data = np.clip(all_data, boundary_edges[0], boundary_edges[1])
 
     # Compute K-1 interior edges using quantiles
-    print(f"Computing {K-1} interior edges using quantiles on {len(all_data)} points...")
+    LOG.info(f"Computing {K-1} interior edges using quantiles on {len(all_data)} points...")
     
     if edges_fixed is None or np.all(np.isnan(edges_fixed)):
     
@@ -111,7 +114,7 @@ def initialize_edges_uniform(K, boundary_edges, edges_fixed=None):
     edges : ndarray of shape (K+1,)
         Initial bin edges with uniform spacing
     """
-    print(f"Creating {K} bins with uniform widths...")
+    LOG.info(f"Creating {K} bins with uniform widths...")
     if edges_fixed is None or np.all(np.isnan(edges_fixed)):
         edges = np.linspace(boundary_edges[0], boundary_edges[1], K + 1)
     else:
@@ -160,7 +163,7 @@ def initialize_edges_kmeans(X, K, boundary_edges, edges_fixed=None):
     all_data = np.clip(all_data, boundary_edges[0], boundary_edges[1])
 
     # Run k-means with K-1 clusters (for K-1 interior edges)
-    print(f"Running k-means with {K-1} clusters on {len(all_data)} points...")
+    LOG.info(f"Running k-means with {K-1} clusters on {len(all_data)} points...")
     kmeans = KMeans(n_clusters=K-1, random_state=42, n_init=10)
     kmeans.fit(all_data.reshape(-1, 1))
 
@@ -361,7 +364,7 @@ def compute_log_likelihood(X, edges, prob_matrix):
     return log_likelihood
 
 
-def _initialize_edges(X, K, boundary_edges, initial_edges, init_method, verbose, edges_fixed=None):
+def _initialize_edges(X, K, boundary_edges, initial_edges, init_method, edges_fixed=None):
     """
     Helper function to initialize edges.
 
@@ -371,16 +374,10 @@ def _initialize_edges(X, K, boundary_edges, initial_edges, init_method, verbose,
         Initialization method: 'uniform', 'quantile', or 'kmeans'
     """
     if initial_edges is not None:
-        if verbose:
-            print("="*60)
-            print("Using provided initial edges...")
-            print("="*60)
+        LOG.info("Using provided initial edges...")
         return initial_edges.copy()
     else:
-        if verbose:
-            print("="*60)
-            print(f"Initializing edges with {init_method}...")
-            print("="*60)
+        LOG.info(f"Initializing edges with {init_method}...")
 
         if init_method == 'uniform':
             return initialize_edges_uniform(K, boundary_edges, edges_fixed)
@@ -392,37 +389,32 @@ def _initialize_edges(X, K, boundary_edges, initial_edges, init_method, verbose,
             raise ValueError(f"Unknown init_method: {init_method}. Choose 'uniform', 'quantile', or 'kmeans'")
 
 
-def _compute_and_report_initial(X, edges, K, verbose):
+def _compute_and_report_initial(X, edges, K):
     """Helper function to compute and report initial likelihood."""
     binned_sequences = assign_bins(X, edges)
     counts, prob_matrix = compute_transition_matrix(binned_sequences, K)
     initial_log_lik = compute_log_likelihood(X, edges, prob_matrix)
-    if verbose:
-        print(f"Initial log-likelihood: {initial_log_lik:.6f}\n")
+    LOG.info(f"Initial log-likelihood: {initial_log_lik:.6f}\n")
     return initial_log_lik, binned_sequences, counts, prob_matrix
 
 
-def _finalize_and_report(X, edges, K, initial_log_lik, iteration_info, verbose):
+def _finalize_and_report(X, edges, K, initial_log_lik, iteration_info):
     """Helper function to finalize and report results."""
     binned_sequences = assign_bins(X, edges)
     counts, prob_matrix = compute_transition_matrix(binned_sequences, K)
     final_log_lik = compute_log_likelihood(X, edges, prob_matrix)
 
-    if verbose:
-        print(f"\n{'='*60}")
-        print("Optimization complete!")
-        print(f"{'='*60}")
-        print(f"Initial log-likelihood: {initial_log_lik:.6f}")
-        print(f"Final log-likelihood:   {final_log_lik:.6f}")
-        print(f"Improvement:            {final_log_lik - initial_log_lik:.6f}")
-        for key, value in iteration_info.items():
-            print(f"{key}: {value}")
-        print(f"{'='*60}\n")
+    LOG.info("Optimization complete!")
+    LOG.info(f"Initial log-likelihood: {initial_log_lik:.6f}")
+    LOG.info(f"Final log-likelihood:   {final_log_lik:.6f}")
+    LOG.info(f"Improvement:            {final_log_lik - initial_log_lik:.6f}")
+    for key, value in iteration_info.items():
+        LOG.info(f"{key}: {value}")
 
     return edges, prob_matrix, final_log_lik
 
 
-def _optimize_lbfgsb_iteration(X, K, boundary_edges, initial_edges, max_iter, verbose, min_width):
+def _optimize_lbfgsb_iteration(X, K, boundary_edges, initial_edges, max_iter, min_width):
     """
     Run L-BFGS-B optimization iteration.
 
@@ -461,17 +453,14 @@ def _optimize_lbfgsb_iteration(X, K, boundary_edges, initial_edges, max_iter, ve
         counts, prob_matrix = compute_transition_matrix(binned_sequences, K)
         log_lik = compute_log_likelihood(X, edges, prob_matrix)
 
-        if verbose and iteration_count[0] % 10 == 0:
-            print(f"  Iteration {iteration_count[0]:4d}: log-likelihood = {log_lik:.6f}")
+        if iteration_count[0] % 10 == 0:
+            LOG.info(f"  Iteration {iteration_count[0]:4d}: log-likelihood = {log_lik:.6f}")
 
         return -log_lik
 
     bounds = [(min_width, total_width - (K-1)*min_width) for _ in range(K - 1)]
 
-    if verbose:
-        print("="*60)
-        print("Running L-BFGS-B optimization...")
-        print("="*60)
+    LOG.info("Running L-BFGS-B optimization...")
 
     result = minimize(
         objective,
@@ -613,7 +602,7 @@ def _update_bins_and_counts_for_edge_k(X, current_bins, current_counts, current_
     return new_bins, new_counts
 
 
-def _optimize_coordinate_descent_iteration(X, K, boundary_edges, initial_edges, max_iter, verbose, min_width, tol=1e-6, edges_fixed=None):
+def _optimize_coordinate_descent_iteration(X, K, boundary_edges, initial_edges, max_iter, min_width, tol=1e-6, edges_fixed=None):
     """
     Run coordinate descent optimization iteration with incremental updates.
 
@@ -632,10 +621,7 @@ def _optimize_coordinate_descent_iteration(X, K, boundary_edges, initial_edges, 
     widths = np.diff(current_edges)
     current_log_lik = _compute_log_likelihood_from_counts(counts, widths, K)
 
-    if verbose:
-        print("="*60)
-        print("Running Coordinate Descent optimization (with incremental updates)...")
-        print("="*60)
+    LOG.info("Running Coordinate Descent optimization (with incremental updates)...")
 
     iteration_count = 0
     if edges_fixed is None:
@@ -646,9 +632,28 @@ def _optimize_coordinate_descent_iteration(X, K, boundary_edges, initial_edges, 
     for outer_iter in range(max_iter):
         prev_log_lik = current_log_lik
 
-        # Cycle through each interior edge in random order
-        np.random.shuffle(edge_indices)
-        for k in edge_indices:
+        # Adaptive edge ordering based on data density
+        priorities = np.zeros(len(edge_indices))
+
+        if outer_iter == 0:
+            # First iteration: compute from raw data
+            for idx, k in enumerate(edge_indices):
+                lower = current_edges[k-1]
+                upper = current_edges[k+1]
+                count = sum(((seq >= lower) & (seq <= upper)).sum() for seq in X)
+                priorities[idx] = count
+        else:
+            # Subsequent iterations: use counts matrix (much faster)
+            for idx, k in enumerate(edge_indices):
+                # Bins k-1 and k are adjacent to edge k
+                # Sum of transitions from these bins estimates data density
+                priorities[idx] = counts[k-1, :].sum() + counts[k, :].sum()
+
+        # Optimize edges in order of priority (highest first)
+        sorted_indices = np.argsort(-priorities)
+        ordered_edge_indices = edge_indices[sorted_indices]
+
+        for k in ordered_edge_indices:
             # Define bounds for this edge
             lower_bound = current_edges[k-1] + min_width
             upper_bound = current_edges[k+1] - min_width
@@ -694,6 +699,7 @@ def _optimize_coordinate_descent_iteration(X, K, boundary_edges, initial_edges, 
                 new_edges[k] = new_edge_pos
                 new_widths = np.diff(new_edges)
                 new_log_lik = _compute_log_likelihood_from_counts(new_counts, new_widths, K)
+                assert not np.isnan(new_log_lik), "New log-likelihood is NaN. Check data and edges."
 
                 if new_log_lik > current_log_lik:
                     current_edges = new_edges
@@ -707,13 +713,12 @@ def _optimize_coordinate_descent_iteration(X, K, boundary_edges, initial_edges, 
         # Check convergence
         improvement = current_log_lik - prev_log_lik
 
-        if verbose and (outer_iter + 1) % 1 == 0:
-            print(f"  Pass {outer_iter+1:4d}: log-likelihood = {current_log_lik:.6f}, improvement = {improvement:.6f}")
-            print(f"    Edges: " + ", ".join(f"{edge:.6f}" for edge in current_edges))
+        if (outer_iter + 1) % 1 == 0:
+            LOG.info(f"  Pass {outer_iter+1:4d}: log-likelihood = {current_log_lik:.6f}, improvement = {improvement:.6f}")
+            LOG.info(f"    Edges: " + ", ".join(f"{edge:.6f}" for edge in current_edges))
 
         if improvement < tol:
-            if verbose:
-                print(f"  Converged (improvement < {tol})")
+            LOG.info(f"  Converged (improvement < {tol})")
             break
 
     iteration_info = {
@@ -723,9 +728,9 @@ def _optimize_coordinate_descent_iteration(X, K, boundary_edges, initial_edges, 
     return current_edges, iteration_info
 
 
-def optimize_bin_edges(X, K, boundary_edges, max_iter=100, verbose=True, min_width=1e-6,
+def optimize_bin_edges(X, K, boundary_edges, max_iter=100, min_width=1e-6,
                        initial_edges=None, init_method='uniform', method='coordinate_descent', tol=1e-6,
-                       edges_fixed=None):
+                       edges_fixed=None, offset_epsilon=1e-6):
     """
     Optimize bin edges to maximize likelihood of Markovian time series.
 
@@ -741,8 +746,6 @@ def optimize_bin_edges(X, K, boundary_edges, max_iter=100, verbose=True, min_wid
         Fixed first and last bin edges
     max_iter : int
         Maximum optimization iterations
-    verbose : bool
-        Print progress information
     min_width : float
         Minimum allowed bin width
     initial_edges : ndarray, optional
@@ -766,66 +769,85 @@ def optimize_bin_edges(X, K, boundary_edges, max_iter=100, verbose=True, min_wid
     log_likelihood : float
         Final log-likelihood
     """
+    
+    # offset by a tiny amount so that everything is in bounds
+    if offset_epsilon > 0:
+        d = boundary_edges[1] - boundary_edges[0]
+        boundary_edges = (boundary_edges[0] - d*offset_epsilon,boundary_edges[1] + d*offset_epsilon)
+    
     # Initialize edges
-    edges = _initialize_edges(X, K, boundary_edges, initial_edges, init_method, verbose, edges_fixed)
+    edges = _initialize_edges(X, K, boundary_edges, initial_edges, init_method, edges_fixed)
+    assert np.all(np.diff(edges) > 0), "Initial edges must be strictly increasing"
 
     # Compute and report initial likelihood
-    initial_log_lik, _, _, _ = _compute_and_report_initial(X, edges, K, verbose)
+    initial_log_lik, _, _, _ = _compute_and_report_initial(X, edges, K)
+    assert not np.isnan(initial_log_lik), "Initial log-likelihood is NaN. Check data and initial edges."
 
     # Run optimization iteration
     if method == 'lbfgsb':
         final_edges, iteration_info = _optimize_lbfgsb_iteration(
-            X, K, boundary_edges, edges, max_iter, verbose, min_width
+            X, K, boundary_edges, edges, max_iter, min_width
         )
     elif method == 'coordinate_descent':
         final_edges, iteration_info = _optimize_coordinate_descent_iteration(
-            X, K, boundary_edges, edges, max_iter, verbose, min_width, tol, edges_fixed
+            X, K, boundary_edges, edges, max_iter, min_width, tol, edges_fixed
         )
     else:
         raise ValueError(f"Unknown method: {method}. Choose 'lbfgsb' or 'coordinate_descent'")
 
     # Finalize and report
-    return _finalize_and_report(X, final_edges, K, initial_log_lik, iteration_info, verbose)
+    return _finalize_and_report(X, final_edges, K, initial_log_lik, iteration_info)
 
-
-def load_and_split_sequences(filepath, feature_idx=2):
+def load_debug_data(filepath,feature_idx=2):
     """
-    Load zscored_velocity data and split into sequences based on NaNs.
+    Load zscored_velocity data
+
+    Args:
+        filepath (str): Path to the .npz file
+        feature_idx (int, optional): Index of the feature to extract. Defaults to 2.
+
+    Returns:
+        feature_data: ndarray: Extracted feature data of shape (nflies, T)
+        useoutputmask: ndarray: Corresponding useoutputmask of shape (nflies, T)
+    """
+    # Load data
+    LOG.info(f"Loading data from {filepath}...")
+    data = np.load(filepath)
+
+    LOG.info(f"Extracting feature index {feature_idx}")
+    feature_data = data['zscored_velocity'][:,:,feature_idx]  # (nflies, T, nfeatures)
+    useoutputmask = data['useoutputmask'].T  # (nflies,T)
+
+    LOG.info(f"Data shape: {feature_data.shape}")
+    LOG.info(f"  nflies={feature_data.shape[0]}")
+    LOG.info(f"  T={feature_data.shape[1]}")
+
+    return feature_data, useoutputmask    
+
+def split_sequences(feature_data):
+    """
+    Split data into sequences based on NaNs.
 
     Parameters:
     -----------
-    filepath : str
-        Path to .npz file
-    feature_idx : int
-        Which feature to extract (0-indexed)
+    feature_data : ndarray of shape (nflies, T) 
+        Input feature data with NaNs indicating missing data
 
     Returns:
     --------
     sequences : list of ndarrays
         List of continuous (non-NaN) sequences
     """
-    # Load data
-    print(f"Loading data from {filepath}...")
-    data = np.load(filepath)
 
-    print(f"\nExtracting feature index {feature_idx}")
-    feature_data = data['zscored_velocity'][:,:,feature_idx]  # (nflies, T, nfeatures)
-    useoutputmask = data['useoutputmask'].T  # (nflies,T)
-    print(f"Data shape: {feature_data.shape}")
-    print(f"  nflies={feature_data.shape[0]}")
-    print(f"  T={feature_data.shape[1]}")
-
-    # Count NaNs
-    nan_mask = np.isnan(feature_data) | ~useoutputmask
-    nan_count = nan_mask.sum()
+    nan_count = np.count_nonzero(np.isnan(feature_data))
     total_count = feature_data.size
-    print(f"NaN count: {nan_count} / {total_count} ({100*nan_count/total_count:.2f}%)")
+    LOG.info(f"NaN count: {nan_count} / {total_count} ({100*nan_count/total_count:.2f}%)")
 
     # Split into sequences for each fly
     sequences = []
     total_timepoints = 0
 
-    print("\nSplitting into sequences based on NaNs...")
+    LOG.info("Splitting into sequences based on NaNs...")
     for fly_idx in range(feature_data.shape[0]):
         fly_data = feature_data[fly_idx, :]
 
@@ -844,16 +866,16 @@ def load_and_split_sequences(filepath, feature_idx=2):
                 sequences.append(seq)
                 total_timepoints += len(seq)
 
-    print(f"Found {len(sequences)} sequences")
-    print(f"Total timepoints: {total_timepoints}")
-    print(f"Sequence lengths - min: {min(len(s) for s in sequences)}, "
+    LOG.info(f"Found {len(sequences)} sequences")
+    LOG.info(f"Total timepoints: {total_timepoints}")
+    LOG.info(f"Sequence lengths - min: {min(len(s) for s in sequences)}, "
           f"max: {max(len(s) for s in sequences)}, "
-          f"mean: {np.mean([len(s) for s in sequences]):.1f}")
+          f"mean: {np.mean([len(s) for s in sequences]):.1f}\n")
 
     return sequences
 
 
-def subsample_sequences(sequences, target_timepoints=1_000_000, seed=42):
+def subsample_sequences(sequences, nsamples=1_000_000, seed=42):
     """
     Subsample sequences to reach approximately target total timepoints.
 
@@ -864,7 +886,7 @@ def subsample_sequences(sequences, target_timepoints=1_000_000, seed=42):
     -----------
     sequences : list of ndarrays
         List of sequences to subsample from
-    target_timepoints : int or None
+    nsamples : int or None
         Target total number of timepoints (default: 1M)
         If None, returns all sequences without subsampling
     seed : int
@@ -876,14 +898,11 @@ def subsample_sequences(sequences, target_timepoints=1_000_000, seed=42):
         Selected sequences
     """
     # If no target specified, return all sequences
-    if target_timepoints is None:
+    if nsamples is None:
         total_available = sum(len(s) for s in sequences)
-        print(f"\n{'='*70}")
-        print("No subsampling (target_timepoints=None)")
-        print(f"{'='*70}")
-        print(f"Using all {len(sequences)} sequences")
-        print(f"Total timepoints: {total_available:,}")
-        print(f"{'='*70}\n")
+        LOG.info("No subsampling (nsamples=None)")
+        LOG.info(f"Using all {len(sequences)} sequences")
+        LOG.info(f"Total timepoints: {total_available:,}")
         return sequences
 
     np.random.seed(seed)
@@ -891,14 +910,12 @@ def subsample_sequences(sequences, target_timepoints=1_000_000, seed=42):
     # Calculate total available timepoints
     total_available = sum(len(s) for s in sequences)
 
-    print(f"\n{'='*70}")
-    print("Subsampling sequences...")
-    print(f"{'='*70}")
-    print(f"Total available timepoints: {total_available:,}")
-    print(f"Target timepoints: {target_timepoints:,}")
+    LOG.info("Subsampling sequences...")
+    LOG.info(f"Total available timepoints: {total_available:,}")
+    LOG.info(f"Target timepoints: {nsamples:,}")
 
-    if total_available <= target_timepoints:
-        print(f"Using all {len(sequences)} sequences (no subsampling needed)")
+    if total_available <= nsamples:
+        LOG.info(f"Using all {len(sequences)} sequences (no subsampling needed)")
         return sequences
 
     # Shuffle sequences
@@ -913,15 +930,14 @@ def subsample_sequences(sequences, target_timepoints=1_000_000, seed=42):
         selected_sequences.append(seq)
         cumulative_timepoints += len(seq)
 
-        if cumulative_timepoints >= target_timepoints:
+        if cumulative_timepoints >= nsamples:
             break
 
-    print(f"Selected {len(selected_sequences)} sequences")
-    print(f"Total timepoints: {cumulative_timepoints:,}")
-    print(f"Sequence lengths - min: {min(len(s) for s in selected_sequences)}, "
+    LOG.info(f"Selected {len(selected_sequences)} sequences")
+    LOG.info(f"Total timepoints: {cumulative_timepoints:,}")
+    LOG.info(f"Sequence lengths - min: {min(len(s) for s in selected_sequences)}, "
           f"max: {max(len(s) for s in selected_sequences)}, "
           f"mean: {np.mean([len(s) for s in selected_sequences]):.1f}")
-    print(f"{'='*70}\n")
 
     return selected_sequences
 
@@ -972,13 +988,11 @@ def generate_synthetic_data(n_sequences=10, seq_length=1000, K=20,
     true_edges[0] = data_range[0]
     true_edges[1:] = data_range[0] + np.cumsum(widths)
 
-    print("="*70)
-    print("GROUND TRUTH")
-    print("="*70)
-    print(f"True bin edges:")
+    LOG.info("GROUND TRUTH")
+    LOG.info(f"True bin edges:")
     for i in range(0, len(true_edges), 10):
-        print("  " + ", ".join(f"{edge:.6f}" for edge in true_edges[i:i+10]))
-    print(f"\nTrue bin widths - min: {widths.min():.6f}, max: {widths.max():.6f}, mean: {widths.mean():.6f}")
+        LOG.info("  " + ", ".join(f"{edge:.6f}" for edge in true_edges[i:i+10]))
+    LOG.info(f"True bin widths - min: {widths.min():.6f}, max: {widths.max():.6f}, mean: {widths.mean():.6f}")
 
     # Generate random transition probability matrix
     true_prob_matrix = np.random.rand(K, K)
@@ -995,9 +1009,8 @@ def generate_synthetic_data(n_sequences=10, seq_length=1000, K=20,
         else:
             true_prob_matrix[i, :] = true_prob_matrix[i, :] / true_prob_matrix[i, :].sum()
 
-    print(f"\nTrue transition matrix sparsity: {(true_prob_matrix > 0).sum() / true_prob_matrix.size:.2f}% non-zero")
-    print("="*70 + "\n")
-
+    LOG.info(f"True transition matrix sparsity: {(true_prob_matrix > 0).sum() / true_prob_matrix.size:.2f}% non-zero")
+    
     # Generate sequences
     def generate_sequence(n):
         seq = np.zeros(n)
@@ -1015,9 +1028,9 @@ def generate_synthetic_data(n_sequences=10, seq_length=1000, K=20,
 
     sequences = [generate_sequence(seq_length) for _ in range(n_sequences)]
 
-    print(f"Generated {len(sequences)} sequences")
-    print(f"Total timepoints: {sum(len(s) for s in sequences)}")
-    print(f"Sequence lengths - min: {min(len(s) for s in sequences)}, "
+    LOG.info(f"Generated {len(sequences)} sequences")
+    LOG.info(f"Total timepoints: {sum(len(s) for s in sequences)}")
+    LOG.info(f"Sequence lengths - min: {min(len(s) for s in sequences)}, "
           f"max: {max(len(s) for s in sequences)}, "
           f"mean: {np.mean([len(s) for s in sequences]):.1f}\n")
 
@@ -1029,9 +1042,7 @@ def test_incremental_updates(sequences=None, K=10):
     Sanity check: verify incremental updates match full recomputation.
     Also verify vectorized versions match original loop-based versions.
     """
-    print("\n" + "="*70)
-    print("SANITY CHECK: Testing incremental vs full computation")
-    print("="*70)
+    LOG.info("SANITY CHECK: Testing incremental vs full computation")
 
     # Generate small test data
     if sequences is None:
@@ -1047,49 +1058,49 @@ def test_incremental_updates(sequences=None, K=10):
     current_bins = assign_bins(sequences, edges)
 
     # Test 1: compare compute_transition_matrix versions
-    print("\n[Test 1] Comparing compute_transition_matrix versions...")
+    LOG.info("[Test 1] Comparing compute_transition_matrix versions...")
     counts_old, prob_old = compute_transition_matrix0(current_bins, K)
     counts_new, prob_new = compute_transition_matrix(current_bins, K)
     counts_match = np.allclose(counts_old, counts_new)
     prob_match = np.allclose(prob_old, prob_new)
-    print(f"  Counts match: {counts_match}")
-    print(f"  Probabilities match: {prob_match}")
+    LOG.info(f"  Counts match: {counts_match}")
+    LOG.info(f"  Probabilities match: {prob_match}")
     if not (counts_match and prob_match):
-        print("  ✗ FAILED!")
+        LOG.info("  ✗ FAILED!")
         return False
 
     counts = counts_new
 
     # Test 2: compare compute_log_likelihood versions
-    print("\n[Test 2] Comparing compute_log_likelihood versions...")
+    LOG.info("[Test 2] Comparing compute_log_likelihood versions...")
     lik_old = compute_log_likelihood0(sequences, edges, prob_new)
     lik_new = compute_log_likelihood(sequences, edges, prob_new)
     lik_match = np.isclose(lik_old, lik_new)
-    print(f"  Log-likelihood (old): {lik_old:.6f}")
-    print(f"  Log-likelihood (new): {lik_new:.6f}")
-    print(f"  Match: {lik_match}")
+    LOG.info(f"  Log-likelihood (old): {lik_old:.6f}")
+    LOG.info(f"  Log-likelihood (new): {lik_new:.6f}")
+    LOG.info(f"  Match: {lik_match}")
     if not lik_match:
-        print("  ✗ FAILED!")
+        LOG.info("  ✗ FAILED!")
         return False
 
     # Test 3: compare _compute_log_likelihood_from_counts versions
-    print("\n[Test 3] Comparing _compute_log_likelihood_from_counts versions...")
+    LOG.info("[Test 3] Comparing _compute_log_likelihood_from_counts versions...")
     widths = np.diff(edges)
     lik_from_counts_old = _compute_log_likelihood_from_counts0(counts, widths, K)
     lik_from_counts_new = _compute_log_likelihood_from_counts(counts, widths, K)
     lik_from_counts_match = np.isclose(lik_from_counts_old, lik_from_counts_new)
-    print(f"  Log-likelihood from counts (old): {lik_from_counts_old:.6f}")
-    print(f"  Log-likelihood from counts (new): {lik_from_counts_new:.6f}")
-    print(f"  Match: {lik_from_counts_match}")
+    LOG.info(f"  Log-likelihood from counts (old): {lik_from_counts_old:.6f}")
+    LOG.info(f"  Log-likelihood from counts (new): {lik_from_counts_new:.6f}")
+    LOG.info(f"  Match: {lik_from_counts_match}")
     if not lik_from_counts_match:
-        print("  ✗ FAILED!")
+        LOG.info("  ✗ FAILED!")
         return False
 
     # Test 4: incremental updates for edge k
     k = 5
     new_edge_k = edges[k] + 0.5
 
-    print(f"\n[Test 4] Testing edge {k} move from {edges[k]:.3f} to {new_edge_k:.3f}")
+    LOG.info(f"[Test 4] Testing edge {k} move from {edges[k]:.3f} to {new_edge_k:.3f}")
 
     # Method 1: Incremental update
     new_bins_incr, new_counts_incr = _update_bins_and_counts_for_edge_k(
@@ -1104,29 +1115,28 @@ def test_incremental_updates(sequences=None, K=10):
 
     # Compare bins
     bins_match = all(np.array_equal(b1, b2) for b1, b2 in zip(new_bins_incr, new_bins_full))
-    print(f"  Bins match: {bins_match}")
+    LOG.info(f"  Bins match: {bins_match}")
 
     # Compare counts
     counts_match = np.allclose(new_counts_incr, new_counts_full)
-    print(f"  Counts match: {counts_match}")
-    print(f"  Max count difference: {np.abs(new_counts_incr - new_counts_full).max()}")
+    LOG.info(f"  Counts match: {counts_match}")
+    LOG.info(f"  Max count difference: {np.abs(new_counts_incr - new_counts_full).max()}")
 
     # Compare likelihoods
     widths_incr = np.diff(edges_full)
     lik_incr = _compute_log_likelihood_from_counts(new_counts_incr, widths_incr, K)
     lik_full = _compute_log_likelihood_from_counts(new_counts_full, widths_incr, K)
 
-    print(f"  Likelihood (incremental): {lik_incr:.6f}")
-    print(f"  Likelihood (full):        {lik_full:.6f}")
-    print(f"  Difference:               {abs(lik_incr - lik_full):.2e}")
+    LOG.info(f"  Likelihood (incremental): {lik_incr:.6f}")
+    LOG.info(f"  Likelihood (full):        {lik_full:.6f}")
+    LOG.info(f"  Difference:               {abs(lik_incr - lik_full):.2e}")
 
     if bins_match and counts_match and abs(lik_incr - lik_full) < 1e-10:
-        print("\n✓ ALL SANITY CHECKS PASSED!")
+        LOG.info("✓ ALL SANITY CHECKS PASSED!")
     else:
-        print("\n✗ SANITY CHECK FAILED!")
+        LOG.info("✗ SANITY CHECK FAILED!")
         return False
 
-    print("="*70 + "\n")
     return True
 
 def _synthetic_comparison_report(sequences,true_edges,true_prob_matrix,
@@ -1134,191 +1144,216 @@ def _synthetic_comparison_report(sequences,true_edges,true_prob_matrix,
                                  edges_true_init, prob_matrix_true_init, log_lik_true_init):
 
     # Compare with ground truth if synthetic
-    print("\n" + "="*70)
-    print("COMPARISON WITH GROUND TRUTH")
-    print("="*70)
+    LOG.info("COMPARISON WITH GROUND TRUTH")
 
     # Compute likelihood under true model
     true_log_lik = compute_log_likelihood(sequences, true_edges, true_prob_matrix)
 
-    print(f"\nLog-likelihood comparison:")
-    print(f"  True model:              {true_log_lik:.6f}")
-    print(f"  Fitted (uniform init):  {log_lik:.6f}")
-    print(f"  Difference:              {log_lik - true_log_lik:.6f}")
+    LOG.info(f"Log-likelihood comparison:")
+    LOG.info(f"  True model:              {true_log_lik:.6f}")
+    LOG.info(f"  Fitted (uniform init):  {log_lik:.6f}")
+    LOG.info(f"  Difference:              {log_lik - true_log_lik:.6f}")
     if log_lik > true_log_lik:
-        print(f"  (Fitted model has HIGHER likelihood)")
+        LOG.info(f"  (Fitted model has HIGHER likelihood)")
     else:
-        print(f"  (Fitted model has LOWER likelihood)")
+        LOG.info(f"  (Fitted model has LOWER likelihood)")
 
-    print(f"\n  Fitted (true init):      {log_lik_true_init:.6f}")
-    print(f"  Difference:              {log_lik_true_init - true_log_lik:.6f}")
+    LOG.info(f"  Fitted (true init):      {log_lik_true_init:.6f}")
+    LOG.info(f"  Difference:              {log_lik_true_init - true_log_lik:.6f}")
     if log_lik_true_init > true_log_lik:
-        print(f"  (Fitted model has HIGHER likelihood)")
+        LOG.info(f"  (Fitted model has HIGHER likelihood)")
     else:
-        print(f"  (Fitted model has LOWER likelihood)")
+        LOG.info(f"  (Fitted model has LOWER likelihood)")
 
     # Edge comparison for quantile init
     edge_error = np.abs(edges - true_edges)
-    print(f"\nEdge errors (quantile init):")
-    print(f"  Mean: {edge_error.mean():.6f}")
-    print(f"  Max: {edge_error.max():.6f}")
-    print(f"  RMS: {np.sqrt((edge_error**2).mean()):.6f}")
+    LOG.info(f"Edge errors (quantile init):")
+    LOG.info(f"  Mean: {edge_error.mean():.6f}")
+    LOG.info(f"  Max: {edge_error.max():.6f}")
+    LOG.info(f"  RMS: {np.sqrt((edge_error**2).mean()):.6f}")
 
     # Edge comparison for true init
     edge_error_true = np.abs(edges_true_init - true_edges)
-    print(f"\nEdge errors (true init):")
-    print(f"  Mean: {edge_error_true.mean():.6f}")
-    print(f"  Max: {edge_error_true.max():.6f}")
-    print(f"  RMS: {np.sqrt((edge_error_true**2).mean()):.6f}")
+    LOG.info(f"Edge errors (true init):")
+    LOG.info(f"  Mean: {edge_error_true.mean():.6f}")
+    LOG.info(f"  Max: {edge_error_true.max():.6f}")
+    LOG.info(f"  RMS: {np.sqrt((edge_error_true**2).mean()):.6f}")
 
     # Transition matrix comparison for quantile init
     prob_error = np.abs(prob_matrix - true_prob_matrix)
-    print(f"\nTransition matrix errors (quantile init):")
-    print(f"  Mean: {prob_error.mean():.6f}")
-    print(f"  Max: {prob_error.max():.6f}")
-    print(f"  RMS: {np.sqrt((prob_error**2).mean()):.6f}")
+    LOG.info(f"Transition matrix errors (quantile init):")
+    LOG.info(f"  Mean: {prob_error.mean():.6f}")
+    LOG.info(f"  Max: {prob_error.max():.6f}")
+    LOG.info(f"  RMS: {np.sqrt((prob_error**2).mean()):.6f}")
     frobenius_norm = np.linalg.norm(prob_matrix - true_prob_matrix, 'fro')
-    print(f"  Frobenius norm: {frobenius_norm:.6f}")
+    LOG.info(f"  Frobenius norm: {frobenius_norm:.6f}")
 
     # Transition matrix comparison for true init
     prob_error_true = np.abs(prob_matrix_true_init - true_prob_matrix)
-    print(f"\nTransition matrix errors (true init):")
-    print(f"  Mean: {prob_error_true.mean():.6f}")
-    print(f"  Max: {prob_error_true.max():.6f}")
-    print(f"  RMS: {np.sqrt((prob_error_true**2).mean()):.6f}")
+    LOG.info(f"Transition matrix errors (true init):")
+    LOG.info(f"  Mean: {prob_error_true.mean():.6f}")
+    LOG.info(f"  Max: {prob_error_true.max():.6f}")
+    LOG.info(f"  RMS: {np.sqrt((prob_error_true**2).mean()):.6f}")
     frobenius_norm_true = np.linalg.norm(prob_matrix_true_init - true_prob_matrix, 'fro')
-    print(f"  Frobenius norm: {frobenius_norm_true:.6f}")
+    LOG.info(f"  Frobenius norm: {frobenius_norm_true:.6f}")
 
-    print("="*70)
 
-def main(args=[]):
-
-    # maximum optimization iterations
-    max_iter = 200
-    # optimization method
-    method = 'coordinate_descent'  # or 'lbfgsb'
-
-    # Check if we should run the synthetic example or process real data
-    if len(args) > 1 and args[1] == 'test':
-
-        # number of bins
-        K = 10
-        
-        # minimum bin width
-        min_width = 1e-6
-
-        boundary_edges = (-10.0, 10.0)
-        sequences, true_edges, true_prob_matrix = generate_synthetic_data(K=K,data_range=boundary_edges)
-        edges_fixed = np.zeros(K+1) + np.nan
-        edges_fixed[0] = boundary_edges[0]
-        edges_fixed[-1] = boundary_edges[1]
-
-        # Run sanity check first
-        if not test_incremental_updates(sequences=sequences, K=K):
-            print("ERROR: Sanity check failed! Exiting.")
-            sys.exit(1)
-
-        output_file = None
-        is_synthetic = True
-    else:
-        # number of bins
-        K = 50
-        # target number of timepoints for subsampling (None = use all data)
-        target_timepoints = None #1_000_000
-
-        filepath = 'notebooks/zscored_velocity.npz'
-        feature_idx = 2
-        zstd = 0.03285892
-        outlier_thresh = 135*np.pi/180/zstd*np.array([-1,1]) # force one bin to cover outliers
-        min_width=.1*np.pi/180/zstd # .1 deg in zscores
-        sequences = load_and_split_sequences(filepath, feature_idx=feature_idx)
+def set_boundary_edges(sequences, K, outlier_thresh=None, boundary_edges=None):
+    """
+    Set boundary edges and fixed outlier edges. Caps the data at boundary edges.
+    Parameters:
+    -----------
+    sequences : list of ndarrays
+        List of sequences
+    K : int
+        Number of bins
+    outlier_thresh : tuple or None
+        (min, max) thresholds to fix edges for outliers. If None, no outlier edges are fixed. Default: None
+    boundary_edges : tuple or None
+        (min, max) boundary edges. If None, computed from min,max of data. Default: None 
+    Returns:
+    --------
+    edges_fixed : ndarray
+        Array of shape (K+1) with fixed edge values or NaN for free edges
+    boundary_edges : tuple
+        (min, max) boundary edges used
+    """
+    if boundary_edges is None:
         boundary_edges = compute_boundary_edges(sequences)
-        edges_fixed = np.zeros(K+1) + np.nan
-        edges_fixed[0] = boundary_edges[0]
-        edges_fixed[1] = outlier_thresh[0]
-        edges_fixed[-1] = boundary_edges[1]
-        edges_fixed[-2] = outlier_thresh[1]
 
-        # Subsample sequences if needed
-        sequences = subsample_sequences(sequences, target_timepoints=target_timepoints)
-
-        output_file = f'optimal_binning_results_{feature_idx}.npz'
-        is_synthetic = False
-        true_edges = None
-        true_prob_matrix = None
-    
     # Threshold data at boundary edges
     for seq in sequences:
         seq[seq < boundary_edges[0]] = boundary_edges[0]
         seq[seq > boundary_edges[1]] = boundary_edges[1]
 
-    # offset by a tiny amount so that everything is in bounds
-    d = boundary_edges[1] - boundary_edges[0]
-    boundary_edges = (boundary_edges[0] - d*1e-6,boundary_edges[1] + d*1e-6)
-    print(f"Boundary edges: [{boundary_edges[0]:.6f}, {boundary_edges[1]:.6f}]")
+    edges_fixed = np.zeros(K+1) + np.nan
+    edges_fixed[0] = boundary_edges[0]
+    edges_fixed[-1] = boundary_edges[1]
+    if outlier_thresh is not None:
+        if outlier_thresh[0] > boundary_edges[0]:
+            edges_fixed[1] = outlier_thresh[0]
+        if outlier_thresh[1] < boundary_edges[1]:
+            edges_fixed[-2] = outlier_thresh[1]
+
+    return edges_fixed, boundary_edges
+
+def print_summary_statistics(edges, prob_matrix):
+    # Print summary statistics
+    LOG.info("Summary Statistics")
+    bin_widths = np.diff(edges)
+    LOG.info(f"Bin widths - min: {bin_widths.min():.6f}, max: {bin_widths.max():.6f}, "
+             f"mean: {bin_widths.mean():.6f}")
+
+    # Transition matrix sparsity
+    nonzero_count = (prob_matrix > 0).sum()
+    total_entries = prob_matrix.size
+    LOG.info(f"Transition matrix sparsity: {100 * nonzero_count / total_entries:.2f}% non-zero")
+
+    # print bin edges, format for readability
+    LOG.info("Optimal bin edges:")
+    for i in range(0, len(edges), 10):
+        LOG.info("  " + ", ".join(f"{edge:.6f}" for edge in edges[i:i+10]))
+        
+        
+def debug_zscored_velocity():
     
+    # maximum optimization iterations
+    max_iter = 200
+    # optimization method
+    method = 'coordinate_descent'  # or 'lbfgsb'
+
+    # number of bins
+    K = 50
+    # target number of timepoints for subsampling (None = use all data)
+    nsamples = None #1_000_000
+
+    filepath = 'notebooks/zscored_velocity.npz'
+    feature_idx = 2
+    zstd = 0.03285892
+    outlier_thresh = 135*np.pi/180/zstd*np.array([-1,1]) # force one bin to cover outliers
+    min_width=.1*np.pi/180/zstd # .1 deg in zscores
+    feature_data, useoutputmask = load_debug_data(filepath,feature_idx=feature_idx)
+    feature_data[~useoutputmask] = np.nan  # Apply mask
+    sequences = split_sequences(feature_data)
+
+    # Subsample sequences if needed
+    sequences = subsample_sequences(sequences, nsamples=nsamples)
+
+    edges_fixed, boundary_edges = set_boundary_edges(sequences,K,outlier_thresh)
 
     # Optimize binning
-    print("\n" + "="*70)
-    print(f"Optimizing bin edges with K={K} using method={method}...")
-    print("="*70)
+    LOG.info(f"Optimizing bin edges with K={K} using method={method}...")
     edges, prob_matrix, log_lik = optimize_bin_edges(
         sequences,
         K=K,
         boundary_edges=boundary_edges,
         min_width=min_width,
         max_iter=max_iter,
-        verbose=True,
         method=method,
         edges_fixed=edges_fixed
     )
 
-    # If synthetic, also try with true initialization
-    if is_synthetic:
-        print("\n" + "="*70)
-        print(f"Re-optimizing with TRUE EDGES as initialization (method={method})...")
-        print("="*70)
-        edges_true_init, prob_matrix_true_init, log_lik_true_init = optimize_bin_edges(
-            sequences,
-            K=K,
-            boundary_edges=boundary_edges,
-            max_iter=max_iter,
-            verbose=True,
-            initial_edges=true_edges,
-            method=method
-        )
-        _synthetic_comparison_report(sequences,true_edges,true_prob_matrix, edges, prob_matrix, log_lik,
-                                     edges_true_init, prob_matrix_true_init, log_lik_true_init)
-
+    output_file = f'optimal_binning_results_{feature_idx}_v2.npz'
+    
     if output_file is not None:
         # Save results
-        print("\n" + "="*70)
-        print("Saving results...")
-        print("="*70)
+        LOG.info("Saving results...")
         np.savez(output_file,
                 edges=edges,
                 prob_matrix=prob_matrix,
                 log_likelihood=log_lik,
                 boundary_edges=boundary_edges)
-        print(f"Saved to: {output_file}")
+        LOG.info(f"Saved to: {output_file}")
 
-    # Print summary statistics
-    print("\n" + "="*70)
-    print("Summary Statistics")
-    print("="*70)
-    bin_widths = np.diff(edges)
-    print(f"Bin widths - min: {bin_widths.min():.6f}, max: {bin_widths.max():.6f}, "
-          f"mean: {bin_widths.mean():.6f}")
 
-    # Transition matrix sparsity
-    nonzero_count = (prob_matrix > 0).sum()
-    total_entries = prob_matrix.size
-    print(f"Transition matrix sparsity: {100 * nonzero_count / total_entries:.2f}% non-zero")
+def debug_synthetic():
 
-    # print bin edges, format for readability
-    print("\nOptimal bin edges:")
-    for i in range(0, len(edges), 10):
-        print("  " + ", ".join(f"{edge:.6f}" for edge in edges[i:i+10]))
+    # maximum optimization iterations
+    max_iter = 200
+    # optimization method
+    method = 'coordinate_descent'  # or 'lbfgsb'
+
+    # number of bins
+    K = 10
+    
+    # minimum bin width
+    min_width = 1e-6
+
+    data_range = (-10.,10.)
+    sequences, true_edges, true_prob_matrix = generate_synthetic_data(K=K,data_range=data_range)
+    edges_fixed, boundary_edges = set_boundary_edges(sequences,K,boundary_edges=data_range)
+
+    # Run sanity check first
+    if not test_incremental_updates(sequences=sequences, K=K):
+        LOG.info("ERROR: Sanity check failed! Exiting.")
+        sys.exit(1)    
+
+    # Optimize binning
+    LOG.info(f"Optimizing bin edges with K={K} using method={method}...")
+    edges, prob_matrix, log_lik = optimize_bin_edges(
+        sequences,
+        K=K,
+        boundary_edges=boundary_edges,
+        min_width=min_width,
+        max_iter=max_iter,
+        method=method,
+        edges_fixed=edges_fixed
+    )
+
+    # try with true initialization
+    LOG.info(f"Re-optimizing with TRUE EDGES as initialization (method={method})...")
+    edges_true_init, prob_matrix_true_init, log_lik_true_init = optimize_bin_edges(
+        sequences,
+        K=K,
+        boundary_edges=boundary_edges,
+        max_iter=max_iter,
+        initial_edges=true_edges,
+        method=method
+        )
+    _synthetic_comparison_report(sequences,true_edges,true_prob_matrix, edges, prob_matrix, log_lik,
+                                    edges_true_init, prob_matrix_true_init, log_lik_true_init)
+
+    print_summary_statistics(edges, prob_matrix)
 
 if __name__ == "__main__":
-    main(sys.argv)
+    debug_synthetic()

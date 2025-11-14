@@ -31,27 +31,19 @@ import os
 
 import apf
 from apf.training import train
-from apf.utils import function_args_from_config, set_mpl_backend, is_notebook
-from apf.simulation import simulate
-from apf.models import initialize_model
 import apf.utils as utils
 import matplotlib.pyplot as plt
 
 import flyllm
-from flyllm.config import read_config
-from flyllm.features import featglobal, get_sensory_feature_idx
-from flyllm.simulation import animate_pose
-
 from flyllm.prepare import init_flyllm
 from flyllm.plotting import initialize_debug_plots, initialize_loss_plots
 
 import logging
-import tqdm
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
 
-set_mpl_backend('tkAgg')
-ISNOTEBOOK = is_notebook()
+utils.set_mpl_backend('tkAgg')
+ISNOTEBOOK = utils.is_notebook()
 if ISNOTEBOOK:
     from IPython.display import HTML, display, clear_output
     plt.ioff()
@@ -116,7 +108,6 @@ lr_scheduler = res['lr_scheduler']
 modeltype_str = res['modeltype_str']
 loss_epoch = res['loss_epoch']
 epoch = res['epoch']
-modeltype_str = res['modeltype_str']
 savetime = res['model_savetime']
 
 train_dataset_params = {
@@ -284,7 +275,7 @@ def end_epoch_hook(loss_epoch=None, epoch=None, **kwargs):
     return
 
 # test the hooks
-if False:
+if True:
     for i,trainexample in enumerate(train_dataloader):
         if i >= 1:
             break
@@ -294,6 +285,9 @@ if False:
 
     end_iter_hook(model=model,step=0,example=trainexample,predfn=lambda input: model.output(input, mask=train_src_mask, is_causal=True))
     end_epoch_hook(loss_epoch=loss_epoch)
+
+# %%
+train_dataset.get_params()['labels']['velocity'][2]['attributes']['std'][:3]
 
 # %%
 # clean up memory allocation before training, particularly if running in a notebook
@@ -319,7 +313,7 @@ print(f'Cuda memory reserved for model: {memreserved:.3f} GB')
 # %%
 savefilestr = os.path.join(config['savedir'], f"fly{modeltype_str}_{savetime}")
 
-train_args = function_args_from_config(config,train)
+train_args = utils.function_args_from_config(config,train)
 train_args['train_dataloader'] = train_dataloader
 train_args['val_dataloader'] = val_dataloader
 train_args['model'] = model
