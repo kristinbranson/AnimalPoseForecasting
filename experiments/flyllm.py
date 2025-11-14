@@ -246,8 +246,14 @@ def make_dataset(
 
         # Need to zscore before binning, otherwise bin_epsilon values need to be divided by zscore stds
         zscored_velocity = Zscore()(velocity)
+        zsig = zscored_velocity.operations[-1].std
         bin_config = {'nbins': config['discretize_nbins'],
-                      'bin_epsilon': config['discretize_epsilon'] / zscored_velocity.operations[-1].std[discreteidx]}
+                      'bin_epsilon': config['discretize_epsilon'] / zsig[discreteidx]}
+
+        if 'bin_edges_absolute' in config and config['bin_edges_absolute'] is not None and len(config['bin_edges_absolute']) > 0:
+            # check that all discreteidx are present
+            assert all(idx in config['bin_edges_absolute'] for idx in discreteidx), "Not all discreteidx are present in bin_edges_absolute"
+            bin_config['bin_edges'] = np.hstack((config['bin_edges_absolute'][featidx]/zsig[featidx] for featidx in discreteidx))
 
         dataset = Dataset(
             inputs={
