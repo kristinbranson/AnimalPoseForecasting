@@ -6,7 +6,7 @@ import tqdm
 import logging
 from scipy.stats import circmean, circstd
 
-from apf.utils import modrange, rotate_2d_points, angledist2xy, mod2pi, atleast_4d, compute_npad
+from apf.utils import modrange, rotate_2d_points, angledist2xy, mod2pi, atleast_4d, compute_npad, tic, toc
 from apf.features import compute_global_velocity, compute_relpose_velocity
 from flyllm.config import (
     posenames, keypointnames, scalenames,
@@ -16,6 +16,7 @@ from flyllm.config import (
     SENSORY_PARAMS, PXPERMM
 )
 
+DOTIME = False
 LOG = logging.getLogger(__name__)
 
 
@@ -683,6 +684,8 @@ def compute_sensory(xeye_main, yeye_main, theta_main,
     else:
         T = xvision_other.shape[2]
 
+    if DOTIME:
+        start_time = tic()
     npts_touch = xtouch_main.shape[0]
     npts_vision = xvision_other.shape[0]
     npts_touch_other = xtouch_other.shape[0]
@@ -705,6 +708,11 @@ def compute_sensory(xeye_main, yeye_main, theta_main,
     # this is ok, no need to warn
     # if np.any(np.isnan(xeye_main)):
     #     LOG.warning(f"xeye_main is nan for {np.isnan(xeye_main).sum()} / {T} frames")
+
+
+    if DOTIME:
+        LOG.info(f"compute_sensory: reshaping inputs took {toc(start_time):.3f} sec")
+        start_time = tic()
 
     # vision bin size
     step = 2. * np.pi / SENSORY_PARAMS['n_oma']
@@ -746,7 +754,7 @@ def compute_sensory(xeye_main, yeye_main, theta_main,
     tmpbins = np.arange(SENSORY_PARAMS['n_oma'])[:, None, None]
 
     # n_oma x nflies x T
-    mindrep = np.tile(mind[None, ...], (SENSORY_PARAMS['n_oma'], 1, 1))
+    #mindrep = np.tile(mind[None, ...], (SENSORY_PARAMS['n_oma'], 1, 1))
     mask = (tmpbins >= minb[None, ...]) & (tmpbins <= maxb[None, ...])
 
     if np.any(idxmod):
@@ -757,18 +765,23 @@ def compute_sensory(xeye_main, yeye_main, theta_main,
         isbackpos1 = isbackpos[:, idxmod]
         isbackneg1 = isbackneg[:, idxmod]
         bmodneg = b_all[:, idxmod]
-        bmodneg[isbackpos1] = np.nan
+        bmodneg = np.where(isbackpos1, np.nan, bmodneg)
         minbmod = np.nanmax(bmodneg, axis=0)
         bmodpos = b_all[:, idxmod]
-        bmodpos[isbackneg1] = np.nan
+        bmodpos = np.where(isbackneg1, np.nan, bmodpos)
         maxbmod = np.nanmin(bmodpos, axis=0)
         mask[:, idxmod] = (tmpbins[..., 0] >= maxbmod[None, :]) | (tmpbins[..., 0] <= minbmod[None, :])
-
-    otherflies_vision = np.nanmin(np.where(mask, mindrep, np.inf), axis=1, initial=np.inf)
+    
+    otherflies_vision = np.where(mask, mind[None, ...], np.inf).min(axis=1)
+    #otherflies_vision = np.nanmin(np.where(mask, mindrep, np.inf), axis=1, initial=np.inf)
 
     otherflies_vision = 1. - np.minimum(1.,
                                         SENSORY_PARAMS['otherflies_vision_mult'] * otherflies_vision ** SENSORY_PARAMS[
                                             'otherflies_vision_exp'])
+
+    if DOTIME:
+        LOG.info(f"compute_sensory: otherflies_vision took {toc(start_time):.3f} sec")
+        start_time = tic()
 
     # t = 249
     # debug_plot_otherflies_vision(t,xother,yother,xeye_main,yeye_main,theta_main,
@@ -791,15 +804,23 @@ def compute_sensory(xeye_main, yeye_main, theta_main,
     # t = 0
     # debug_plot_wall_touch(t,xlegtip_main,ylegtip_main,distleg,wall_touch,params)
 
+    if DOTIME:
+        LOG.info(f"compute_sensory: wall_touch took {toc(start_time):.3f} sec")
+        start_time = tic()
+
     # xtouch_main: npts_touch x T, xtouch_other: npts_touch_other x nflies x T
     if SENSORY_PARAMS['compute_otherflies_touch']:
         dx = xtouch_main.reshape((npts_touch, 1, 1, T)) - xtouch_other.reshape((1, npts_touch_other, nflies, T))
         dy = ytouch_main.reshape((npts_touch, 1, 1, T)) - ytouch_other.reshape((1, npts_touch_other, nflies, T))
-        dx[np.isnan(dx)] = np.inf
-        dy[np.isnan(dy)] = np.inf
-        d = np.sqrt(np.nanmin(dx ** 2 + dy ** 2, axis=2)).reshape(npts_touch * npts_touch_other, T)
+        nan_mask = np.isnan(dx) | np.isnan(dy)
+        d = np.min(np.sqrt(np.where(nan_mask, np.inf, dx) ** 2 + \
+            np.where(nan_mask, np.inf, dy) ** 2), axis=2).reshape(npts_touch * npts_touch_other, T)
         otherflies_touch = 1. - np.minimum(1., SENSORY_PARAMS['otherflies_touch_mult'] * d ** SENSORY_PARAMS[
             'otherflies_touch_exp'])
+        
+        if DOTIME:
+            LOG.info(f"compute_sensory: otherflies_touch took {toc(start_time):.3f} sec")
+        
     else:
         otherflies_touch = None
 
@@ -848,6 +869,9 @@ def compute_sensory_wrapper(Xkp, flynum, theta_main=None, returnall=False, retur
 
     else:
     
+        if DOTIME:
+            start_time = tic()
+    
         if isdata is not None:        
             Xkp = Xkp[:, :, isdata, :]
 
@@ -866,6 +890,9 @@ def compute_sensory_wrapper(Xkp, flynum, theta_main=None, returnall=False, retur
         if theta_main is None:
             _, _, theta_main = body_centric_kp(Xkp[..., [flynum, ]])
             theta_main = theta_main[..., 0].astype(np.float64)
+
+        if DOTIME:
+            LOG.info(f"compute_sensory_wrapper: preparing inputs took {toc(start_time):.3f} sec")
 
         otherflies_vision1, wall_touch1, otherflies_touch1 = \
             compute_sensory(xeye_main, yeye_main, theta_main + np.pi / 2,

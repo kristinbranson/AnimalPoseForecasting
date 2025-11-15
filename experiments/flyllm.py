@@ -6,7 +6,7 @@
 import numpy as np
 import logging
 from dataclasses import dataclass, field
-import time
+
 
 from apf.io import load_and_filter_data
 from apf.dataset import (
@@ -22,7 +22,7 @@ from flyllm.features import (
 import tqdm
 import apf.utils as utils
 
-DOTIME = True
+DOTIME = False
 LOG = logging.getLogger(__name__)
 
 @dataclass
@@ -49,12 +49,16 @@ class Sensory(Operation):
         """
         feats = []
         for flyid in range(Xkp.shape[0]):
+            if DOTIME:
+                start_time = utils.tic()
             if isdata is not None:
                 isdatacurr = isdata[:,flyid]
             else:
                 isdatacurr = None
             feat, idxinfo = compute_sensory_wrapper(Xkp.T, flyid, returnidx=True, isdata=isdatacurr)
             feats.append(feat.T)
+            if DOTIME:
+                LOG.info(f"Sensory computation for fly {flyid} took {utils.toc(start_time):.2f} seconds")
         self.idxinfo = idxinfo
         return np.array(feats)
 
