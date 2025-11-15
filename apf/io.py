@@ -10,7 +10,7 @@ import tqdm
 from apf.data import flip_agents, filter_data_by_categories, load_raw_npz_data
 from apf.utils import tic, toc
 
-DOTIME = True
+DOTIME = False
 
 LOG = logging.getLogger(__name__)
 
@@ -466,15 +466,6 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
         LOG.info(f"After flip augmentation nids {nidspre} -> {nidspost}, nframes {nframespre} -> {nframespost}")
         if DOTIME:
             LOG.info(f"data augmentation took {toc(start_time):.2f} seconds")
-    tic()
-    np.repeat(data['X'],2,axis=3)
-    print(toc())
-    tic()
-    np.tile(data['X'], (1, 1, 2, 1))
-    print(toc())
-    tic()
-    flip_agents(data['X'], keypointnames)
-    toc()
 
     # compute scale parameters
     if compute_scale_per_agent is None:

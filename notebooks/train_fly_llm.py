@@ -133,6 +133,23 @@ if np.isnan(last_val_loss):
 # plt.plot(train_data['track'].array[:,t+T//2,0,:].T, train_data['track'].array[:,t+T//2,1,:].T,'b.-')
 # plt.axis('equal')
 
+# %%
+# # profile data loading
+# import cProfile
+# import pstats
+
+# def profile_test():
+#     res1 = init_flyllm(configfile=configfile,mode='train',restartmodelfile=restartmodelfile,
+#                 debug_uselessdata=False)
+    
+# cProfile.run('profile_test()', 'init_flyllm_profile.stats')
+# p = pstats.Stats('init_flyllm_profile.stats')
+# p.sort_stats('cumtime').print_stats(100)
+
+# %%
+p = pstats.Stats('init_flyllm_profile.stats')
+p.sort_stats('cumtime').print_stats(100)
+
 # %% [markdown]
 # ### some helper functions for profiling memory usage
 #

@@ -238,30 +238,32 @@ def fit_discretize_labels(data, featidx, nbins=50, bin_epsilon=None, outlierprct
     )
 
 
-def fit_discretize_data(data, nbins=50, bin_epsilon=None, outlierprct=.001, fracsample=None, nsamples=None):
+def fit_discretize_data(data, nbins=50, bin_epsilon=None, outlierprct=.001, fracsample=None, nsamples=None,
+                        bin_edges=None):
     """
     Args:
         data: n_frames x n_feat, float
         ...
     """
     
-    LOG.info(f'Selecting discretization bin edges from data, shape = {data.shape}, bin_epsilon = {bin_epsilon}')
-    # compute percentiles
     nfeat = data.shape[1]
-    prctiles_compute = np.linspace(0, 100, nbins + 1)
-    prctiles_compute[0] = outlierprct
-    prctiles_compute[-1] = 100 - outlierprct
-    dtype = data.dtype
+    if bin_edges is None:
+        LOG.info(f'Selecting discretization bin edges from data, shape = {data.shape}, bin_epsilon = {bin_epsilon}')
+        # compute percentiles
+        prctiles_compute = np.linspace(0, 100, nbins + 1)
+        prctiles_compute[0] = outlierprct
+        prctiles_compute[-1] = 100 - outlierprct
+        dtype = data.dtype
 
-    # bin_edges is nfeat x nbins+1
-    if bin_epsilon is not None:
-        bin_edges = np.zeros((nfeat, nbins + 1), dtype=dtype)
-        for feati in range(nfeat):
-            bin_edges[feati, :] = select_bin_edges(data[:, feati], nbins, bin_epsilon[feati],
-                                                   outlierprct=outlierprct, feati=feati)
-    else:
-        bin_edges = np.percentile(data, prctiles_compute, axis=0)
-        bin_edges = bin_edges.astype(dtype).T
+        # bin_edges is nfeat x nbins+1
+        if bin_epsilon is not None:
+            bin_edges = np.zeros((nfeat, nbins + 1), dtype=dtype)
+            for feati in range(nfeat):
+                bin_edges[feati, :] = select_bin_edges(data[:, feati], nbins, bin_epsilon[feati],
+                                                    outlierprct=outlierprct, feati=feati)
+        else:
+            bin_edges = np.percentile(data, prctiles_compute, axis=0)
+            bin_edges = bin_edges.astype(dtype).T
 
     binnum = np.zeros(data.shape, dtype=int)
     for i in range(nfeat):

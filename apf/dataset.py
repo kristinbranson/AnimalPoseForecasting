@@ -18,7 +18,7 @@ from apf.features import compute_global_velocity, compute_relpose_velocity
 
 LOG = logging.getLogger(__name__)
 
-DOTIME = True
+DOTIME = False
 
 
 @dataclass
@@ -357,8 +357,6 @@ class Discretize(Operation):
         self.bin_centers = bin_centers
         self.bin_samples = bin_samples
         
-        if self.bin_edges is not None and self.bin_centers is None:
-            self.bin_centers = (self.bin_edges[:, 1:] + self.bin_edges[:, :-1]) / 2
         if fit_discretize_data_args is None:
             self.fit_discretize_data_args = kwargs
         else:
@@ -386,7 +384,8 @@ class Discretize(Operation):
         else:
             valid = valid.flatten()
         data_valid = data_flat[valid, :]
-        bin_edges, samples, bin_means, bin_medians = fit_discretize_data(data_valid, **self.fit_discretize_data_args)
+        bin_edges, samples, bin_means, bin_medians = fit_discretize_data(data_valid, bin_edges=self.bin_edges,
+                                                                         **self.fit_discretize_data_args)
         self.bin_edges = bin_edges
         # self.bin_centers = (bin_edges[:, 1:] + bin_edges[:, :-1]) / 2
         self.bin_centers = bin_medians
@@ -410,7 +409,7 @@ class Discretize(Operation):
         if DOTIME:
             start_time = tic()
         
-        if self.bin_edges is None:
+        if self.bin_edges is None or self.bin_centers is None or self.bin_samples is None:
             self.compute(data,**compute_args)
         sz_rest = data.shape[:-1]
         n_feat = data.shape[-1]
