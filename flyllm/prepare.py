@@ -252,7 +252,7 @@ def init_process_data(config=None,data=None,scale_perfly=None,
             raise ValueError(f'traindataprocess {traindataprocess} not recognized')
         res['X'] = X
         res['train_chunk_data_params'] = train_chunk_data_params
-        LOG.info(f'{len(X)} training ids, total of {sum([x['input'].shape[0] for x in X])} time points')
+        # LOG.info(f'{len(X)} training ids, total of {sum([x['input'].shape[0] for x in X])} time points')
         
     if valdata is not None:
         LOG.info('Processing val data...')
@@ -266,7 +266,7 @@ def init_process_data(config=None,data=None,scale_perfly=None,
             raise ValueError(f'valdataprocess {valdataprocess} not recognized')
         res['valX'] = valX
         res['val_chunk_data_params'] = val_chunk_data_params
-        LOG.info(f' {len(valX)} val ids, total of {sum([x['input'].shape[0] for x in valX])} time points')
+        # LOG.info(f' {len(valX)} val ids, total of {sum([x['input'].shape[0] for x in valX])} time points')
     
     return res
 

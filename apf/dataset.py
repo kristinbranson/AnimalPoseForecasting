@@ -1258,6 +1258,7 @@ class Dataset(torch.utils.data.Dataset):
             context_length: int,
             metadata: dict | None = None,
             useoutputmask: np.ndarray | None = None,
+            concepts: Data | None = None,
     ):
         self.inputs = inputs
         self.labels = labels
@@ -1265,6 +1266,7 @@ class Dataset(torch.utils.data.Dataset):
         self.context_length = context_length
         self.metadata = metadata
         self.useoutputmask = useoutputmask
+        self.concepts = concepts  # Store concepts separately (not for training)
 
         # Compute sessions with continuous valid data per agent
         self.sessions = compute_sessions(

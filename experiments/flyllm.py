@@ -201,6 +201,27 @@ def make_dataset(
     LOG.info('Computing velocity features...')
     velocity = Velocity(featrelative=featrelative, featangle=featangle)(pose, isstart=isstart)
 
+    # Compute human concepts from raw velocity (before z-scoring/discretization)
+    # This is optional and controlled by config['compute_concepts']
+    concepts = None
+    if config.get('compute_concepts', False):
+        LOG.info('Computing human concepts...')
+        from apf.concepts import HumanConcept
+
+        # Get concept parameters from config with defaults
+        concept_config = config.get('concept_params', {})
+        concepts = HumanConcept(
+            concept_type=concept_config.get('concept_type', 'start_walking'),
+            fps=config.get('fps', 150.0),
+            sigma=concept_config.get('sigma', 2),
+            concept_params={
+                'thresh_stopped': concept_config.get('thresh_stopped', 5.0),
+                'thresh_walking': concept_config.get('thresh_walking', 15.0),
+                'tstopped': concept_config.get('tstopped', 0.5),
+                'tfuture': concept_config.get('tfuture', 1.0),
+            }
+        )(velocity, isstart=isstart)
+
     tspred_global = config['tspred_global']
     aux_tspred = [dt for dt in tspred_global if dt > 1]
     if len(aux_tspred) > 0:
@@ -226,14 +247,16 @@ def make_dataset(
     if ref_dataset is not None:
         dataset = Dataset(
             inputs=apply_opers_from_data(ref_dataset.inputs, {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
-            labels=apply_opers_from_data(ref_dataset.labels, {'velocity': velocity}), #, 'auxiliary': auxiliary}),
+            labels=apply_opers_from_data(ref_dataset.labels, {'velocity': velocity}),
+            concepts=concepts,  # Store concepts separately (not for training)
             **args
         )
     elif 'dataset_params' in config and config['dataset_params'] is not None and \
         ('inputs' in config['dataset_params']) and ('labels' in config['dataset_params']):
         dataset = Dataset(
             inputs=apply_opers_from_data_params(config['dataset_params']['inputs'], {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
-            labels=apply_opers_from_data_params(config['dataset_params']['labels'], {'velocity': velocity}), #, 'auxiliary': auxiliary}),
+            labels=apply_opers_from_data_params(config['dataset_params']['labels'], {'velocity': velocity}),
+            concepts=concepts,  # Store concepts separately (not for training)
             **args
         )
     else:
@@ -260,6 +283,7 @@ def make_dataset(
                 # 'velocity': Fusion([Discretize(**bin_config), Zscore()], indices_per_op)(velocity),
                 # 'auxiliary': Discretize()(auxiliary)
             },
+            concepts=concepts,  # Store concepts separately (not for training)
             **args
         )
     dataset_params = dataset.get_params()
