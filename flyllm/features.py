@@ -119,7 +119,6 @@ def compute_relpose_tspred(relposein, tspred_dct=[], discreteidx=[]):
 
     return relpose_tspred
 
-
 def compute_scale_perfly(Xkp: np.ndarray) -> np.ndarray:
     """Computes mean and std of the following keypoint based measures per fly:
         thorax width, thorax length, abdomen length, wing length, head width, head height
@@ -170,8 +169,11 @@ def compute_scale_perfly(Xkp: np.ndarray) -> np.ndarray:
 
     # Move to a numpy array with indices corresponding to the order of scalenames
     scale_perfly = np.zeros((len(scalenames), n_flies))
+    scale_perfly[:] = np.nan
     for scale_name, scale_value in scales.items():
-        scale_perfly[scalenames.index(scale_name)] = np.nanmedian(scale_value, axis=0)
+        goodidx = ~np.all(np.isnan(scale_value), axis=0)
+        if np.any(goodidx):
+            scale_perfly[scalenames.index(scale_name),goodidx] = np.nanmedian(scale_value[:,goodidx], axis=0)
 
         # TODO: In the previous code the head features were not using axis=0 for median and std, do we want that?
         #   lets keep it perfly for now until we see why this might have been
@@ -208,14 +210,15 @@ def kp2feat(
         Xkp: np.ndarray,
         scale_perfly: np.ndarray | None = None,
         flyid: np.ndarray | None = None,
-        return_scale: bool = False
+        return_scale: bool = False,
+        isdata: np.ndarray | None = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Computes pose features from keypoints on a fly's body.
 
     Args:
         Xkp: n_keypoints x 2 [x T [x n_flies]]
-        scale_perfly: n_scales x n_total_flies
-        flyid: n_flies
+        scale_perfly: n_scales x nids
+        flyid: T x n_flies
         return_scale: If True, returns the scale_perfly and flyid along with the feature array.
 
     Returns:
@@ -225,8 +228,8 @@ def kp2feat(
     """
     # Reshape Xkp to be of size n_keypoints x 2 x T x n_flies
     Xkp = atleast_4d(Xkp)
-    _, _, T, n_flies = Xkp.shape
-
+    nkpts, d, T, n_flies = Xkp.shape
+    
     # Ensure that if scale_perfly is given, so is flyid
     assert (flyid is None) or scale_perfly is not None, f"{flyid} --> {scale_perfly} is False"
 
@@ -235,8 +238,32 @@ def kp2feat(
         scale_perfly = compute_scale_perfly(Xkp)
         flyid = np.tile(np.arange(n_flies, dtype=int)[np.newaxis, :], (T, 1))
 
+    # Process flyid to be of size T x n_flies
+    if flyid.size == 1:
+        flyid = np.tile(flyid, (T, n_flies))
+    elif flyid.size == n_flies:
+        flyid = np.tile(flyid.reshape((1, n_flies)), (T, 1))
+    elif flyid.size == T*n_flies:
+        pass
+    else:
+        raise ValueError(f'flyid size {flyid.size} is unexpected')
+
+    # flatten so we can remove nans easily
+    Xkp = Xkp.reshape((nkpts, d, T * n_flies))
+    flyid = flyid.reshape((T * n_flies,))
+    if isdata is not None:
+        nflyframes = np.count_nonzero(isdata)
+        isdata = isdata.reshape((T * n_flies,))
+        Xkp = Xkp[..., isdata]
+        flyid = flyid[isdata]
+    else:
+        nflyframes = n_flies*T
+
     # Rotate keypoints to be in fly's frame of reference
     Xn, fthorax, thorax_theta = body_centric_kp(Xkp)
+    Xn = Xn[...,0]  # remove n_flies dim since we flattened
+    fthorax = fthorax[...,0]
+    thorax_theta = thorax_theta[...,0]
 
     feat = {}
 
@@ -246,17 +273,9 @@ def kp2feat(
     feat['orientation'] = thorax_theta
 
     # Abdomen
-    # thorax_length can be a scalar or an array of size T x n_flies
+    # thorax_length is of size nflyframes
     thorax_length = scale_perfly[scalenames.index('thorax_length'), flyid]
-    if np.isscalar(thorax_length) or thorax_length.size == 1:
-        pass
-    elif thorax_length.size == n_flies:
-        thorax_length = thorax_length.reshape((1, n_flies))
-    elif thorax_length.size == T * n_flies:
-        thorax_length = thorax_length.reshape((T, n_flies))
-    else:
-        raise ValueError(f'thorax_length size {thorax_length.size} is unexpected')
-    pthoraxbase = np.zeros((2, T, n_flies))
+    pthoraxbase = np.zeros((2, nflyframes))
     pthoraxbase[1] = -thorax_length
     # TODO: Why do we use the average length here? Can we do without scale_perfly as input to this function?
     vec = Xn[keypointnames.index('tip_abdomen')] - pthoraxbase
@@ -281,7 +300,7 @@ def kp2feat(
 
     # Middle femur base
     # compute angle around and distance from halfway between the thorax base and thorax front
-    pmidthorax = np.zeros((2, T, n_flies))
+    pmidthorax = np.zeros((2, nflyframes))
     pmidthorax[1] = -thorax_length / 2
     vec = Xn[keypointnames.index('left_middle_femur_base')] - pmidthorax
     feat['left_middle_femur_base_dist'] = np.linalg.norm(vec, axis=0)
@@ -336,9 +355,16 @@ def kp2feat(
     #   Should we just do it everywhere to be sure?
 
     # Move to a numpy array with indices corresponding to the order of posenames
-    Xfeat = np.zeros((len(posenames), T, n_flies))
+    Xfeat1 = np.zeros((len(posenames), nflyframes))
     for feat_name, feat_value in feat.items():
-        Xfeat[posenames.index(feat_name)] = feat_value
+        Xfeat1[posenames.index(feat_name)] = feat_value
+
+    if isdata is not None:
+        Xfeat = np.full((Xfeat1.shape[0], T * n_flies), np.nan, dtype=Xfeat1.dtype)
+        Xfeat[:, isdata.reshape(T * n_flies,)] = Xfeat1
+        Xfeat = Xfeat.reshape((nfeatures, T, n_flies))
+    else:
+        Xfeat = Xfeat1.reshape((nfeatures, T, n_flies))
 
     if return_scale:
         return Xfeat, scale_perfly, flyid
@@ -676,8 +702,9 @@ def compute_sensory(xeye_main, yeye_main, theta_main,
     # assert (np.any(np.isnan(xeye_main)) == False)
     # assert (np.any(np.isnan(yeye_main)) == False)
     # assert (np.any(np.isnan(theta_main)) == False)
-    if np.any(np.isnan(xeye_main)):
-        LOG.warning(f"{np.isnan(xeye_main).sum()} / {T} is nan")
+    # this is ok, no need to warn
+    # if np.any(np.isnan(xeye_main)):
+    #     LOG.warning(f"xeye_main is nan for {np.isnan(xeye_main).sum()} / {T} frames")
 
     # vision bin size
     step = 2. * np.pi / SENSORY_PARAMS['n_oma']
@@ -768,6 +795,8 @@ def compute_sensory(xeye_main, yeye_main, theta_main,
     if SENSORY_PARAMS['compute_otherflies_touch']:
         dx = xtouch_main.reshape((npts_touch, 1, 1, T)) - xtouch_other.reshape((1, npts_touch_other, nflies, T))
         dy = ytouch_main.reshape((npts_touch, 1, 1, T)) - ytouch_other.reshape((1, npts_touch_other, nflies, T))
+        dx[np.isnan(dx)] = np.inf
+        dy[np.isnan(dy)] = np.inf
         d = np.sqrt(np.nanmin(dx ** 2 + dy ** 2, axis=2)).reshape(npts_touch * npts_touch_other, T)
         otherflies_touch = 1. - np.minimum(1., SENSORY_PARAMS['otherflies_touch_mult'] * d ** SENSORY_PARAMS[
             'otherflies_touch_exp'])
@@ -803,30 +832,59 @@ def ensure_otherflies_touch_mult(data):
         SENSORY_PARAMS['otherflies_touch_mult'] = compute_otherflies_touch_mult(data)
 
 
-def compute_sensory_wrapper(Xkp, flynum, theta_main=None, returnall=False, returnidx=False):
+def compute_sensory_wrapper(Xkp, flynum, theta_main=None, returnall=False, returnidx=False, isdata=None):
     # other flies positions
     idxother = np.ones(Xkp.shape[-1], dtype=bool)
     idxother[flynum] = False
-    Xkp_other = Xkp[:, :, :, idxother]
 
-    xeye_main = Xkp[kpeye, 0, :, flynum]
-    yeye_main = Xkp[kpeye, 1, :, flynum]
-    xtouch_main = Xkp[kptouch, 0, :, flynum]
-    ytouch_main = Xkp[kptouch, 1, :, flynum]
-    xvision_other = Xkp_other[kpvision_other, 0, ...].transpose((0, 2, 1))
-    yvision_other = Xkp_other[kpvision_other, 1, ...].transpose((0, 2, 1))
-    xtouch_other = Xkp_other[kptouch_other, 0, ...].transpose((0, 2, 1))
-    ytouch_other = Xkp_other[kptouch_other, 1, ...].transpose((0, 2, 1))
+    T = Xkp.shape[2]
 
-    if theta_main is None:
-        _, _, theta_main = body_centric_kp(Xkp[..., [flynum, ]])
-        theta_main = theta_main[..., 0].astype(np.float64)
+    if isdata is not None and not np.any(isdata):
+    
+        # all missing data
+        wall_touch = np.full((nkptouch, T), np.nan)
+        otherflies_vision = np.full((SENSORY_PARAMS['n_oma'], T), np.nan)
+        otherflies_touch = np.full((nkptouch * nkptouch_other, T), np.nan)
 
-    otherflies_vision, wall_touch, otherflies_touch = \
-        compute_sensory(xeye_main, yeye_main, theta_main + np.pi / 2,
-                        xtouch_main, ytouch_main,
-                        xvision_other, yvision_other,
-                        xtouch_other, ytouch_other)
+    else:
+    
+        if isdata is not None:        
+            Xkp = Xkp[:, :, isdata, :]
+
+        xeye_main = Xkp[kpeye, 0, :, flynum]
+        yeye_main = Xkp[kpeye, 1, :, flynum]
+        
+        Xkp_other = Xkp[:, :, :, idxother]
+        
+        xtouch_main = Xkp[kptouch, 0, :, flynum]
+        ytouch_main = Xkp[kptouch, 1, :, flynum]
+        xvision_other = Xkp_other[kpvision_other, 0, ...].transpose((0, 2, 1))
+        yvision_other = Xkp_other[kpvision_other, 1, ...].transpose((0, 2, 1))
+        xtouch_other = Xkp_other[kptouch_other, 0, ...].transpose((0, 2, 1))
+        ytouch_other = Xkp_other[kptouch_other, 1, ...].transpose((0, 2, 1))
+
+        if theta_main is None:
+            _, _, theta_main = body_centric_kp(Xkp[..., [flynum, ]])
+            theta_main = theta_main[..., 0].astype(np.float64)
+
+        otherflies_vision1, wall_touch1, otherflies_touch1 = \
+            compute_sensory(xeye_main, yeye_main, theta_main + np.pi / 2,
+                            xtouch_main, ytouch_main,
+                            xvision_other, yvision_other,
+                            xtouch_other, ytouch_other)
+        
+        if isdata is None:
+            otherflies_vision = otherflies_vision1
+            wall_touch = wall_touch1
+            otherflies_touch = otherflies_touch1
+        else:
+            otherflies_vision = np.full((otherflies_vision1.shape[0], T, *otherflies_vision1.shape[2:]),np.nan)
+            otherflies_vision[:, isdata] = otherflies_vision1
+            wall_touch = np.full((wall_touch1.shape[0], T, *wall_touch1.shape[2:]),np.nan)
+            wall_touch[:, isdata] = wall_touch1
+            otherflies_touch = np.full((otherflies_touch1.shape[0], T, *otherflies_touch1.shape[2:]),np.nan)
+            otherflies_touch[:, isdata] = otherflies_touch1
+        
     sensory = np.r_[wall_touch, otherflies_vision]
     idxinfo = {}
     idxoff = 0
@@ -1042,7 +1100,7 @@ def feat2kp(Xfeat, scale_perfly, flyid=None):
     if flyid is None:
         assert (scale_perfly.shape[1] == nflies)
         flyid = np.tile(np.arange(nflies, dtype=int)[np.newaxis, :], (T, 1))
-
+        
     Xfeat = Xfeat.reshape((Xfeat.shape[0], T, nflies))
 
     porigin = Xfeat[[posenames.index('thorax_front_x'), posenames.index('thorax_front_y')], ...]
@@ -1295,7 +1353,7 @@ def compute_noise_params(data, scale_perfly, sig_tracking=.25 / PXPERMM, delta_k
     else:
         return epsilon
 
-def compute_pose_distribution_stats(data,scales_perfly,prctiles=[0,.001,.01,.1,.5,1,2.5,5]):
+def compute_pose_distribution_stats(data,prctiles=[0,.001,.01,.1,.5,1,2.5,5]):
     
     X = data['X'].reshape((data['X'].shape[0],data['X'].shape[1],-1))
     ids = data['ids'].flatten()

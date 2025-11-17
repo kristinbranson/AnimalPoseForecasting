@@ -360,6 +360,11 @@ def get_batch_idx(example, idx):
     for kw, v in example.items():
         if isinstance(v, np.ndarray) or torch.is_tensor(v):
             example1[kw] = v[idx, ...]
+        elif isinstance(v, list):
+            if isinstance(idx, (int,np.integer)):
+                example1[kw] = v[idx]
+            else:
+                example1[kw] = [v[i] for i in idx]
         elif isinstance(v, dict):
             example1[kw] = get_batch_idx(v, idx)
 
@@ -450,6 +455,7 @@ def data_to_kp_from_metadata(data, metadata, ntimepoints):
 
 
 def debug_less_data(data, n_frames_per_video=10000, max_n_videos=1):
+    
     frame_ids = [np.where(data['videoidx'] == idx)[0][:n_frames_per_video] for idx in np.unique(data['videoidx'])]
     frame_ids = np.concatenate(frame_ids[:max_n_videos])
 
@@ -460,6 +466,7 @@ def debug_less_data(data, n_frames_per_video=10000, max_n_videos=1):
     data['y'] = data['y'][:, frame_ids, :]
     data['isdata'] = data['isdata'][frame_ids, :]
     data['isstart'] = data['isstart'][frame_ids, :]
+    data['useoutputmask'] = data['useoutputmask'][frame_ids, :]
     nframes = np.count_nonzero(data['isdata'])
     nids = len(np.unique(data['ids'][data['isdata']]))
     LOG.info(f'After less data: nframes = {nframes}, nids = {nids}, X.shape = {data["X"].shape}')
@@ -471,7 +478,7 @@ def debug_less_data(data, n_frames_per_video=10000, max_n_videos=1):
 """
 
 
-def load_raw_npz_data(infile: str) -> dict:
+def load_raw_npz_data(infile: str, debug: bool = False, n_frames_per_video: int | None = None, **kwargs) -> dict:
     """ Loads tracking data.
     Args
         infile: Datafile with .npz extension. Data is expected to have the following fields:
@@ -510,21 +517,34 @@ def load_raw_npz_data(infile: str) -> dict:
 
     data['isdata'] = data['ids'] >= 0
     data['categories'] = list(data['categories'])
+    
+    # frames for which the output is penalized during training/validation
+    # e.g. BadTracking == 0
+    data['useoutputmask'] = np.ones(data['isdata'].shape, dtype=bool)
+    
+    if debug:
+        debug_less_data(data, **kwargs)
 
     return data
 
 
-def filter_data_by_categories(data, categories):
+def filter_data_by_categories(data, categories, fn='isdata'):
     iscategory = np.ones(data['y'].shape[1:], dtype=bool)
+    LOG.info(f'Filtering data by categories, initially {np.count_nonzero(data[fn])} frames')
     for category in categories:
+        # search for == and split into category and value
+        val = 1
+        match = re.search(r'(\w+)==(\w+)', category)
+        if match is not None:
+            category = match.group(1).strip()
+            val = int(match.group(2).strip())
         if category == 'male':
             category = 'female'
-            val = 0
-        else:
-            val = 1
+            val = val == 0
         catidx = data['categories'].index(category)
         iscategory = iscategory & (data['y'][catidx, ...] == val)
-    data['isdata'] = data['isdata'] & iscategory
+        LOG.info(f'{category}=={val} -> {np.count_nonzero(data[fn] & iscategory)} frames')
+    data[fn] = data[fn] & iscategory
 
 
 def get_real_agents(x, tgtdim=-1):

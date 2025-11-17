@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from matplotlib import cm, colors
 import torch
 import tqdm
+import copy
 
 from apf.models import criterion_wrapper
 from apf.utils import npindex, zscore, unzscore
@@ -20,7 +21,10 @@ from flyllm.features import (
 )
 from flyllm.pose import FlyExample
 from apf.io import read_config, load_and_filter_data
-
+import flyllm
+import flyllm.dataset
+import apf.dataset
+import apf.utils
 
 def select_featidx_plot(train_dataset, ntspred_plot, ntsplot_global=None, ntsplot_relative=None):
     if ntsplot_global is None:
@@ -187,7 +191,7 @@ def plot_fly(pose=None, kptidx=keypointidx, skelidx=skeleton_edges, fig=None, ax
             # xc = np.concatenate((pose[skelidx,0],np.zeros((nedges,1))+np.nan),axis=1)
             # yc = np.concatenate((pose[skelidx,1],np.zeros((nedges,1))+np.nan),axis=1)
         else:
-            segments = np.zeros((nedges, 2)) + np.nan
+            segments = np.zeros((nedges, 2, 2)) + np.nan
             # xc = np.array([])
             # yc = np.array([])
         if hedge is None:
@@ -476,23 +480,53 @@ def debug_plot_batch_state(stateprob, nsamplesplot=3,
     fig.tight_layout(h_pad=0)
     return h, ax, fig
 
+raw_example_keys = ['inputs','labels','labels_discrete','continuous','discrete']
+
+def get_example_key(example):
+    # find the first key in raw_example_keys that is in example
+    for k in raw_example_keys:
+        if k in example:
+            return k
+    return None
+
+def get_example_type(example):
+    if example is None:
+        return 'none'
+    elif type(example) is dict and any(k in example and hasattr(example[k], 'shape') for k in raw_example_keys):
+        return 'raw'
+    elif type(example) is list:
+        return 'list'
+    elif isinstance(example, FlyExample):
+        return 'flyexample'
+    elif type(example) is dict and any(k in example and isinstance(example[k], dict) for k in raw_example_keys):
+        return 'data'
+    else:
+        return 'unknown'
 
 def subsample_batch(example, nsamples=1, samples=None, dataset=None):
-    israw = type(example) is dict
-    islist = type(example) is list
+    
+    # keep compatibility with old FlyMLMDataset for now
+    isflymlm = isflymlm_dataset(dataset)
+    
+    example_type = get_example_type(example)
     if samples is not None:
         nsamples = len(samples)
 
-    if israw:
-        batch_size = example['input'].shape[0]
-    elif islist:
+    if example_type == 'raw':
+        key = get_example_key(example)
+        batch_size = example[key].shape[0]
+    elif example_type == 'data':
+        key0 = get_example_key(example)
+        key1 = list(example[key0].keys())[0]
+        batch_size = example[key0][key1].array.shape[0]
+    elif example_type == 'list':
         batch_size = len(example)
-    elif type(example) is FlyExample:
+    elif example_type == 'flyexample':
         batch_size = int(np.prod(example.pre_sz))
         if batch_size == 1:
             return [example, ], np.arange(1)
     else:
-        raise ValueError(f'Unknown type {type(example)}')
+        raise ValueError(f'Unknown example type {type(example)}')
 
     if samples is None:
         nsamples = np.minimum(nsamples, batch_size)
@@ -500,18 +534,44 @@ def subsample_batch(example, nsamples=1, samples=None, dataset=None):
     else:
         assert np.max(samples) < batch_size
 
-    if islist:
+    if example_type == 'list':
         return [example[i] for i in samples], samples
 
-    if israw:
+    if example_type == 'raw':
         rawbatch = example
         examplelist = []
         for samplei in samples:
             examplecurr = get_batch_idx(rawbatch, samplei)
             assert dataset is not None
-            flyexample = FlyExample(example_in=examplecurr, dataset=dataset)
+            if isflymlm:
+                flyexample = FlyExample(example_in=examplecurr, dataset=dataset)
+            else:
+                flyexample = dataset.item_to_data(examplecurr)
             examplelist.append(flyexample)
-    else:
+
+    elif example_type == 'data':
+        examplelist = []
+        for samplei in samples:
+            examplecurr = {'inputs': {}, 'labels': {}}
+            for datatype in ['inputs','labels']:
+                for (k, v) in example[datatype].items():
+                    if isinstance(v.invertdata,dict):
+                        invertdata = apf.utils.recursive_dict_eval(v.invertdata, lambda x: x[samplei])
+                    else:
+                        invertdata = None
+                    examplecurr[datatype][k] = apf.dataset.Data(name=v.name, 
+                                                                array=v.array[samplei], 
+                                                                operations=v.operations, 
+                                                                invertdata=invertdata)
+            if 'metadata' in example:
+                examplecurr['metadata'] = apf.utils.recursive_dict_eval(example['metadata'], lambda x: x[samplei])
+                
+            if 'useoutputmask' in example:
+                examplecurr['useoutputmask'] = example['useoutputmask'][samplei]
+
+            examplelist.append(examplecurr)
+
+    elif example_type == 'flyexample':
         examplelist = []
         for samplei in samples:
             examplecurr = example.copy_subindex(idx_pre=samplei)
@@ -520,10 +580,22 @@ def subsample_batch(example, nsamples=1, samples=None, dataset=None):
     return examplelist, samples
 
 
+def example2discrcont(examplecurr): 
+    fusionop, fusionidx = apf.dataset.get_operation(examplecurr['labels']['velocity'].operations,'fusion',return_idx=True)
+    discrop = apf.dataset.get_operation(fusionop.operations,'discretize')
+    fuseddata = apf.dataset.apply_inverse_operations(examplecurr['labels']['velocity'],examplecurr['labels']['velocity'].operations[fusionidx+1:])
+    unfuseddata = fusionop.unfuse(fuseddata)
+    unfuseddata['discretize'] = discrop.unflatten(unfuseddata['discretize'])
+    return (unfuseddata['discretize'],unfuseddata['identity'])
+    
+
 def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None,
                           pred=None, data=None, nsamplesplot=3,
                           h=None, ax=None, fig=None, label_true='True', label_pred='Pred',
                           ntsplot=3, ntsplot_global=None, ntsplot_relative=None):
+    
+    isflymlm = isflymlm_dataset(train_dataset)
+    
     example, samplesplot = subsample_batch(example_in, nsamples=nsamplesplot,
                                            dataset=train_dataset)
     nsamplesplot = len(example)
@@ -531,31 +603,74 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
     true_color = [0, 0, 0]
     pred_cmap = lambda x: plt.get_cmap("tab10")(x % 10)
 
-    if train_dataset.ismasked():
+    if isflymlm and train_dataset.ismasked():
         mask = example_in['mask']
     else:
         mask = None
-
+        
     if ax is None:
         if fig is None:
-          fig, ax = plt.subplots(1, nsamplesplot, squeeze=False)
+            fig, ax = plt.subplots(1, nsamplesplot, squeeze=False, figsize=(8 * nsamplesplot, 10),sharey=True,sharex=True)
         else:
-          ax = fig.subplots(1, nsamplesplot, squeeze=False)
+            ax = fig.subplots(1, nsamplesplot, squeeze=False)
         ax = ax[0, :]
+        fig.tight_layout()
 
-    featidxplot, ftplot = example[0].labels.select_featidx_plot(ntsplot=ntsplot,
-                                                                ntsplot_global=ntsplot_global,
-                                                                ntsplot_relative=ntsplot_relative)
+    examplecurr = example[0]
+    if isflymlm:
+        featidxplot, ftplot = examplecurr.labels.select_featidx_plot(ntsplot=ntsplot,
+                                                                    ntsplot_global=ntsplot_global,
+                                                                    ntsplot_relative=ntsplot_relative)
+        outnames = examplecurr.labels.get_multi_names()
+        contextl = examplecurr.labels.ntimepoints_train
+        idx_multi_to_multidiscrete = examplecurr.labels._idx_multi_to_multidiscrete
+        idx_multi_to_multicontinuous = examplecurr.labels._idx_multi_to_multicontinuous
+        nbins = train_dataset.discretize_nbins
+    else:
+        # this doesn't handle sampling from multiple time points
+        velop,velidx = apf.dataset.get_operation(examplecurr['labels']['velocity'].operations,'velocity',return_idx=True)
+        featidxglobal = velop.global_inds
+        featidxrelative = velop.local_inds
+        featidxplot = np.concatenate((featidxglobal,featidxrelative))
+        outnames = posenames
+
+        fusionop, fusionidx = apf.dataset.get_operation(examplecurr['labels']['velocity'].operations,'fusion',return_idx=True)
+        discrop = apf.dataset.get_operation(fusionop.operations,'discretize')
+        nbins = discrop.nbins
+        contextl = examplecurr['labels']['velocity'].array.shape[0]
+        fusion_indices = {op.name: idx for (op, idx) in zip(fusionop.operations,fusionop.indices_per_op)}
+        idx_multi_to_multidiscrete = -np.ones(np.max(featidxplot)+1,dtype=int)
+        idx_multi_to_multicontinuous = -np.ones(np.max(featidxplot)+1,dtype=int)
+        for i,fi in enumerate(fusion_indices['discretize']):
+            idx_multi_to_multidiscrete[fi] = i
+        for i,fi in enumerate(fusion_indices['identity']):
+            idx_multi_to_multicontinuous[fi] = i
+                    
     for i, iplot in enumerate(samplesplot):
         examplecurr = example[i]
-        rawlabelstrue = examplecurr.labels.get_train_labels()
-        zmovement_continuous_true = rawlabelstrue['continuous']
-        zmovement_discrete_true = rawlabelstrue['discrete']
-
+        if isflymlm:
+            rawlabelstrue = examplecurr.labels.get_train_labels()
+            zmovement_continuous_true = rawlabelstrue['continuous']
+            zmovement_discrete_true = rawlabelstrue['discrete']
+            useoutputmask = None
+        else:
+            rawlabelstrue = get_batch_idx(example_in, iplot)
+            zmovement_discrete_true, zmovement_continuous_true = example2discrcont(examplecurr)
+            if isinstance(zmovement_discrete_true,np.ndarray):
+                zmovement_discrete_true = torch.from_numpy(zmovement_discrete_true)
+            if isinstance(zmovement_continuous_true,np.ndarray):
+                zmovement_continuous_true = torch.from_numpy(zmovement_continuous_true)
+            useoutputmask = examplecurr.get('useoutputmask')
+            print(f'sample {iplot}: nzero = {torch.count_nonzero(~useoutputmask)} out of {useoutputmask.numel()}')
+        
         err_total = None
-        maskcurr = examplecurr.labels.get_mask()
-        if maskcurr is None:
-            maskidx = np.nonzero(maskcurr)[0]
+        if isflymlm:
+            maskcurr = examplecurr.labels.get_mask()
+            if maskcurr is None:
+                maskidx = np.nonzero(maskcurr)[0]
+        else:
+            maskcurr = None
+
         zmovement_continuous_pred = None
         zmovement_discrete_pred = None
         if pred is not None:
@@ -576,6 +691,10 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
             # err_movement = torch.abs(zmovement_true[maskidx,:]-zmovement_pred[maskidx,:])/nmask
             # err_total = torch.sum(err_movement).item()/d
 
+            if useoutputmask is not None:
+                if zmovement_continuous_pred is not None:
+                    zmovement_continuous_pred[~useoutputmask] = np.nan
+
         elif data is not None:
             # for i in range(nsamplesplot):
             #   metadata = example[i].get_train_metadata()
@@ -589,19 +708,14 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
 
         mult = 6.
         d = len(featidxplot)
-        outnames = examplecurr.labels.get_multi_names()
-        contextl = examplecurr.labels.ntimepoints_train
 
         ax[i].cla()
 
-        # TODO make this use the new PoseLabels class better
-        idx_multi_to_multidiscrete = examplecurr.labels._idx_multi_to_multidiscrete
-        idx_multi_to_multicontinuous = examplecurr.labels._idx_multi_to_multicontinuous
         for featii, feati in enumerate(featidxplot):
             featidx = idx_multi_to_multidiscrete[feati]
             if featidx < 0:
                 continue
-            im = np.ones((train_dataset.discretize_nbins, contextl, 3))
+            im = np.ones((nbins, contextl, 3))
             ztrue = zmovement_discrete_true[:, featidx, :].cpu().T
             ztrue = ztrue - torch.min(ztrue)
             ztrue = ztrue / torch.max(ztrue)
@@ -611,6 +725,9 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
                 zpred = zpred - torch.min(zpred)
                 zpred = zpred / torch.max(zpred)
                 im[:, :, 1] = 1. - zpred
+            # mask out areas where loss is not computed
+            if useoutputmask is not None:
+                im[:, ~useoutputmask, :] = .8
             ax[i].imshow(im, extent=(0, contextl, (featii - .5) * mult, (featii + .5) * mult), origin='lower',
                          aspect='auto')
 
@@ -652,33 +769,37 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
     return ax, fig
 
 
-def debug_plot_pose(example, train_dataset=None, pred=None, data=None,
+def debug_plot_pose(examplein, train_dataset=None, predin=None, data=None,
                     true_discrete_mode='to_discretize',
                     pred_discrete_mode='sample',
                     ntsplot=5, nsamplesplot=3, h=None, ax=None, fig=None,
                     tsplot=None):
-    example, samplesplot = subsample_batch(example, nsamples=nsamplesplot,
+
+    # keep compatibility with old FlyMLMDataset for now
+    isflymlm = isflymlm_dataset(train_dataset)
+
+    example, samplesplot = subsample_batch(examplein, nsamples=nsamplesplot,
                                            dataset=train_dataset)
 
-    israwpred = type(pred) is dict
-    if israwpred:
-        batchpred = pred
-        pred = []
-        for i, samplei in enumerate(samplesplot):
-            predcurr = get_batch_idx(batchpred, samplei)
-            flyexample = example[i].copy()
-            # just to make sure no data sticks around
-            flyexample.labels.erase_labels()
-            flyexample.labels.set_prediction(predcurr)
-            pred.append(flyexample)
-    elif type(pred) is FlyExample:
-        pred, _ = subsample_batch(pred, samples=samplesplot)
+    if predin is not None:
+        predinaug = {k: v for (k, v) in predin.items()}
+        if not isflymlm:
+            if 'metadata' in examplein:
+                predinaug['metadata'] = examplein['metadata']
+            if 'inputs' in examplein:
+                predinaug['input'] = examplein['input']
+        pred, _ = subsample_batch(predinaug, samples=samplesplot, dataset=train_dataset)
 
     nsamplesplot = len(example)
-    if pred is not None:
+    if predin is not None:
         assert (len(pred) == nsamplesplot)
-
-    contextl = example[0].ntimepoints
+        
+    if isflymlm:
+        contextl = example[0].ntimepoints
+    else:
+        key = list(example[0]['labels'].keys())[0]
+        contextl = example[0]['labels'][key].array.shape[0]
+        
     if tsplot is None:
         tsplot = np.round(np.linspace(0, contextl - 1, ntsplot)).astype(int)
     else:
@@ -690,7 +811,7 @@ def debug_plot_pose(example, train_dataset=None, pred=None, data=None,
         ntsplot = len(tsplot)
 
     if ax is None:
-        fig, ax = plt.subplots(nsamplesplot, ntsplot, squeeze=False)
+        fig, ax = plt.subplots(nsamplesplot, ntsplot, squeeze=False, figsize=(3 * ntsplot, 3 * nsamplesplot))
 
     if h is None:
         h = {'kpt0': [], 'kpt1': [], 'edge0': [], 'edge1': []}
@@ -703,28 +824,44 @@ def debug_plot_pose(example, train_dataset=None, pred=None, data=None,
         true_args = {}
 
     if pred_discrete_mode == 'sample':
-        pred_args = {'nsamples': 1, 'collapse_samples': True}
+        if isflymlm:
+            pred_args = {'nsamples': 1, 'collapse_samples': True}
+        else:
+            invert_args = {'discretize': {'do_sampling': True}}
     else:
-        pred_args = {}
+        if isflymlm:
+            pred_args = {}
+        else:
+            invert_args = {'discretize': {'do_sampling': False}}
+
+    nametrue = 'Labels'
 
     for i in range(nsamplesplot):
         iplot = samplesplot[i]
         examplecurr = example[i]
-        Xkp_true = examplecurr.labels.get_next_keypoints(**true_args)
-        nametrue = 'Labels'
-        # ['input'][iplot,0,...].numpy(),
-        #                            example['init'][iplot,...].numpy(),
-        #                            example['labels'][iplot,...].numpy(),
-        #                            example['scale'][iplot,...].numpy())
-        # Xkp_true = Xkp_true[...,0]
-        t0 = examplecurr.metadata['t0']
-        flynum = examplecurr.metadata['flynum']
-        if pred is not None:
+        if isflymlm:
+            Xkp_true = examplecurr.labels.get_next_keypoints(**true_args)
+            t0 = examplecurr.metadata['t0']
+            flynum = examplecurr.metadata['flynum']
+        else:
+            Xkp_true = apf.dataset.apply_inverse_operations(examplecurr['labels']['velocity'],extraargs=invert_args)
+            Xkp_true = Xkp_true[0].transpose(0,2,1)
+            t0 = examplecurr['metadata']['start_frame']
+            flynum = examplecurr['metadata']['agent_id']
+        if predin is not None:
             predcurr = pred[i]
-            Xkp_pred = predcurr.labels.get_next_keypoints(**pred_args)
+            predcurr['metadata'] = examplecurr['metadata']
+            if isflymlm:
+                Xkp_pred = predcurr.labels.get_next_keypoints(**pred_args)
+            else:
+                Xkp_pred = apf.dataset.apply_inverse_operations(predcurr['labels']['velocity'],extraargs=invert_args)
+                Xkp_pred = Xkp_pred[0].transpose(0,2,1)
             namepred = 'Pred'
         elif data is not None:
-            Xkp_pred = data['X'][:, :, t0:t0 + contextl, flynum].transpose(2, 0, 1)
+            if isflymlm:
+                Xkp_pred = data['X'][:, :, t0:t0 + contextl, flynum].transpose(2, 0, 1)
+            else:
+                Xkp_pred = data['track'].array[flynum,t0:t0+contextl].transpose(0,2,1)
             namepred = 'Raw data'
         else:
             Xkp_pred = None
@@ -747,14 +884,14 @@ def debug_plot_pose(example, train_dataset=None, pred=None, data=None,
                 ax[i, j].set_title(f't = {tplot}')
 
             h['kpt0'][i][j], h['edge0'][i][j], _, _, _ = plot_fly(Xkp_true[tplot, :, :],
-                                                                       skel_lw=2, color=[0, 0, 0],
-                                                                       ax=ax[i, j], hkpt=h['kpt0'][i][j],
-                                                                       hedge=h['edge0'][i][j])
+                                                                skel_lw=2, color=[0, 0, 0],
+                                                                ax=ax[i, j], hkpt=h['kpt0'][i][j],
+                                                                hedge=h['edge0'][i][j])
             if Xkp_pred is not None:
                 h['kpt1'][i][j], h['edge1'][i][j], _, _, _ = plot_fly(Xkp_pred[tplot, :, :],
-                                                                           skel_lw=1, color=[0, 1, 1],
-                                                                           ax=ax[i, j], hkpt=h['kpt1'][i][j],
-                                                                           hedge=h['edge1'][i][j])
+                                                                    skel_lw=1, color=[0, 1, 1],
+                                                                    ax=ax[i, j], hkpt=h['kpt1'][i][j],
+                                                                    hedge=h['edge1'][i][j])
                 if i == 0 and j == 0:
                     ax[i, j].legend([h['edge0'][i][j], h['edge1'][i][j]], [nametrue, namepred])
             ax[i, j].set_aspect('equal')
@@ -816,22 +953,44 @@ def debug_plot_pose_prob(example, train_dataset, predcpu, tplot, fig=None, ax=No
     return h, ax, fig
 
 
-def debug_plot_sample(example_in, dataset=None, nplot=3):
+def debug_plot_sample(example_in, dataset=None, nplot=3, pred=None, fig=None, ax=None):
+    
+    isflymlm = isflymlm_dataset(dataset)
+    
     example, samplesplot = subsample_batch(example_in, nsamples=nplot, dataset=dataset)
     nplot = len(example)
 
-    fig, ax = plt.subplots(nplot, 2, squeeze=False)
+    if fig is None:
+        fig, ax = plt.subplots(nplot, 3, squeeze=False, figsize=(15, 4 * nplot))
+    elif ax is None:
+        ax = fig.get_axes()
 
-    idx = example[0].inputs.get_sensory_feature_idx()
+    if isflymlm:
+        idx = example[0].inputs.get_sensory_feature_idx()
+        T = example[0].ntimepoints
+    else:
+        sensory_op = apf.dataset.get_operation(example[0]['inputs']['sensory'].operations,'sensory')
+        idx = sensory_op.idxinfo
+        T = example[0]['inputs']['sensory'].array.shape[0]
+        
     inputidxstart = [x[0] - .5 for x in idx.values()]
     inputidxtype = list(idx.keys())
-    T = example[0].ntimepoints
 
     for iplot, samplei in enumerate(samplesplot):
-        ax[iplot, 0].cla()
-        ax[iplot, 1].cla()
-        ax[iplot, 0].imshow(example[iplot].inputs.get_raw_inputs(),
-                            vmin=-3, vmax=3, cmap='coolwarm', aspect='auto')
+        for i in range(3):
+            ax[iplot, i].cla()
+        
+        if isflymlm:
+            inputs = example[iplot].inputs.get_raw_inputs()
+            labels = example[iplot].labels.get_multi(zscored=True)
+        else:                    
+            inputs = example[iplot]['inputs']['sensory'].array
+            labels = []
+            for v in example[iplot]['labels'].values():
+                zlabels_curr = apf.dataset.invert_to_named(v,'zscore')
+                labels.append(zlabels_curr)
+            labels = np.concatenate(labels,axis=-1)
+        ax[iplot, 0].imshow(inputs, vmin=-3, vmax=3, cmap='coolwarm', aspect='auto')
         ax[iplot, 0].set_title(f'Input {samplei}')
         # ax[iplot,0].set_xticks(inputidxstart)
         for j in range(len(inputidxtype)):
@@ -841,9 +1000,20 @@ def debug_plot_sample(example_in, dataset=None, nplot=3):
         ax[iplot, 0].plot([lastidx - .5, ] * 2, [-.5, T - .5], 'k-')
 
         # ax[iplot,0].set_xticklabels(inputidxtype)
-        ax[iplot, 1].imshow(example[iplot].labels.get_multi(zscored=True),
+        ax[iplot, 1].imshow(labels,
                             vmin=-3, vmax=3, cmap='coolwarm', aspect='auto')
         ax[iplot, 1].set_title(f'Labels {samplei}')
+        
+        if pred is not None:
+            assert isflymlm == False, "Prediction plotting not implemented for FlyMLM"
+            predcurr = get_batch_idx(pred, samplei)
+            predcurrdata = dataset.item_to_data(predcurr)
+            zscored_velocity = apf.dataset.invert_to_named(predcurrdata['labels']['velocity'],'zscore')
+            ax[iplot,2].imshow(zscored_velocity,
+                               vmin=-3, vmax=3, cmap='coolwarm', aspect='auto')
+            ax[iplot,2].set_title(f'Pred {samplei}')
+
+        
     return fig, ax
 
 
@@ -1230,13 +1400,23 @@ def debug_plot_histogram_edges(train_dataset):
     ax[0].set_yticklabels([str(t) for t in ts])
     return fig, ax
 
+def isflymlm_dataset(dataset):
+    return isinstance(dataset, flyllm.dataset.FlyMLMDataset)
 
 def initialize_debug_plots(dataset, dataloader, data, name='', tsplot=None, traj_nsamplesplot=3):
+    
+    # keep compatibility with old FlyMLMDataset for now
+    isflymlm = isflymlm_dataset(dataset)
+    
     example_batch = next(iter(dataloader))
-    example = FlyExample(example_in=example_batch, dataset=dataset)
+    if isflymlm:
+        example = FlyExample(example_in=example_batch, dataset=dataset)
+    else:
+        example = dataset.item_to_data(example_batch)
+
 
     # plot to visualize input features
-    fig, ax = debug_plot_sample(example, dataset)
+    figsample, axsample = debug_plot_sample(example, dataset)
 
     # plot to check that we can get poses from examples
     hpose, ax, fig = debug_plot_pose(example, dataset, data=data, tsplot=tsplot)
@@ -1253,6 +1433,8 @@ def initialize_debug_plots(dataset, dataloader, data, name='', tsplot=None, traj
     figtraj.tight_layout()
 
     hdebug = {
+        'figsample': figsample,
+        'axsample': axsample,
         'figpose': fig,
         'axpose': ax,
         'hpose': hpose,
@@ -1263,9 +1445,6 @@ def initialize_debug_plots(dataset, dataloader, data, name='', tsplot=None, traj
         'figstate': None,
         'example': example
     }
-
-    plt.show()
-    plt.pause(.001)
 
     return hdebug
 
@@ -1281,7 +1460,8 @@ def update_debug_plots(hdebug, config, model, dataset, example, pred, criterion=
             pred1 = {k: v.detach().cpu() for k, v in pred.items()}
         else:
             pred1 = pred.detach().cpu()
-    debug_plot_pose(example, dataset, pred=pred1, h=hdebug['hpose'], ax=hdebug['axpose'], fig=hdebug['figpose'],
+    debug_plot_sample(example,dataset,fig=hdebug['figsample'],ax=hdebug['axsample'],pred=pred1)
+    debug_plot_pose(example, dataset, predin=pred1, h=hdebug['hpose'], ax=hdebug['axpose'], fig=hdebug['figpose'],
                           tsplot=tsplot)
     debug_plot_batch_traj(example, dataset, criterion=criterion, config=config, pred=pred1, ax=hdebug['axtraj'],
                           fig=hdebug['figtraj'], nsamplesplot=traj_nsamplesplot)
@@ -1291,7 +1471,8 @@ def update_debug_plots(hdebug, config, model, dataset, example, pred, criterion=
                                                            fig=hdebug['figstate'])
         hdebug['axstate'][0].set_title(name)
 
-    hdebug['axtraj'][0].set_title(name)
+    ti = hdebug['axtraj'][0].get_title()
+    hdebug['axtraj'][0].set_title(f'{name}: {ti}')
 
 
 def initialize_loss_plots(loss_epoch):

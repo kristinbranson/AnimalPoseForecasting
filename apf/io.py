@@ -5,6 +5,7 @@ import json
 import numpy as np
 import pathlib
 import logging
+import tqdm
 
 from apf.data import flip_agents, filter_data_by_categories, load_raw_npz_data
 
@@ -21,17 +22,36 @@ def save_model(savefile, model, lr_optimizer=None, scheduler=None, loss=None, co
         tosave['loss'] = loss
     if config is not None:
         tosave['config'] = config
+    elif hasattr(model, 'config') and model.config is not None:
+        tosave['config'] = model.config
     if sensory_params is not None:
         tosave['SENSORY_PARAMS'] = sensory_params
     if hasattr(model, 'dataset_params'):
         tosave['dataset_params'] = model.dataset_params
+        
+    # make sure parent directory exists
+    savedir = os.path.dirname(savefile)
+    if len(savedir) > 0 and (not os.path.exists(savedir)):
+        os.makedirs(savedir)
+        
     torch.save(tosave, savefile)
     return
 
+def modernize_model_file(loadfile,dataset,config,device):
+    LOG.info(f'Loading model from file {loadfile}...')
+    state = torch.load(loadfile, map_location=device, weights_only=False)
+    if 'model' not in state:
+        state = {'model': state}
+    if 'dataset_params' not in state['model']:
+        state['dataset_params'] = dataset.get_params()
+    if 'config' not in state:
+        state['config'] = config
+    return state    
+    
 
 def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, config=None):
     LOG.info(f'Loading model from file {loadfile}...')
-    state = torch.load(loadfile, map_location=device)
+    state = torch.load(loadfile, map_location=device, weights_only=False)
     if model is not None:
         model.load_state_dict(state['model'])
     if lr_optimizer is not None and ('lr_optimizer' in state):
@@ -41,7 +61,7 @@ def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, confi
     if config is not None:
         load_config_from_model_file(config=config, state=state)
 
-    loss = {}
+    loss = {'train': None, 'val': None}
     if 'loss' in state:
         if isinstance(loss, dict):
             loss = state['loss']
@@ -226,15 +246,6 @@ def get_modeltype_str(config, dataset):
         modeltype_str = f"{config['modelstatetype']}_{config['modeltype']}"
     else:
         modeltype_str = config['modeltype']
-    if dataset.flatten:
-        modeltype_str += '_flattened'
-    if dataset.continuous and dataset.discretize:
-        reptype = 'mixed'
-    elif dataset.continuous:
-        reptype = 'continuous'
-    elif dataset.discretize:
-        reptype = 'discrete'
-    modeltype_str += f'_{reptype}'
     if config['categories'] is None or len(config['categories']) == 0:
         category_str = 'all'
     else:
@@ -243,11 +254,22 @@ def get_modeltype_str(config, dataset):
 
     return modeltype_str
 
+modelname_patterns = [r'^(.*)_(\d{8}T\d{6})_.*epoch(\d+)$', # new pattern 20251028, <modeltype_str>_<savetime>_epoch<epoch>
+                      r'^(.*)_epoch(\d+)_(\d{8}T\d{6})$', # old pattern <modeltype_str>_epoch<epoch>_<savetime>
+                      r'^(.*)_(\d{8}T\d{6})$'] # old pattern <modeltype_str>_<savetime>
 
-def parse_modelfile(modelfile, modelname_pattern=r'fly(.*)_epoch\d+_(\d{8}T\d{6})'):
+
+def parse_modelfile(modelfile, modelname_pattern=None):
     _, filestr = os.path.split(modelfile)
     filestr, _ = os.path.splitext(filestr)
-    m = re.match(modelname_pattern, filestr)
+    
+    if modelname_pattern is None:
+        for modelname_pattern in modelname_patterns:
+            m = re.match(modelname_pattern, filestr)
+            if m is not None:
+                break
+    else:
+        m = re.match(modelname_pattern, filestr)
     if m is None:
         modeltype_str = ''
         savetime = ''
@@ -260,8 +282,15 @@ def parse_modelfile(modelfile, modelname_pattern=r'fly(.*)_epoch\d+_(\d{8}T\d{6}
 def clean_intermediate_results(savedir):
     modelfiles = list(pathlib.Path(savedir).glob('*.pth'))
     modelfilenames = [p.name for p in modelfiles]
-    p = re.compile('^(?P<prefix>.+)_epoch(?P<epoch>\d+)_(?P<suffix>.*).pth$')
-    m = [p.match(n) for n in modelfilenames]
+    
+    pold = re.compile(r'^(?P<prefix>.+)_epoch(?P<epoch>\d+)_(?P<suffix>.*).pth$')
+    pnew = re.compile(r'^(?P<prefix>.+)_(?P<suffix>.*)_epoch(?P<epoch>\d+).pth$')
+    m = []
+    for modelfilename in modelfilenames:
+        mcurr = pnew.match(modelfilename)
+        if mcurr is None:
+            mcurr = pold.match(modelfilename)
+        m.append(mcurr)
     ids = np.array([x.group('prefix') + '___' + x.group('suffix') for x in m])
     epochs = np.array([int(x.group('epoch')) for x in m])
     uniqueids, idx = np.unique(ids, return_inverse=True)
@@ -298,8 +327,8 @@ def compute_scale_all_agents(data, compute_scale_per_agent):
     max_n_agents = data['X'].shape[-1]
     scale_per_agent = None
 
-    for agent_num in range(max_n_agents):
-        idscurr = np.unique(data['ids'][data['ids'][:, agent_num] >= 0, agent_num])
+    for agent_num in tqdm.trange(max_n_agents, desc='Computing scale per agent'):
+        idscurr = np.unique(data['ids'][(data['ids'][:, agent_num] >= 0) & data['isdata'][:,agent_num], agent_num])
         for id in idscurr:
             idx = data['ids'][:, agent_num] == id
             s = compute_scale_per_agent(data['X'][..., idx, agent_num])
@@ -307,20 +336,25 @@ def compute_scale_all_agents(data, compute_scale_per_agent):
                 scale_per_agent = np.zeros((s.size, maxid + 1))
                 scale_per_agent[:] = np.nan
             else:
-                assert (np.all(np.isnan(scale_per_agent[:, id])))
+                assert (np.all(np.isnan(scale_per_agent[:, id]))), \
+                    f"Scale for agent id {id} already computed, cannot recompute"
             scale_per_agent[:, id] = s.flatten()
 
     return scale_per_agent
 
 
-def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_noise_params=None, keypointnames=None):
+def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_noise_params=None, keypointnames=None,
+                         debug=False, n_frames_per_video=None, max_n_videos=None):
     # load data
     LOG.info(f"loading raw data from {infile}...")
-    data = load_raw_npz_data(infile)
+    data = load_raw_npz_data(infile,debug=debug, n_frames_per_video=n_frames_per_video, max_n_videos=max_n_videos)
     LOG.info(f"loaded data with X.shape {data['X'].shape}")
+
+    scale_per_agent = None
 
     # compute noise parameters
     if type(config['discreteidx']) == list and (len(config['discreteidx']) > 0) and config['discretize_epsilon'] is None:
+        LOG.info('computing noise parameters...')
         if (config['all_discretize_epsilon'] is None):
             assert compute_noise_params is not None, \
                 "Need 'compute_noise_params' to compute 'all_discrete_epsilon'"
@@ -332,20 +366,36 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
     # filter out data
     LOG.info('filtering data...')
     if config['categories'] is not None and len(config['categories']) > 0:
-        LOG.info(f"filtering data by categories {config['categories']}")
-        nframespre = np.count_nonzero(data['isdata'])
-        nidspre = len(np.unique(data['ids'][data['isdata']]))
-        filter_data_by_categories(data, config['categories'])
-        nframespost = np.count_nonzero(data['isdata'])
-        nidspost = len(np.unique(data['ids'][data['isdata']]))
-        LOG.info(f"After filtering nids {nidspre} -> {nidspost}, nframes {nframespre} -> {nframespost}")
+        fn = 'isdata'
+        LOG.info(f"filtering {fn} by categories {config['categories']}")
+        nframespre = np.count_nonzero(data[fn])
+        nidspre = len(np.unique(data['ids'][data[fn]]))
+        filter_data_by_categories(data, config['categories'],fn)
+        nframespost = np.count_nonzero(data[fn])
+        nidspost = len(np.unique(data['ids'][data[fn]]))
+        LOG.info(f"After filtering {fn} nids {nidspre} -> {nidspost}, n agent-frames {nframespre} -> {nframespost}")
+        assert nidspost > 0, "No valid agents remain after filtering by categories"
+        assert nframespost > 0, "No valid data remains after filtering by categories"
+        
+    # set useoutputmask
+    if ('output_categories' in config) and (config['output_categories'] is not None) and (len(config['output_categories']) > 0):
+        fn = 'useoutputmask'
+        LOG.info(f"filtering {fn} by categories {config['output_categories']}")
+        nframespre = np.count_nonzero(data['isdata']&data[fn])
+        nidspre = len(np.unique(data['ids'][data['isdata']&data[fn]]))
+        filter_data_by_categories(data, config['output_categories'],fn)
+        nframespost = np.count_nonzero(data['isdata']&data[fn])
+        nidspost = len(np.unique(data['ids'][data['isdata']&data[fn]]))
+        LOG.info(f"After filtering {fn} nids {nidspre} -> {nidspost}, n agent-frames {nframespre} -> {nframespost}")
+        assert nidspost > 0, "No valid agents remain after filtering by categories"
+        assert nframespost > 0, "No valid data remains after filtering by categories"
 
     # augment by flipping
     if 'augment_flip' in config and config['augment_flip']:
         assert keypointnames is not None, "Need keypointnames to perform flip augmentation"
         LOG.info('augmenting data by flipping...')
-        nframespre = np.count_nonzero(data['isdata'])
-        nidspre = len(np.unique(data['ids'][data['isdata']]))
+        nframespre = np.count_nonzero(data['isdata']&data['useoutputmask'])
+        nidspre = len(np.unique(data['ids'][data['isdata']&data['useoutputmask']]))
         flipvideoidx = np.max(data['videoidx']) + 1 + data['videoidx']
         data['videoidx'] = np.concatenate((data['videoidx'], flipvideoidx), axis=0)
         firstid = np.max(data['ids']) + 1
@@ -358,8 +408,9 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
         data['y'] = np.tile(data['y'], (1, 2, 1))
         data['isdata'] = np.tile(data['isdata'], (2, 1))
         data['isstart'] = np.tile(data['isstart'], (2, 1))
-        nframespost = np.count_nonzero(data['isdata'])
-        nidspost = len(np.unique(data['ids'][data['isdata']]))
+        data['useoutputmask'] = np.tile(data['useoutputmask'], (2, 1))
+        nframespost = np.count_nonzero(data['isdata']&data['useoutputmask'])
+        nidspost = len(np.unique(data['ids'][data['isdata']&data['useoutputmask']]))
         LOG.info(f"After flip augmentation nids {nidspre} -> {nidspost}, nframes {nframespre} -> {nframespost}")
 
     # compute scale parameters
@@ -367,10 +418,27 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
         return data, None
 
     LOG.info('computing scale parameters...')
-    scale_per_agent = compute_scale_all_agents(data, compute_scale_per_agent)
+    if scale_per_agent is None:
+        scale_per_agent = compute_scale_all_agents(data, compute_scale_per_agent)
 
     # throw out data that is missing scale information - not so many frames
     idsremove = np.nonzero(np.any(np.isnan(scale_per_agent), axis=0))[0]
     data['isdata'][np.isin(data['ids'], idsremove)] = False
+    
+    # condense, only keep videos that have data, makes feature computation faster later...
+    hasdata = np.any(data['isdata'], axis=1)
+    videoidx = np.unique(data['videoidx'][hasdata])
+    keepidx = np.isin(data['videoidx'], videoidx)[:,0]
+    LOG.info(f'Condensing data: frames reduced from {len(keepidx)} to {np.count_nonzero(keepidx)}')
+    if not np.all(keepidx):
+        assert ~np.any(data['isdata'][~keepidx,:])
+        data['X'] = data['X'][:,:,keepidx,:]
+        data['y'] = data['y'][:,keepidx,:]
+        data['videoidx'] = data['videoidx'][keepidx]
+        data['ids'] = data['ids'][keepidx,:]
+        data['frames'] = data['frames'][keepidx]
+        data['isstart'] = data['isstart'][keepidx,:]
+        data['isdata'] = data['isdata'][keepidx,:]    
+        data['useoutputmask'] = data['useoutputmask'][keepidx,:]
 
     return data, scale_per_agent
