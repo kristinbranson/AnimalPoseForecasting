@@ -1192,7 +1192,7 @@ def compute_loss_mixed(model, dataloader, device, mask, weight_discrete):
             loss_curr, loss_discrete_curr, loss_continuous_curr = mixed_causal_criterion(
                 example, pred, weight_discrete=weight_discrete, extraout=True
             )
-            nmask += example['input'].shape[0] * example['input'].shape[1]
+            nmask += example['useoutputmask'].sum().detach()
             all_loss[i] = loss_curr
             loss += loss_curr
             loss_discrete += loss_discrete_curr
