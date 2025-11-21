@@ -6,9 +6,9 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.18.1
+#       jupytext_version: 1.16.2
 #   kernelspec:
-#     display_name: transformer
+#     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
@@ -269,7 +269,7 @@ def end_iter_hook(model=None, step=None, example=None, predfn=None, **kwargs):
 
     with torch.no_grad():
         trainpred = predfn(example['input'].to(device=device))
-        valpred = predfn(valexample['input'].to(device=device))
+        # valpred = predfn(valexample['input'].to(device=device))
     update_debug_plots(hdebug['train'],config,model,train_dataset,example,trainpred,name='Train',criterion=criterion,**debug_params)
     update_debug_plots(hdebug['val'],config,model,val_dataset,valexample,valpred,name='Val',criterion=criterion,**debug_params)
     refresh_plots(hdebug['train'])

@@ -6,16 +6,39 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.18.1
+#       jupytext_version: 1.16.2
 #   kernelspec:
-#     display_name: transformer
+#     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
 # %%
+# # TODO today:
+
+# # Something is off with the normalized keypoints, look at Kristin's new data and verify the order in which the keys are
+
+# Compare pose diffusion with L1 vs L2 norm loss functions
+# Compare pose diffusion with [64, 128, 256] MPL with [512, 256, 128, 64] MLP (should I try some other variants too?)
+
+
+
+# Make a config that has contextlen 64, 6 layers, no convolution on the sensory inputs (or no sensory inputs)
+# Can it learn something reasonable in a short time, like 1 hour?
+# Once it does, try training it without binning
+# Once that works, try training it with diffusion
+#     Try it on the velocity features?
+#     Try it by always adding a lot of noise (it should learn to ignore those noisy inputs)
+#     Try by gradually allowing more noise in later phases
+
+# Once I find a regime that seems to be working:
+#     Try swapping out pose velocity for pose 
+#     Try swapping out pose for body centric keypoints
+
+# %%
 # %load_ext autoreload
 # %autoreload 2
+# %matplotlib inline
     
 import numpy as np
 
@@ -26,7 +49,7 @@ import pickle
 
 from apf.io import read_config
 from apf.training import train
-from apf.utils import function_args_from_config
+from apf.utils import function_args_from_config, set_mpl_backend, is_notebook
 from apf.simulation import simulate
 from apf.models import initialize_model
 
@@ -39,16 +62,26 @@ import time
 import logging
 import os
 
+set_mpl_backend('tkAgg')
+ISNOTEBOOK = is_notebook()
+if ISNOTEBOOK:
+    from IPython.display import HTML, display, clear_output
+    plt.ioff()
+else:
+    plt.ion()
+
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
 
 # %%
-configfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/config_fly_llm_predvel_20251007.json"
-mode = 'test' # can toggle to 'train'/'test'
+# configfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/config_fly_llm_predvel_20251007.json"
+configfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/config_fly_llm_predvel_simpler_20251104.json"
+
+mode = 'train' # can toggle to 'train'/'test'
 pretrained_modelfile = os.path.join('/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/llmnets',
                                     'predvel_20251007_20251002T000000_epoch200.pth')
 restartmodelfile = None
-debug_uselessdata=True
+debug_uselessdata=False
 
 # %%
 # # modernize model file
@@ -63,14 +96,17 @@ debug_uselessdata=True
 # torch.save(state, modelfile)
 
 # %%
+import time
+t0 = time.time()
+
 if mode == 'train':
     loadmodelfile = None
 else:
     loadmodelfile = pretrained_modelfile
     
-res = init_flyllm(configfile=configfile,mode=mode,restartmodelfile=restartmodelfile,
-                loadmodelfile=loadmodelfile,debug_uselessdata=debug_uselessdata,
-                needtraindata=True)
+res = init_flyllm(configfile=configfile, mode=mode, restartmodelfile=restartmodelfile,
+                  loadmodelfile=loadmodelfile, debug_uselessdata=debug_uselessdata,
+                  needtraindata=True)
 
 # unpack the results
 config = res['config']
@@ -98,12 +134,15 @@ modeltype_str = res['modeltype_str']
 device = res['device']
 savetime = res['model_savetime']
 
+time.time() - t0
+
+
+# %%
+# Time to load the full dataset: 506 seconds
 
 # %%
 # train
-
 if mode == 'train':
-
     # clean up memory allocation before training, particularly if running in a notebook
     # and things have crashed before...
     if device.type == 'cuda':
@@ -118,7 +157,7 @@ if mode == 'train':
         print(f'Initial cuda memory reserved: {memreserved:.3f} GB')
     
     savefilestr = os.path.join(config['savedir'], f"fly{modeltype_str}_{savetime}")
-
+    
     train_args = function_args_from_config(config,train)
     train_args['train_dataloader'] = train_dataloader
     train_args['val_dataloader'] = val_dataloader
@@ -131,7 +170,136 @@ if mode == 'train':
     train_args['start_epoch'] = start_epoch
     train_args['savefilestr'] = savefilestr
 
-    model, best_model, loss_epoch = train(**train_args)
+# %%
+from flyllm.plotting import update_debug_plots, update_loss_plots
+from flyllm.plotting import initialize_debug_plots, initialize_loss_plots
+
+valexample = next(iter(val_dataloader))
+
+debug_params = {}
+# if contextl is long, still just look at samples from the first 64 frames
+if config['contextl'] > 64:
+    debug_params['tsplot'] = np.round(np.linspace(0,64,5)).astype(int)
+    debug_params['traj_nsamplesplot'] = 1
+hdebug = {}
+hdebug['train'] = initialize_debug_plots(train_dataset, train_dataloader, res['train_data'], name='Train', **debug_params)
+# hdebug['val'] = initialize_debug_plots(val_dataset, val_dataloader, res['train_data'], name='Val', **debug_params)
+
+hloss = initialize_loss_plots(loss_epoch)
+
+
+def refresh_plots(hdebug):
+    
+    if ISNOTEBOOK:
+        if 'display_handles' not in hdebug:
+            hdebug['display_handles'] = {}
+        for k,fig in hdebug.items():
+            if not k.startswith('fig') or fig is None:
+                continue 
+            if k in hdebug['display_handles']:
+                hdebug['display_handles'][k].update(fig)
+            else:
+                hdebug['display_handles'][k] = display(fig,display_id=k)
+
+    else:
+        for k,fig in hdebug.items():
+            if not k.startswith('fig') or fig is None:
+                continue 
+            fig.canvas.draw()
+            fig.canvas.flush_events()
+
+if ISNOTEBOOK:
+    refresh_plots(hdebug['train'])
+    # refresh_plots(hdebug['val'])
+    refresh_plots(hloss)
+else:
+    plt.ion()
+    plt.show(block=False)
+
+
+def end_iter_hook(model=None, step=None, example=None, predfn=None, **kwargs):
+    
+    assert step is not None
+    
+    if step % config['niterplot'] != 0:
+        return
+
+    assert model is not None
+    assert example is not None
+    assert predfn is not None
+
+    LOG.info(f'Updating debug plots at step {step}')
+
+    with torch.no_grad():
+        trainpred = predfn(example['input'].to(device=device))
+        # valpred = predfn(valexample['input'].to(device=device))
+    update_debug_plots(hdebug['train'],config,model,train_dataset,example,trainpred,name='Train',criterion=criterion,**debug_params)
+    # update_debug_plots(hdebug['val'],config,model,val_dataset,valexample,valpred,name='Val',criterion=criterion,**debug_params)
+    refresh_plots(hdebug['train'])
+    # refresh_plots(hdebug['val'])
+    return
+
+def end_epoch_hook(loss_epoch=None, epoch=None, **kwargs):
+    assert loss_epoch is not None
+    LOG.info(f'Updating loss plots at end of epoch {epoch}')
+    update_loss_plots(hloss, loss_epoch)
+    refresh_plots(hloss)
+    return
+
+train_args['end_epoch_hook'] = end_epoch_hook
+train_args['end_iter_hook'] = end_iter_hook
+
+# %%
+# train_args['num_train_epochs'] = 10
+train_args['optimizer_args']['lr'] = 0.0005
+train_args['optimizer_args']['lr']
+
+# %%
+train_args['savefilestr'] += '_10x_rate'
+train_args['savefilestr']
+
+# %%
+# from apf.models import initialize_model
+# model, criterion = initialize_model(config, train_dataset, device)
+# train_args['model'] = model
+
+# %%
+# model_file = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/notebooks/flyllm_models/flypredvel_20251007_simple_2025111"
+# checkpoint = torch.load(model_file, map_location='cuda', weights_only=False)
+# model.load_state_dict(checkpoint['model'])
+
+# %%
+import time
+t0 = time.time()
+out = train(**train_args)
+# model, best_model, loss_epoch = out
+time.time() - t0
+
+# %%
+
+# %%
+204 / 60 * 20 # one hour on this smaller data
+
+1:15 hour: so total would > 20 hours
+
+- increase batch size by 4x
+1:33 hour: this means that its actually slower... maybe going to a beefier machine would be better here
+
+- skip the sensory features
+(did  make a difference)
+
+- on an h100 machine
+1 hour (not much faster)
+44 minutes with a 4x batch size
+27 minutes if I skip flipping
+
+# 44 minutes with reduced data (V3) # this was doing the same since I hadn't filtered, however, filtering didn't save much data
+25 minutes for 10 epochs with filtering on movie ids
+    1 hour for 30 epochs, lets see if that gets us as much juice as we hope
+    next up, train this with visualiation hooks
+
+# %%
+tmp = 0
 
 # %%
 # Plot the losses
@@ -168,6 +336,17 @@ plt.legend()
 plt.title('Discrete loss')
 plt.show()
 # %%
+
+# %%
+
+# %%
+model_file = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/notebooks/flyllm_models/flypredvel_20251007_simple_20251119T080019_epoch20.pth"
+checkpoint = torch.load(model_file, map_location='cuda', weights_only=False)
+model.load_state_dict(checkpoint['model'])
+
+# %%
+
+# %%
 # where isdata?
 isdata = ~np.all(np.isnan(pose.array),axis=-1)
 plt.imshow(isdata,aspect='auto',interpolation='none')
@@ -175,6 +354,11 @@ agent_ids = np.nonzero(np.any(isdata,axis=1))[0]
 start_frame = 1000
 plt.xlabel('Frame')
 plt.ylabel('Agent ID')
+
+# %%
+train_dataset.sessions
+start_frame = 45004
+agent_ids = [0, 1, 4, 6]
 
 # %%
 # simulate
@@ -193,8 +377,7 @@ gt_track, pred_track = simulate(
     start_frame=start_frame,
 )
 time.time() - t0
-
-# +
+# %%
 plt.figure(figsize=(10, 5))
 for i in range(2):
     plt.subplot(1, 2, i+1)
@@ -212,6 +395,7 @@ for agent_id in agent_ids:
     plt.plot(x, y, '.', markersize=1)
     plt.axis('equal')
 plt.show()
+
 # %%
 
 savedir = "flyllm_animations"
@@ -230,3 +414,20 @@ ani = animate_pose(
     savevidfile=savevidfile,
     contextl=config['contextl']
 )
+
+# %%
+1+2
+
+# %%
+n_flies -1
+T -2
+
+[_, _, T, n_flies]
+
+# %%
+track = res['train_data']['track'].array.shape
+
+# %%
+# # animate_pose??
+
+# %%

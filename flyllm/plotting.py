@@ -661,7 +661,7 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
             if isinstance(zmovement_continuous_true,np.ndarray):
                 zmovement_continuous_true = torch.from_numpy(zmovement_continuous_true)
             useoutputmask = examplecurr.get('useoutputmask')
-            print(f'sample {iplot}: nzero = {torch.count_nonzero(~useoutputmask)} out of {useoutputmask.numel()}')
+            # print(f'sample {iplot}: nzero = {torch.count_nonzero(~useoutputmask)} out of {useoutputmask.numel()}')
         
         err_total = None
         if isflymlm:

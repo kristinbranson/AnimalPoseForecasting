@@ -63,6 +63,7 @@ def mixed_causal_criterion(tgt, pred, weight_discrete=.5, extraout=False):
     assert n > 0, 'no examples in batch'
     if iscontinuous:
         err_continuous = lossfcn_continuous(pred_continuous, tgt_continuous.to(device=pred_continuous.device)) * n
+        assert torch.isnan(err_continuous).any() == False, 'continuous loss contains nans'
     else:
         err_continuous = torch.tensor(0., dtype=tgt_discrete.dtype, device=tgt_discrete.device)
     if isdiscrete:
@@ -584,6 +585,19 @@ class TransformerModel(torch.nn.Module):
             output = {'continuous': output_continuous, 'discrete': output_discrete}
         else:
             output = {'continuous': output}
+
+        if torch.any(torch.isnan(output['continuous'])):
+            print("DANGER! Continuous output contains a nan value")
+            print(torch.isnan(output['continuous']).sum(0))
+            print(torch.isnan(output['continuous']).sum(1))
+        if 'discrete' in output and torch.any(torch.isnan(output['discrete'])):
+            print("DANGER! Discrete output contains a nan value")
+            for d in range(self.d_output_discrete):
+                output_dim = output['discrete'][:, d, :]
+                if torch.any(torch.isnan(output_dim)):
+                    print(f'- bin dimension {d} has nans:')
+                    print(torch.isnan(output_dim).sum(0))
+                    print(torch.isnan(output_dim).sum(1))
 
         return output
 
@@ -1195,7 +1209,8 @@ def compute_loss_mixed(model, dataloader, device, mask, weight_discrete):
             loss_curr, loss_discrete_curr, loss_continuous_curr = mixed_causal_criterion(
                 example, pred, weight_discrete=weight_discrete, extraout=True
             )
-            nmask += example['input'].shape[0] * example['input'].shape[1]
+            # nmask += example['input'].shape[0] * example['input'].shape[1]
+            nmask += example['useoutputmask'].sum().detach()
             all_loss[i] = loss_curr
             loss += loss_curr
             loss_discrete += loss_discrete_curr

@@ -154,7 +154,7 @@ def load_data(
         debug=debug,
         n_frames_per_video=15000,
         max_n_videos=5,
-        keep_video_ids=keep_video_ids,
+        # keep_video_ids=keep_video_ids,
     )
 
     # Remove all NaN agents (sometimes the last one is a dummy)
