@@ -1392,7 +1392,9 @@ class Dataset(torch.utils.data.Dataset):
         """
         if start_offset is None:
             start_offset = np.random.randint(self.context_length)
-        self.chunk_indices = compute_chunk_indices(self.sessions, self.context_length, start_offset=start_offset)
+        self.chunk_indices = compute_chunk_indices(
+            self.sessions, self.context_length, start_offset=start_offset, useoutputmask=self.useoutputmask
+        )
         
     def split_input_by_names(self, input: np.ndarray | torch.Tensor) -> dict[str, np.ndarray]:
         """ Splits input by data names (from self.inputs) 
