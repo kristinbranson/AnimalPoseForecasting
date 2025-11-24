@@ -146,10 +146,6 @@ if np.isnan(last_val_loss):
 # p = pstats.Stats('init_flyllm_profile.stats')
 # p.sort_stats('cumtime').print_stats(100)
 
-# %%
-p = pstats.Stats('init_flyllm_profile.stats')
-p.sort_stats('cumtime').print_stats(100)
-
 # %% [markdown]
 # ### some helper functions for profiling memory usage
 #
@@ -312,9 +308,6 @@ if True:
 
     end_iter_hook(model=model,step=0,example=trainexample,predfn=lambda input: model.output(input, mask=train_src_mask, is_causal=True))
     end_epoch_hook(loss_epoch=loss_epoch)
-
-# %%
-train_dataset.get_params()['labels']['velocity'][2]['attributes']['std'][:3]
 
 # %%
 # clean up memory allocation before training, particularly if running in a notebook
