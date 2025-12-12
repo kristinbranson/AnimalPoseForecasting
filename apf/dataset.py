@@ -1201,22 +1201,69 @@ def apply_opers_from_data_params(data_params: list[dict], datas: dict[str, Data]
 
     Returns:
         Post processed datas.
-    """
-    # assert len(datas_ref.keys()) == len(datas.keys()), "The two data collections must have the same keys"
-    processed_data = {}
-    for key in data_params.keys():
+    # """
+    # # assert len(datas_ref.keys()) == len(datas.keys()), "The two data collections must have the same keys"
+    # processed_data = {}
+    # for key in data_params.keys():
+    #     if key not in datas:
+    #         if check_match:
+    #             raise ValueError(f"Expect both data to have all of the same keys, but did not find '{key}' in datas")
+    #         else:
+    #             LOG.warning(f"Did not find '{key}' in datas, skipping")
+    #             continue 
+    #     # input datacurr may already have some operations applied, so we need to find the last operation that was applied
+    #     opers = get_post_operations(data_params[key], data=datas[key])
+    #     processed_data[key] = apply_operations(datas[key], opers)
+    # return processed_data
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from threading import Lock
+
+    def process_single_key(key, data_params, datas, check_match, log_lock):
+        """Process a single key's data operations."""
         if key not in datas:
             if check_match:
                 raise ValueError(f"Expect both data to have all of the same keys, but did not find '{key}' in datas")
             else:
-                LOG.warning(f"Did not find '{key}' in datas, skipping")
-                continue 
+                with log_lock:
+                    LOG.warning(f"Did not find '{key}' in datas, skipping")
+                return key, None
+        
         # input datacurr may already have some operations applied, so we need to find the last operation that was applied
         opers = get_post_operations(data_params[key], data=datas[key])
-        processed_data[key] = apply_operations(datas[key], opers)
-    return processed_data
+        result = apply_operations(datas[key], opers)
+        return key, result
 
-
+    def process_data_threaded(data_params, datas, check_match=True):
+        """
+        Threaded version of the original function.
+        
+        Args:
+            data_params: Dictionary of data parameters
+            datas: Dictionary of data to process
+            check_match: Whether to raise error on missing keys
+            
+        Returns:
+            Dictionary of processed data
+        """
+        processed_data = {}
+        log_lock = Lock()
+        
+        with ThreadPoolExecutor(max_workers=12) as executor:
+            # Submit all tasks
+            futures = {
+                executor.submit(process_single_key, key, data_params, datas, check_match, log_lock): key
+                for key in data_params.keys()
+            }
+            
+            # Collect results as they complete
+            for future in as_completed(futures):
+                key, result = future.result()
+                if result is not None:
+                    processed_data[key] = result
+        
+        return processed_data
+    
+    return process_data_threaded(data_params, datas, check_match)
 
 def collate_nested_dicts(batch):
     """Recursively collates nested dicts/arrays into batched tensors"""

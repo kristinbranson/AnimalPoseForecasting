@@ -6,9 +6,9 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.18.1
+#       jupytext_version: 1.11.2
 #   kernelspec:
-#     display_name: transformer
+#     display_name: flyllm
 #     language: python
 #     name: python3
 # ---
@@ -43,12 +43,25 @@ logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
 
 # %%
-configfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/config_fly_llm_predvel_20251007.json"
+configfile = "/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_optimalbinning_20251113.json"
 mode = 'test' # can toggle to 'train'/'test'
-pretrained_modelfile = os.path.join('/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/llmnets',
-                                    'predvel_20251007_20251002T000000_epoch200.pth')
+pretrained_modelfile = os.path.join('/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/notebooks/flyllm_models',
+                                    'flypredvel_20251007_20251114T194024_bestepoch200.pth')
 restartmodelfile = None
 debug_uselessdata=True
+
+# Enable concept computation
+overrideconfig = {
+    'compute_concepts': True,
+    'concept_params': {
+        'concept_type': 'start_walking',
+        'sigma': 2,
+        'thresh_stopped': 5.0,
+        'thresh_walking': 15.0,
+        'tstopped': 0.5,
+        'tfuture': 1.0,
+    }
+}
 
 # %%
 # # modernize model file
@@ -70,7 +83,7 @@ else:
     
 res = init_flyllm(configfile=configfile,mode=mode,restartmodelfile=restartmodelfile,
                 loadmodelfile=loadmodelfile,debug_uselessdata=debug_uselessdata,
-                needtraindata=True)
+                needtraindata=True,overrideconfig=overrideconfig)
 
 # unpack the results
 config = res['config']
@@ -133,41 +146,41 @@ if mode == 'train':
 
     model, best_model, loss_epoch = train(**train_args)
 
-# %%
-# Plot the losses
-if loss_epoch['val'] is not None:
-    idx = torch.argmin(loss_epoch['val']).item()
-    print((idx, loss_epoch['val'][idx].item()))
+# # %%
+# # Plot the losses
+# if loss_epoch['val'] is not None:
+#     idx = torch.argmin(loss_epoch['val']).item()
+#     print((idx, loss_epoch['val'][idx].item()))
 
-plt.figure(figsize=(15, 5))
-plt.subplot(1, 3, 1)
-if loss_epoch['train'] is not None:
-    plt.plot(loss_epoch['train'],label='train')
-if loss_epoch['val'] is not None:
-    plt.plot(loss_epoch['val'],label='val')
-    plt.plot(idx, loss_epoch['val'][idx], 'go')
-plt.legend()
-plt.title('Total loss')
+# plt.figure(figsize=(15, 5))
+# plt.subplot(1, 3, 1)
+# if loss_epoch['train'] is not None:
+#     plt.plot(loss_epoch['train'],label='train')
+# if loss_epoch['val'] is not None:
+#     plt.plot(loss_epoch['val'],label='val')
+#     plt.plot(idx, loss_epoch['val'][idx], 'go')
+# plt.legend()
+# plt.title('Total loss')
 
-plt.subplot(1, 3, 2)
-if 'train_continuous' in loss_epoch and loss_epoch['train_continuous'] is not None:
-    plt.plot(loss_epoch['train_continuous'],label='train')
-if 'val_continuous' in loss_epoch and loss_epoch['val_continuous'] is not None:
-    plt.plot(loss_epoch['val_continuous'],label='val')
-    plt.plot(idx, loss_epoch['val_continuous'][idx], 'go')
-plt.legend()
-plt.title('Continuous loss')
+# plt.subplot(1, 3, 2)
+# if 'train_continuous' in loss_epoch and loss_epoch['train_continuous'] is not None:
+#     plt.plot(loss_epoch['train_continuous'],label='train')
+# if 'val_continuous' in loss_epoch and loss_epoch['val_continuous'] is not None:
+#     plt.plot(loss_epoch['val_continuous'],label='val')
+#     plt.plot(idx, loss_epoch['val_continuous'][idx], 'go')
+# plt.legend()
+# plt.title('Continuous loss')
 
-plt.subplot(1, 3, 3)
-if 'train_discrete' in loss_epoch and loss_epoch['train_discrete'] is not None:
-    plt.plot(loss_epoch['train_discrete'],label='train')
-if 'val_discrete' in loss_epoch and loss_epoch['val_discrete'] is not None:
-    plt.plot(loss_epoch['val_discrete'],label='val')
-    plt.plot(idx, loss_epoch['val_discrete'][idx], 'go')
-plt.legend()
-plt.title('Discrete loss')
-plt.show()
-# %%
+# plt.subplot(1, 3, 3)
+# if 'train_discrete' in loss_epoch and loss_epoch['train_discrete'] is not None:
+#     plt.plot(loss_epoch['train_discrete'],label='train')
+# if 'val_discrete' in loss_epoch and loss_epoch['val_discrete'] is not None:
+#     plt.plot(loss_epoch['val_discrete'],label='val')
+#     plt.plot(idx, loss_epoch['val_discrete'][idx], 'go')
+# plt.legend()
+# plt.title('Discrete loss')
+# plt.show()
+# # %%
 # where isdata?
 isdata = ~np.all(np.isnan(pose.array),axis=-1)
 plt.imshow(isdata,aspect='auto',interpolation='none')

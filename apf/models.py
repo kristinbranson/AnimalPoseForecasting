@@ -571,6 +571,13 @@ class TransformerModel(torch.nn.Module):
         # the same to have these be combined in a single linear layer
         src = self.pos_encoder(src)
 
+        # Generate causal mask if is_causal=True and no mask provided
+        if is_causal and mask is None:
+            seq_len = src.size(1)  # batch_first=True, so dim 1 is sequence
+            mask = torch.nn.Transformer.generate_square_subsequent_mask(
+                seq_len, device=src.device
+            )
+
         # main transformer layers
         output = self.transformer_encoder(src, mask=mask, is_causal=is_causal)
 
