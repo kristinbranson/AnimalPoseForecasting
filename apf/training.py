@@ -146,7 +146,7 @@ def train(
             loss.backward()
 
             # how many timepoints are in this batch for normalization
-            nmask_train += example['input'].shape[0] * contextl
+            nmask_train += example['useoutputmask'].sum().detach()
 
             tr_loss_step = loss.detach()
             tr_loss += tr_loss_step
