@@ -1380,30 +1380,13 @@ def compute_noise_params(data, scale_perfly, sig_tracking=.25 / PXPERMM, delta_k
     else:
         return epsilon
 
-def compute_pose_distribution_stats(data,prctiles=[0,.001,.01,.1,.5,1,2.5,5]):
+def compute_pose_distribution_stats(pose,prctiles=[0,.001,.01,.1,.5,1,2.5,5]):
     
-    X = data['X'].reshape((data['X'].shape[0],data['X'].shape[1],-1))
-    ids = data['ids'].flatten()
-    isdata = data['isdata'].flatten() & (ids >= 0)
-    X = X[:,:,isdata]
-    ids = ids[isdata]
-    unique_ids = np.unique(ids)
-    N = X.shape[-1]
-    print(f'N = {N}')
-    relposes = None
-    off = 0
-    for id in tqdm.tqdm(unique_ids):
-        idxcurr = ids == id
-        xcurr = X[:,:,idxcurr]
-        relpose,_ = compute_pose_features(xcurr,scales_perfly[:,id])
-        if relposes is None:
-            d = relpose.shape[0]
-            relposes = np.zeros((d,N),dtype=relpose.dtype)
-            relposes[:] = np.nan
-        ncurr = relpose.shape[1]
-        relposes[:,off:off+ncurr] = relpose[:,:,0]
-        off += ncurr
-
+    relposes = pose.array[...,featrelative]
+    if relposes.ndim > 2:
+        relposes = relposes.reshape((-1,relposes.shape[-1]))
+    relposes = relposes.T  # nrelative x nsamples
+    
     relfeatangle = featangle[featrelative]
 
     prctiles = np.atleast_1d(prctiles)

@@ -5,151 +5,194 @@ import tqdm
 from apf.utils import set_batch_concat, allocate_batch_concat, clip_batch_concat
 from apf.models import ( 
     get_output_and_attention_weights,
-    pred_apply_fun
+    pred_apply_fun,
+    get_causal_mask
 )
+from apf.dataset import DataLoader
 from flyllm.pose import FlyExample
 from contextlib import nullcontext
 import datetime
 from flyllm.features import regularize_pose
 
-def predict_all(dataloader=None, dataset=None, model=None, config=None, mask=None, keepall=True, earlystop=None, debugcheat=False,
+def predict_all(dataset=None, model=None, config=None, keepall=True, earlystop=None, debugcheat=False,
                 savepredfile=None,saveinterval=600,nkeep=None,batchsize=None,shuffle=False,skipinterval=None):
+    """
+    predict_all(dataset=None, model=None, config=None, mask=None, keepall=True, earlystop=None, debugcheat=False,
+                savepredfile=None,saveinterval=600,nkeep=None,batchsize=None,shuffle=False,skipinterval=None)
+    Generate predictions for all (or a subset of) frames in a dataset in a single pass, giving sufficient temporal context
+    for each frame. It iteratively creates batches of length contextl = dataset.context_length, sampled every skipinterval 
+    frames. The predictions for the last nkeep frames of each batch are retained. 
 
-    # get dataset from dataloader
-    if dataset is None:
-        assert dataloader is not None
-        dataset = dataloader.dataset        
+    Parameters:
+    dataset: Dataset object containing the data to predict on.
+    model: The trained neural network. Required.
+    config: Configuration dict. Required.
+    mask: Attention mask for the transformer, if None, a causal mask will be created. Default None
+    keepall: If True, keep all timestep predictions; if False, only keep last nkeep timesteps. Default True
+    earlystop: If not None, only process this many batches. Default None
+    debugcheat: If True, copy labels to predictions instead of running the model (for debugging). Default False
+    savepredfile: If not None, periodically save intermediate predictions to this file. Default None
+    saveinterval: Number of seconds between saving intermediate predictions to disk. Default 600 seconds
+    nkeep: Number of last timesteps to keep from each batch if keepall is False. If None and skipinterval is provided,
+        nkeep is set to skipinterval. Default None
+    skipinterval: Sample every contextl sequence every skip_interval frames. If None, skipinterval = nkeep. Default None
+    batchsize: Batch size to use when creating the dataloader if dataloader is not provided. If None, uses 
+        config['test_batch_size']. Default None
+    shuffle: Whether to shuffle the dataset when creating the dataloader if dataloader is not provided. Default False
+    Returns:
+    all_pred: Dict or tensor of predictions, shape (N, nkeep, d) or (N, d) if nkeep=1
+    labelidx: Indices into the original dataset for each prediction
 
+    """
+    
+    breakpoint()
+    print('new version')
+    
     assert model is not None
     assert config is not None
-    assert mask is not None
-        
-    if batchsize is None:
-        batchsize = config['test_batch_size']
-        
-    if dataloader is None:
-        
-        if skipinterval is not None:
-            if not keepall and (nkeep is None):
-                nkeep = skipinterval
-            sampler = np.arange(0,len(dataset),skipinterval)
-        else:
-            sampler = None
-
-        # create a dataloader
-        dataloader = torch.utils.data.DataLoader(dataset, 
-                                                 batch_size=batchsize, 
-                                                 shuffle=shuffle,
-                                                 pin_memory=dataset.cudaoptimize==False,
-                                                 sampler=sampler)
-
-    is_causal = dataset.ismasked() == False
-
-    if not keepall:
-        assert nkeep is not None
+    assert dataset is not None
 
     with torch.no_grad():
         w = next(iter(model.parameters()))
         device = w.device
 
-    #example_params = dataset.get_flyexample_params()
-    model.eval()
-    dataset.set_eval_mode()
+    contextl = dataset.context_length
 
-    # compute predictions and labels for all validation data using default masking
-    all_pred = None
-    labelidx = None
-    #all_mask = []
-    # all_pred_discrete = []
-    # all_labels_discrete = []
-    off = 0
-    n = len(dataloader)
-    
-    if saveinterval is None:
-        saveinterval = np.inf
+    mask = get_causal_mask(device=device, contextl=contextl)
+    is_causal = True
 
-    lastsavetime = datetime.datetime.now()
-    
-    if earlystop is not None:
-        n = min(n,earlystop)
-    for i,example in tqdm.tqdm(enumerate(dataloader),total=n):
-        if earlystop is not None and i >= earlystop:
-            break
-        if debugcheat:
-            pred = {'continuous': example['labels'].clone(), 'discrete': example['labels_discrete'].clone(), 
-                    'todiscretize': example['labels_todiscretize'].clone()}
-        else:
-            with torch.no_grad():
-                if example['input'].device != device:
-                    example['input'] = example['input'].to(device=device)
-                pred = model.output(example['input'], mask=mask, is_causal=is_causal)
-                if config['modelstatetype'] == 'prob':
-                    pred = model.maxpred(pred)
-                elif config['modelstatetype'] == 'best':
-                    pred = model.randpred(pred)
-            
-        if not keepall:
-            # only keep the last nkeep predictions
-            if isinstance(pred, dict):
-                pred = {k: v[:,-nkeep:] for k, v in pred.items()}
-            else:
-                pred = pred[:,-nkeep:]
-
-        if isinstance(pred, dict):
-            pred = {k: v.cpu() for k, v in pred.items()}
-        else:
-            pred = pred.cpu()
-
-        if all_pred is None:
-            # allocate
-            all_pred = allocate_batch_concat(pred, n)
-            labelidx = torch.zeros(n*example['idx'].shape[0], dtype=torch.int64)
-
-        # assign
-        all_pred,off1 = set_batch_concat(pred, all_pred, off)
-        labelidx[off:off1] = example['idx']
+    if batchsize is None:
+        batchsize = config['test_batch_size']
         
-        off = off1
+    # if keepall, set nkeep to contextl
+    if keepall:
+        nkeep = contextl
+    else:
+        assert nkeep is not None
 
-        timenow = datetime.datetime.now()
-        if savepredfile is not None and (timenow - lastsavetime).total_seconds() > saveinterval:
-            print(f"Saving {off} predictions to {savepredfile}")
-            savestuff = {'all_pred': clip_batch_concat(all_pred, off), 'labelidx': labelidx[:off], 'i': i}
-            np.savez(savepredfile, **savestuff)
-            lastsavetime = timenow
+    # if skipinterval is not provided, set to nkeep to get predictions for all frames
+    if skipinterval is None:
+        skipinterval = nkeep        
+
+    # set skip interval in dataset
+    skipinterval0 = dataset.skip_interval
+    if skipinterval != skipinterval0:
+        dataset.set_skip_interval(skipinterval)
+
+    try:
+
+        if saveinterval is None:
+            saveinterval = np.inf
+
+        # create dataloader
+        dataloader = DataLoader(dataset, batch_size=batchsize, shuffle=shuffle, pin_memory=True)
+        
+        if not keepall:
+            assert nkeep is not None
+
+        #example_params = dataset.get_flyexample_params()
+        model.eval()
+
+        # compute predictions and labels for all validation data using default masking
+        all_pred = None
+        labelidx = None
+        #all_mask = []
+        # all_pred_discrete = []
+        # all_labels_discrete = []
+        off = 0
+        n = len(dataloader)
+
+        lastsavetime = datetime.datetime.now()
+        
+        if earlystop is not None:
+            n = min(n,earlystop)
+
+        for i,example in tqdm.tqdm(enumerate(dataloader),total=n):
+            if earlystop is not None and i >= earlystop:
+                break
+            if debugcheat:
+                pred = {'continuous': example['labels'].clone(), 'discrete': example['labels_discrete'].clone(), 
+                        'todiscretize': example['labels_todiscretize'].clone()}
+            else:
+                with torch.no_grad():
+                    if example['input'].device != device:
+                        example['input'] = example['input'].to(device=device)
+                    pred = model.output(example['input'], mask=mask, is_causal=is_causal)
+                    if config['modelstatetype'] == 'prob':
+                        pred = model.maxpred(pred)
+                    elif config['modelstatetype'] == 'best':
+                        pred = model.randpred(pred)
+                
+            if not keepall:
+                # only keep the last nkeep predictions
+                if isinstance(pred, dict):
+                    pred = {k: v[:,-nkeep:] for k, v in pred.items()}
+                else:
+                    pred = pred[:,-nkeep:]
+
+            if isinstance(pred, dict):
+                pred = {k: v.cpu() for k, v in pred.items()}
+            else:
+                pred = pred.cpu()
+
+            if all_pred is None:
+                # allocate
+                all_pred = allocate_batch_concat(pred, n)
+                labelidx = torch.zeros(n*example['metadata']['idx'].shape[0], dtype=torch.int64)
+
+            # assign
+            all_pred,off1 = set_batch_concat(pred, all_pred, off)
+            labelidx[off:off1] = example['metadata']['idx']
             
-        # pred1 = dataset.get_full_pred(pred)
-        # labels1 = dataset.get_full_labels(example=example,use_todiscretize=True)
-        # pred_obj = FlyExample(example_in=pred,**example_params)
+            off = off1
 
-        # example_obj = FlyExample(example_in=example, **example_params)
-        # label_obj = example_obj.labels
-        # pred_obj = label_obj.copy()
-        # pred_obj.erase_labels()
-        # pred_obj.set_prediction(pred)
+            timenow = datetime.datetime.now()
+            if savepredfile is not None and (timenow - lastsavetime).total_seconds() > saveinterval:
+                print(f"Saving {off} predictions to {savepredfile}")
+                savestuff = {'all_pred': clip_batch_concat(all_pred, off), 'labelidx': labelidx[:off], 'i': i}
+                np.savez(savepredfile, **savestuff)
+                lastsavetime = timenow
+                
+            # pred1 = dataset.get_full_pred(pred)
+            # labels1 = dataset.get_full_labels(example=example,use_todiscretize=True)
+            # pred_obj = FlyExample(example_in=pred,**example_params)
 
-        # for i in range(np.prod(label_obj.pre_sz)):
-        #     all_pred.append(pred_obj.copy_subindex(idx_pre=i))
-        #     all_labels.append(label_obj.copy_subindex(idx_pre=i))
+            # example_obj = FlyExample(example_in=example, **example_params)
+            # label_obj = example_obj.labels
+            # pred_obj = label_obj.copy()
+            # pred_obj.erase_labels()
+            # pred_obj.set_prediction(pred)
 
-        # if dataset.discretize:
-        #   all_pred_discrete.append(pred['discrete'])
-        #   all_labels_discrete.append(example['labels_discrete'])
-        # if 'mask' in example:
-        #   all_mask.append(example['mask'])
-    all_pred = clip_batch_concat(all_pred, off)
-    labelidx = labelidx[:off]
+            # for i in range(np.prod(label_obj.pre_sz)):
+            #     all_pred.append(pred_obj.copy_subindex(idx_pre=i))
+            #     all_labels.append(label_obj.copy_subindex(idx_pre=i))
+
+            # if dataset.discretize:
+            #   all_pred_discrete.append(pred['discrete'])
+            #   all_labels_discrete.append(example['labels_discrete'])
+            # if 'mask' in example:
+            #   all_mask.append(example['mask'])
+        all_pred = clip_batch_concat(all_pred, off)
+        labelidx = labelidx[:off]
+        
+        # all_pred[...] is (nbatches * batchsize) x nkeep x d
+        
+        # get rid of the batch dimension if nkeep == skipinterval
+        if not keepall and (nkeep == 1):
+            if isinstance(all_pred, dict):
+                all_pred = {k: v.squeeze(1) for k, v in all_pred.items()}
+            else:
+                all_pred = all_pred.squeeze(1)
+        
+        # create FlyLabels objects
     
-    # all_pred[...] is (nbatches * batchsize) x nkeep x d
-    
-    # get rid of the batch dimension if nkeep == skipinterval
-    if not keepall and (nkeep == 1):
-        if isinstance(all_pred, dict):
-            all_pred = {k: v.squeeze(1) for k, v in all_pred.items()}
-        else:
-            all_pred = all_pred.squeeze(1)
-    
-    # create FlyLabels objects
+    except Exception as e:
+        # reset skip interval
+        print(f'Error during prediction, resetting dataset skip interval to {skipinterval0}')
+        dataset.set_skip_interval(skipinterval0)
+        raise e
+
+    dataset.set_skip_interval(skipinterval0)
 
     return all_pred, labelidx  # ,all_mask,all_pred_discrete,all_labels_discrete
 

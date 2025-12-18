@@ -10,6 +10,7 @@ import h5py
 import scipy.io
 import gc
 import time
+from pathlib import Path
 
 def modrange(x, l, u):
     return np.mod(x - l, u - l) + l
@@ -694,3 +695,7 @@ def toc(start_time=None):
         global _tic_time
         start_time = _tic_time
     return time.time() - start_time
+
+def get_code_root():
+    # find the path to this file
+    return str(Path(__file__).parent.parent.resolve())

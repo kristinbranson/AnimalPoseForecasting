@@ -930,7 +930,8 @@ def compute_sessions(datas: list[Data], isstart: np.ndarray) -> list[Session]:
     return sessions
 
 
-def compute_chunk_indices(sessions: list[Session], chunk_length: int, start_offset: int = 0, useoutputmask: np.ndarray | None = None) -> np.ndarray:
+def compute_chunk_indices(sessions: list[Session], chunk_length: int, start_offset: int = 0, 
+                          useoutputmask: np.ndarray | None = None, skip_interval: int | None = None) -> np.ndarray:
     """ Extracts chunk indices from session data, with chunks non-overlapping.
 
     Args:
@@ -940,10 +941,16 @@ def compute_chunk_indices(sessions: list[Session], chunk_length: int, start_offs
         start_offset: Index of first frame to be used.
         useoutputmask: (n_frames, n_agents) bool array indicating whether output data is valid.
             If provided, only chunks that have at least one valid output frame will be kept.
+        skip_interval: Interval between the start frames of consecutive chunks.
+            If None, defaults to chunk_length (non-overlapping chunks).
 
     Returns:
         chunk_indices: (n_chunks, 2) int array, each row contains (start_frame, agent_id)
     """
+    
+    if skip_interval is None:
+        skip_interval = chunk_length
+    
     chunk_indices = []
     for session in sessions:
         t0 = session.start_frame + start_offset
@@ -951,10 +958,10 @@ def compute_chunk_indices(sessions: list[Session], chunk_length: int, start_offs
         
         # If useoutputmask is provided, only keep chunks that have at least one valid output frame
         if useoutputmask is None or np.all(useoutputmask[t0:t1+chunk_length-1, session.agent_id]):
-            start_frames = np.arange(t0, t1, chunk_length)
+            start_frames = np.arange(t0, t1, skip_interval)
         else:
             start_frames = []
-            for t in range(t0, t1, chunk_length):
+            for t in range(t0, t1, skip_interval):
                 if np.any(useoutputmask[t:t + chunk_length, session.agent_id]):
                     start_frames.append(t)
             if len(start_frames) == 0:
@@ -1287,9 +1294,10 @@ def collate_nested_dicts(batch):
         return torch.stack([torch.from_numpy(x) for x in batch])
     elif isinstance(batch[0], torch.Tensor):
         return torch.stack(batch)
+    elif isinstance(batch[0], (int, float, bool, np.integer, np.floating, np.bool_)):
+        return torch.tensor(batch)
     else:
         return batch
-
 
 class Dataset(torch.utils.data.Dataset):
     """ Contains ground truth data and can be supplied to torch's DataLoader to produce chunks of data.
@@ -1319,6 +1327,7 @@ class Dataset(torch.utils.data.Dataset):
             context_length: int,
             metadata: dict | None = None,
             useoutputmask: np.ndarray | None = None,
+            skip_interval: int | None = None,
     ):
         self.inputs = inputs
         self.labels = labels
@@ -1326,6 +1335,9 @@ class Dataset(torch.utils.data.Dataset):
         self.context_length = context_length
         self.metadata = metadata
         self.useoutputmask = useoutputmask
+        if skip_interval is None:
+            skip_interval = context_length
+        self.skip_interval = skip_interval
 
         # Compute sessions with continuous valid data per agent
         self.sessions = compute_sessions(
@@ -1334,7 +1346,8 @@ class Dataset(torch.utils.data.Dataset):
         )
 
         # Compute chunking indices
-        self.chunk_indices = compute_chunk_indices(self.sessions, self.context_length, start_offset=0, useoutputmask=self.useoutputmask)
+        self.chunk_indices = compute_chunk_indices(self.sessions, self.context_length, start_offset=0, 
+                                                   useoutputmask=self.useoutputmask, skip_interval=self.skip_interval)
 
         # Annotate which dimensions of chunked labels are bins
         self.label_bin_indices, self.label_n_bins = get_bin_indices(self.labels)
@@ -1405,7 +1418,9 @@ class Dataset(torch.utils.data.Dataset):
                     (context_length, d_output_discrete * n_bins) float
         """
         start_frame, agent_id = self.chunk_indices[idx]
-        return self.get_chunk(start_frame, self.context_length, agent_id)
+        chunk = self.get_chunk(start_frame, self.context_length, agent_id)
+        chunk['metadata']['idx'] = idx
+        return chunk
 
     def get_chunk(self, start_frame: int, duration: int, agent_id: int) -> dict[str, np.ndarray | torch.Tensor]:
         """ Returns a data chunk from the dataset.
@@ -1444,6 +1459,16 @@ class Dataset(torch.utils.data.Dataset):
             chunk['metadata'].update(get_array_chunk(self.metadata,start_frame,agent_id,duration))
                 
         return chunk
+    
+    def set_skip_interval(self, skip_interval: int | None = None, start_offset: int | None = None):
+        """ Sets the skip interval between chunks and recomputes chunk indices.
+
+        Args:
+            skip_interval: Interval between the start frames of consecutive chunks.
+                If None, defaults to context_length (non-overlapping chunks).
+        """
+        self.skip_interval = skip_interval
+        self.recompute_chunk_indices(start_offset=start_offset)
 
     def recompute_chunk_indices(self, start_offset: int | None = None):
         """ Computes chunk indices for a given start_offset.
@@ -1454,7 +1479,8 @@ class Dataset(torch.utils.data.Dataset):
         if start_offset is None:
             start_offset = np.random.randint(self.context_length)
         self.chunk_indices = compute_chunk_indices(
-            self.sessions, self.context_length, start_offset=start_offset, useoutputmask=self.useoutputmask
+            self.sessions, self.context_length, start_offset=start_offset, useoutputmask=self.useoutputmask,
+            skip_interval=self.skip_interval
         )
         
     def split_input_by_names(self, input: np.ndarray | torch.Tensor) -> dict[str, np.ndarray]:

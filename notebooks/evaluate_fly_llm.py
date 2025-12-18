@@ -3,11 +3,12 @@
 #   jupytext:
 #     cell_metadata_filter: -all
 #     custom_cell_magics: kql
+#     formats: ipynb,py:percent
 #     text_representation:
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.11.2
+#       jupytext_version: 1.18.1
 #   kernelspec:
 #     display_name: transformer
 #     language: python
@@ -27,19 +28,22 @@ import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader
 import pickle
+import datetime
 
 import apf
 from apf.training import train
-from apf.utils import function_args_from_config, set_mpl_backend
+import apf.utils as utils
 from apf.simulation import simulate
 from apf.models import initialize_model
 
 import flyllm
 from flyllm.config import read_config
-from flyllm.features import featglobal, get_sensory_feature_idx
+from flyllm.features import featglobal, get_sensory_feature_idx, compute_pose_distribution_stats        
+
 from flyllm.simulation import animate_pose
 import time
 import os
+from pathlib import Path
 
 from flyllm.prepare import init_flyllm
 
@@ -47,14 +51,15 @@ import logging
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
 
-set_mpl_backend('tkAgg')
-mpl_backend = plt.get_backend()
-if mpl_backend == 'inline':
-    from IPython import display
-    from IPython.display import HTML
+utils.set_mpl_backend('tkAgg')
+ISNOTEBOOK = utils.is_notebook()
+if ISNOTEBOOK:
+    from IPython.display import HTML, display, clear_output
+else:
+    plt.ion()
 
 LOG.info('CUDA available: ' + str(torch.cuda.is_available()))
-LOG.info('matplotlib backend: ' + mpl_backend)
+LOG.info('isnotebook: ' + str(ISNOTEBOOK))
 
 # %%
 timestamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
@@ -66,71 +71,34 @@ print('Timestamp: ' + timestamp)
 # %%
 # configuration parameters for this model
 
-#loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredvel_20241022_epoch200_20241023T140356.pth'
-#configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241022.json'
+rootdir = Path(utils.get_code_root())
+
+loadmodelfile = rootdir / 'notebooks/flyllm_models/flypredvel_20251007_20251114T194024_bestepoch200.pth'
+configfile = rootdir / 'flyllm/configs/config_fly_llm_predvel_optimalbinning_20251113.json'
 
 # print current directory
-loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredvel_20241125_epoch200_20241125T191735.pth'
-configfile = 'configs/config_fly_llm_predvel_20241125.json'
-outfigdir = 'figs'
+outfigdir = rootdir / 'notebooks/figs'
 debug_uselessdata = True
 
 # make directory if it doesn't exist
-if not os.path.exists(outfigdir):
-    os.makedirs(outfigdir)
-
-flyllmdir = flyllm.__path__[0]
-configfile = os.path.join(flyllmdir,configfile)
+if not outfigdir.exists():
+    outfigdir.mkdir(parents=True)
 
 needtraindata = True
 needvaldata = True
 
 res = init_flyllm(configfile=configfile,mode='test',loadmodelfile=loadmodelfile,
-                needtraindata=needtraindata,needvaldata=needvaldata,
-                debug_uselessdata=debug_uselessdata)
+                debug_uselessdata=debug_uselessdata,
+                needtraindata=needtraindata,needvaldata=needvaldata)
 
-
-# %%
-# bring out things that are init_flyllm
 
 
 # %%
-# configuration parameters for this model
-
-#loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredvel_20241022_epoch200_20241023T140356.pth'
-#configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241022.json'
-loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredvel_20241125_epoch200_20241125T191735.pth'
-configfile = 'flyllm/configs/config_fly_llm_predvel_20241125.json'
-outfigdir = 'figs'
-
-config = read_config(configfile)
-
-# loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredpos_20241023_epoch200_20241028T165510.pth'
-# configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predpos_20241023.json'
-
-# set to None if you want to use the full data
-#quickdebugdatafile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/tmp_small_usertrainval.pkl'
-quickdebugdatafile = None
-
-needtraindata = True
-needvaldata = True
-traindataprocess = 'test'
-valdataprocess = 'test'
-
-
-res = init_flyllm(configfile=configfile,mode='test',loadmodelfile=loadmodelfile,
-                  quickdebugdatafile=quickdebugdatafile,needtraindata=needtraindata,needvaldata=needvaldata,
-                  traindataprocess=traindataprocess,valdataprocess=valdataprocess)
-
 # unpack res
 config = res['config']
 device = res['device']
-data = res['data']
-scale_perfly = res['scale_perfly']
-valdata = res['valdata']
-val_scale_perfly = res['val_scale_perfly']
-X = res['X']
-valX = res['valX']
+train_data = res['train_data']
+val_data = res['val_data']
 train_dataset = res['train_dataset']
 train_dataloader = res['train_dataloader']
 val_dataset = res['val_dataset']
@@ -139,34 +107,39 @@ dataset_params = res['dataset_params']
 model = res['model']
 criterion = res['criterion']
 opt_model = res['opt_model']
-train_src_mask = res['train_src_mask']
-is_causal = res['is_causal']
 modeltype_str = res['modeltype_str']
 savetime = res['model_savetime']
 
 pred_nframes_skip = 20
 
 # where to save predictions
-# remove extension from loadmodelfile
-savepredfile = loadmodelfile.split('.')[0] + f'_all_pred_skip_{pred_nframes_skip}.npz'
+savepredfile = loadmodelfile.parent / f'{loadmodelfile.stem}_all_pred_skip_{pred_nframes_skip}.npz'
 
 # where to save pose statistics
-posestatsfile = loadmodelfile.split('.')[0] + '_posestats.npz'
+posestatsfile = loadmodelfile.parent / f'{loadmodelfile.stem}_posestats.npz'
 
 # %%
 # load/compute pose statistics
 if posestatsfile is not None:
-    if False:#os.path.exists(posestatsfile):
+    if posestatsfile.exists():
         print("Loading pose stats from ", posestatsfile)
         posestats = np.load(posestatsfile)
 
     else:
-        # check if variable data exists
-        if 'data' not in locals():
-            data, scale_perfly = load_and_filter_data(config['intrainfile'], config, compute_scale_perfly,
-                                                    keypointnames=keypointnames)
-        posestats = compute_pose_distribution_stats(data,scale_perfly)
+        
+        posestats = compute_pose_distribution_stats(train_data['pose'])
         np.savez(posestatsfile, **posestats)
+
+# %%
+print(train_data.keys())
+print(dataset_params.keys())
+type(train_dataset)
+print(config['contextl'])
+print(train_dataset.context_length)
+print(config['test_batch_size'])
+val_dataset.set_skip_interval(512)
+print(val_dataset.skip_interval)
+
 
 # %%
 # profile stuff 
@@ -179,26 +152,21 @@ from flyllm.prediction import predict_all
 doprofile = False
 dodebug = True
 from flyllm.dataset import FlyTestDataset
-val_dataset.clear_cuda_cache()
-val_dataset.ncudacaches = 0
-val_dataset.cudaoptimize = False
+# val_dataset.clear_cuda_cache()
+# val_dataset.ncudacaches = 0
+# val_dataset.cudaoptimize = False
 
-def profile_dataset_creation():
-    val_dataset_small = FlyTestDataset(valX[:min(len(valX),100)],config['contextl'],**dataset_params)
+# def profile_dataset_creation():
+#     val_dataset_small = FlyTestDataset(valX[:min(len(valX),100)],config['contextl'],**dataset_params)
 
 def profile_iterating_dataset():
+
     for i, batch in enumerate(val_dataloader):
         if i > 10:
             break
         
 def profile_predict_all():
-    return predict_all(val_dataloader, val_dataset, opt_model, config, train_src_mask,keepall=False,earlystop=10)
-
-val_dataloader = torch.utils.data.DataLoader(val_dataset,
-                                              batch_size=config['test_batch_size'],
-                                              shuffle=False,
-                                              pin_memory=val_dataset.cudaoptimize==False,
-                                              )
+    return predict_all(dataset=val_dataset, model=opt_model, config=config, keepall=False, earlystop=10, nkeep=50)
 
 if doprofile:
 
@@ -224,14 +192,24 @@ if (not doprofile) and dodebug:
     profile_predict_all()
 
 # %%
-# clean up 
+# clean up memory allocation before training, particularly if running in a notebook
+# and things have crashed before...
+
 import gc
+
+model = model.to(device='cpu')
+model.zero_grad()
 torch.cuda.empty_cache()
 gc.collect()
 
-print(torch.cuda.memory_summary())
-print(f"Memory allocated: {torch.cuda.memory_allocated()/1e9:.2f} GB")
-print(f"Memory cached: {torch.cuda.memory_reserved()/1e9:.2f} GB")
+utils.torch_mem_report(model)
+
+model = model.to(device=device)
+
+memalloc = torch.cuda.memory_allocated() / 1e9
+print(f'Cuda memory allocated for model: {memalloc:.3f} GB')
+memreserved = torch.cuda.memory_reserved() / 1e9
+print(f'Cuda memory reserved for model: {memreserved:.3f} GB')
 
 # %% [markdown]
 # ### Evaluate single-iteration predictions

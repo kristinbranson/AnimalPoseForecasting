@@ -1268,3 +1268,12 @@ def sanity_check_temporal_dep(train_dataloader, device, train_src_mask, is_causa
     else:
         matches = torch.allclose(pred2[:, :tmess],pred[:, :tmess], atol=1e-2)
         assert matches
+
+def get_causal_mask(device,example=None,dataloader=None,contextl=None):
+    
+    if contextl is None:
+        if example is None:
+            example = next(iter(dataloader))
+        contextl = example['input'].shape[1]
+    train_src_mask = torch.nn.Transformer.generate_square_subsequent_mask(contextl, device=device)
+    return train_src_mask

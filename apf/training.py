@@ -13,6 +13,7 @@ from apf.models import (
     compute_loss_mixed,
     mixed_causal_criterion,
     TransformerModel,
+    get_causal_mask
 )
 from apf.io import save_model
 
@@ -113,7 +114,7 @@ def train(
     # Create attention mask
     example = next(iter(train_dataloader))
     contextl = example['input'].shape[1]
-    train_src_mask = torch.nn.Transformer.generate_square_subsequent_mask(contextl, device=device)
+    train_src_mask = get_causal_mask(device,contextl=contextl)
     is_causal = True
 
     # Sanity check on temporal dependencies

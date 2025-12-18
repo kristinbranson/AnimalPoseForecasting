@@ -80,7 +80,7 @@ def load_config_from_model_file(loadmodelfile=None, config=None, state=None, no_
     if state is None:
         assert loadmodelfile is not None
         LOG.info(f'Loading config from file {loadmodelfile}...')
-        state = torch.load(loadmodelfile)
+        state = torch.load(loadmodelfile,weights_only=False,map_location='cpu')
     if config is not None and 'config' in state:
         overwrite_config(config, state['config'], no_overwrite=no_overwrite)
     else:
