@@ -149,7 +149,7 @@ import pstats
 
 from flyllm.prediction import predict_all
 
-doprofile = False
+doprofile = True
 dodebug = True
 from flyllm.dataset import FlyTestDataset
 # val_dataset.clear_cuda_cache()
@@ -171,13 +171,11 @@ def profile_predict_all():
 if doprofile:
 
     # get start time
-    print('cudaoptimize = ', val_dataset.cudaoptimize)
     t0 = datetime.datetime.now()
     #cProfile.run('profile_predict_all()','profile_test.out')
     out = profile_predict_all()
     t1 = datetime.datetime.now()
     print('Elapsed time: ', t1-t0)
-    print('ncudacaches = ', val_dataset.ncudacaches)
 
     p = pstats.Stats('profile_test.out')
     print('sorted by time')

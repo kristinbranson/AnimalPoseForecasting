@@ -68,6 +68,8 @@ def predict_all(dataset=None, model=None, config=None, keepall=True, earlystop=N
     if keepall:
         nkeep = contextl
     else:
+        if nkeep is None:
+            nkeep = skipinterval
         assert nkeep is not None
 
     # if skipinterval is not provided, set to nkeep to get predictions for all frames
