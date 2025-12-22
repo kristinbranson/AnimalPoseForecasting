@@ -17,5 +17,5 @@ dependencies:
   - opencv
   - pycocotools
   - pip:
-      - torch=2.9.1
+      - torch==2.9.1
       - torchvision
