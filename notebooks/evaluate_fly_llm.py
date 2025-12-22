@@ -110,10 +110,10 @@ opt_model = res['opt_model']
 modeltype_str = res['modeltype_str']
 savetime = res['model_savetime']
 
-pred_nframes_skip = 20
+pred_stride = 20
 
 # where to save predictions
-savepredfile = loadmodelfile.parent / f'{loadmodelfile.stem}_all_pred_skip_{pred_nframes_skip}.npz'
+savepredfile = loadmodelfile.parent / f'{loadmodelfile.stem}_pred{pred_stride}.npz'
 
 # where to save pose statistics
 posestatsfile = loadmodelfile.parent / f'{loadmodelfile.stem}_posestats.npz'
@@ -131,17 +131,6 @@ if posestatsfile is not None:
         np.savez(posestatsfile, **posestats)
 
 # %%
-print(train_data.keys())
-print(dataset_params.keys())
-type(train_dataset)
-print(config['contextl'])
-print(train_dataset.context_length)
-print(config['test_batch_size'])
-val_dataset.set_skip_interval(512)
-print(val_dataset.skip_interval)
-
-
-# %%
 # profile stuff 
 
 import cProfile
@@ -149,8 +138,8 @@ import pstats
 
 from flyllm.prediction import predict_all
 
-doprofile = True
-dodebug = True
+doprofile = False
+dodebug = False
 from flyllm.dataset import FlyTestDataset
 # val_dataset.clear_cuda_cache()
 # val_dataset.ncudacaches = 0
@@ -214,18 +203,18 @@ print(f'Cuda memory reserved for model: {memreserved:.3f} GB')
 
 # %%
 debugcheat = False
+import importlib
+importlib.reload(flyllm.prediction)  # reload the prediction
+from flyllm.prediction import predict_all
 
-if val_dataset.need_labels != debugcheat:
-    val_dataset = FlyTestDataset(valX,config['contextl'],**dataset_params,need_labels=debugcheat)
+tmpsavepredfile = savepredfile.with_name(savepredfile.stem + '_tmp.npz')
+all_pred, metadata = predict_all(dataset=val_dataset, model=opt_model, config=config, keepall=False, debugcheat=debugcheat, 
+                                savepredfile=tmpsavepredfile, saveinterval=600, stride=pred_stride)
 
-tmpsavepredfile = savepredfile.split('.')[0] + '_tmp.npz'
-all_pred, labelidx = predict_all(dataset=val_dataset, model=model, config=config, mask=train_src_mask, keepall=False, debugcheat=debugcheat, 
-                                 savepredfile=tmpsavepredfile, saveinterval=600, skipinterval=pred_nframes_skip)
-
-# save all_pred and labelidx to a numpy file
+# save all_pred and metadata to a numpy file
 if (not debugcheat) and (savepredfile is not None):
     print(f'Saving predictions to {savepredfile}')
-    np.savez(savepredfile,all_pred=all_pred,labelidx=labelidx)
+    np.savez(savepredfile,all_pred=all_pred,metadata=metadata)
 
 # %%
 
@@ -234,12 +223,19 @@ if savepredfile is not None and os.path.exists(savepredfile):
     print(f'Loading predictions from {savepredfile}')
     tmp = np.load(savepredfile,allow_pickle=True)
     all_pred = tmp['all_pred'].item()
-    labelidx = tmp['labelidx']
+    metadata = tmp['metadata']
+
+# %%
+print(all_pred.keys())
+print(metadata['frame'].shape)
+print(all_pred['continuous'].shape)
+print(val_dataset.labels['velocity'].array.shape)
 
 # %%
 # compare predictions to labels
 
 # pred_data is a list of FlyExample objects
+# new code can use val_dataset.item_to_data()
 pred_data,true_data = val_dataset.create_data_from_pred(all_pred, labelidx)
 
 # compute error in various ways

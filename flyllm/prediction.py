@@ -15,12 +15,12 @@ import datetime
 from flyllm.features import regularize_pose
 
 def predict_all(dataset=None, model=None, config=None, keepall=True, earlystop=None, debugcheat=False,
-                savepredfile=None,saveinterval=600,nkeep=None,batchsize=None,shuffle=False,skipinterval=None):
+                savepredfile=None,saveinterval=600,nkeep=None,batchsize=None,shuffle=False,stride=None):
     """
     predict_all(dataset=None, model=None, config=None, mask=None, keepall=True, earlystop=None, debugcheat=False,
-                savepredfile=None,saveinterval=600,nkeep=None,batchsize=None,shuffle=False,skipinterval=None)
+                savepredfile=None,saveinterval=600,nkeep=None,batchsize=None,shuffle=False,stride=None)
     Generate predictions for all (or a subset of) frames in a dataset in a single pass, giving sufficient temporal context
-    for each frame. It iteratively creates batches of length contextl = dataset.context_length, sampled every skipinterval 
+    for each frame. It iteratively creates batches of length contextl = dataset.context_length, sampled every stride 
     frames. The predictions for the last nkeep frames of each batch are retained. 
 
     Parameters:
@@ -33,20 +33,17 @@ def predict_all(dataset=None, model=None, config=None, keepall=True, earlystop=N
     debugcheat: If True, copy labels to predictions instead of running the model (for debugging). Default False
     savepredfile: If not None, periodically save intermediate predictions to this file. Default None
     saveinterval: Number of seconds between saving intermediate predictions to disk. Default 600 seconds
-    nkeep: Number of last timesteps to keep from each batch if keepall is False. If None and skipinterval is provided,
-        nkeep is set to skipinterval. Default None
-    skipinterval: Sample every contextl sequence every skip_interval frames. If None, skipinterval = nkeep. Default None
+    nkeep: Number of last timesteps to keep from each batch if keepall is False. If None and stride is provided,
+        nkeep is set to stride. Default None
+    stride: Sample every contextl sequence every stride frames. If None, stride = nkeep. Default None
     batchsize: Batch size to use when creating the dataloader if dataloader is not provided. If None, uses 
         config['test_batch_size']. Default None
     shuffle: Whether to shuffle the dataset when creating the dataloader if dataloader is not provided. Default False
     Returns:
     all_pred: Dict or tensor of predictions, shape (N, nkeep, d) or (N, d) if nkeep=1
-    labelidx: Indices into the original dataset for each prediction
+    metadata: Dict of metadata tensors with keys 'labelidx', 'frame', 'agent_id'
 
     """
-    
-    breakpoint()
-    print('new version')
     
     assert model is not None
     assert config is not None
@@ -69,17 +66,17 @@ def predict_all(dataset=None, model=None, config=None, keepall=True, earlystop=N
         nkeep = contextl
     else:
         if nkeep is None:
-            nkeep = skipinterval
+            nkeep = stride
         assert nkeep is not None
 
-    # if skipinterval is not provided, set to nkeep to get predictions for all frames
-    if skipinterval is None:
-        skipinterval = nkeep        
+    # if stride is not provided, set to nkeep to get predictions for all frames
+    if stride is None:
+        stride = nkeep        
 
-    # set skip interval in dataset
-    skipinterval0 = dataset.skip_interval
-    if skipinterval != skipinterval0:
-        dataset.set_skip_interval(skipinterval)
+    # set stride in dataset
+    stride0 = dataset.stride
+    if stride != stride0:
+        dataset.set_stride(stride)
 
     try:
 
@@ -89,15 +86,15 @@ def predict_all(dataset=None, model=None, config=None, keepall=True, earlystop=N
         # create dataloader
         dataloader = DataLoader(dataset, batch_size=batchsize, shuffle=shuffle, pin_memory=True)
         
-        if not keepall:
-            assert nkeep is not None
-
         #example_params = dataset.get_flyexample_params()
         model.eval()
 
         # compute predictions and labels for all validation data using default masking
         all_pred = None
-        labelidx = None
+        metadata = {'labelidx': None,
+                    'frame': None,
+                    'agent_id': None}
+
         #all_mask = []
         # all_pred_discrete = []
         # all_labels_discrete = []
@@ -124,13 +121,14 @@ def predict_all(dataset=None, model=None, config=None, keepall=True, earlystop=N
                         pred = model.maxpred(pred)
                     elif config['modelstatetype'] == 'best':
                         pred = model.randpred(pred)
-                
+            frame = example['metadata']['start_frame'][:, None] + np.arange(contextl)[None,:]
             if not keepall:
                 # only keep the last nkeep predictions
                 if isinstance(pred, dict):
                     pred = {k: v[:,-nkeep:] for k, v in pred.items()}
                 else:
                     pred = pred[:,-nkeep:]
+                frame = frame[:,-nkeep:]
 
             if isinstance(pred, dict):
                 pred = {k: v.cpu() for k, v in pred.items()}
@@ -140,18 +138,24 @@ def predict_all(dataset=None, model=None, config=None, keepall=True, earlystop=N
             if all_pred is None:
                 # allocate
                 all_pred = allocate_batch_concat(pred, n)
-                labelidx = torch.zeros(n*example['metadata']['idx'].shape[0], dtype=torch.int64)
+                sz = n*example['metadata']['idx'].shape[0]
+                metadata['labelidx'] = torch.zeros(sz, dtype=torch.int64)
+                metadata['frame'] = torch.zeros((sz,nkeep), dtype=torch.int64)
+                metadata['agent_id'] = torch.zeros(sz, dtype=torch.int64)
 
             # assign
             all_pred,off1 = set_batch_concat(pred, all_pred, off)
-            labelidx[off:off1] = example['metadata']['idx']
+            metadata['labelidx'][off:off1] = example['metadata']['idx']
+            metadata['frame'][off:off1] = frame
+            metadata['agent_id'][off:off1] = example['metadata']['agent_id']
             
             off = off1
 
             timenow = datetime.datetime.now()
             if savepredfile is not None and (timenow - lastsavetime).total_seconds() > saveinterval:
                 print(f"Saving {off} predictions to {savepredfile}")
-                savestuff = {'all_pred': clip_batch_concat(all_pred, off), 'labelidx': labelidx[:off], 'i': i}
+                metadata_save = {k: v[:off] for k, v in metadata.items()}
+                savestuff = {'all_pred': clip_batch_concat(all_pred, off), 'metadata': metadata_save, 'i': i}
                 np.savez(savepredfile, **savestuff)
                 lastsavetime = timenow
                 
@@ -175,11 +179,12 @@ def predict_all(dataset=None, model=None, config=None, keepall=True, earlystop=N
             # if 'mask' in example:
             #   all_mask.append(example['mask'])
         all_pred = clip_batch_concat(all_pred, off)
-        labelidx = labelidx[:off]
+        for k in metadata.keys():
+            metadata[k] = metadata[k][:off]
         
         # all_pred[...] is (nbatches * batchsize) x nkeep x d
         
-        # get rid of the batch dimension if nkeep == skipinterval
+        # get rid of the batch dimension if nkeep == stride
         if not keepall and (nkeep == 1):
             if isinstance(all_pred, dict):
                 all_pred = {k: v.squeeze(1) for k, v in all_pred.items()}
@@ -189,14 +194,14 @@ def predict_all(dataset=None, model=None, config=None, keepall=True, earlystop=N
         # create FlyLabels objects
     
     except Exception as e:
-        # reset skip interval
-        print(f'Error during prediction, resetting dataset skip interval to {skipinterval0}')
-        dataset.set_skip_interval(skipinterval0)
+        # reset stride
+        print(f'Error during prediction, resetting dataset stride to {stride0}')
+        dataset.set_stride(stride0)
         raise e
 
-    dataset.set_skip_interval(skipinterval0)
+    dataset.set_stride(stride0)
 
-    return all_pred, labelidx  # ,all_mask,all_pred_discrete,all_labels_discrete
+    return all_pred, metadata  # ,all_mask,all_pred_discrete,all_labels_discrete
 
 # # this didn't seem to speed inference up
 # def predict_all_twostream(dataloader, dataset, model, config, mask, keepall=True, earlystop=None, debugcheat=False, chunksize=5):
