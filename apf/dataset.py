@@ -1309,10 +1309,10 @@ class Dataset(torch.utils.data.Dataset):
         labels: A dictionary of data labels. Same format as inputs.
         isstart: Indicates whether a frame is the start of a sequence for an agent, (n_frames, n_agents) bool array
         context_length: Number of frames in a data chunk provided by __getitem__
-        metadata: Metadata about the dataset that is needed for applying/inverting operations beyond what can 
-            be captured by the operations. These are extra arguments to the operations' apply and invert function, and there 
+        invertdata: Data about the dataset that is needed for applying/inverting operations beyond what can
+            be captured by the operations. These are extra arguments to the operations' apply and invert function, and there
             should be a value for each agent and frame. This is a dict with keys 'inputs' and 'labels', each containing a dict
-            mapping metadata keys to (n_frames, n_agents) arrays. If any key is missing, metadata for that key is assumed to
+            mapping invertdata keys to (n_frames, n_agents) arrays. If any key is missing, invertdata for that key is assumed to
             be empty. Default: None
         useoutputmask: (n_frames, n_agents) bool array indicating which frames/agents to use for output loss computation.
             If None, all frames/agents with valid data are used. Default: None
@@ -1328,7 +1328,7 @@ class Dataset(torch.utils.data.Dataset):
             labels: dict[str, Data],
             isstart: np.ndarray,
             context_length: int,
-            metadata: dict | None = None,
+            invertdata: dict | None = None,
             useoutputmask: np.ndarray | None = None,
             stride: int | None = None,
             start_offset: int = 0,
@@ -1337,7 +1337,7 @@ class Dataset(torch.utils.data.Dataset):
         self.labels = labels
         self.isstart = isstart
         self.context_length = context_length
-        self.metadata = metadata
+        self.invertdata = invertdata
         self.useoutputmask = useoutputmask
         if stride is None:
             stride = context_length
@@ -1376,6 +1376,16 @@ class Dataset(torch.utils.data.Dataset):
         self.flatten = False
         self.input_idx = self.input_szs = None
         self.set_input_shapes()
+        
+    def get_n_agents(self) -> int:
+        """ Returns the number of agents in the dataset.
+        """
+        return max([s.agent_id for s in self.sessions])+1
+    
+    def get_n_frames(self) -> int:
+        """ Returns the number of frames in the dataset.
+        """
+        return max([s.start_frame + s.duration for s in self.sessions])+1
 
     def set_input_shapes(self):
         """ Set feature indices of different types of inputs (note that sensory is split into further indices here).
@@ -1460,8 +1470,8 @@ class Dataset(torch.utils.data.Dataset):
             'duration': duration,
             'agent_id': agent_id
             }
-        if self.metadata is not None:
-            chunk['metadata'].update(get_array_chunk(self.metadata,start_frame,agent_id,duration))
+        if self.invertdata is not None:
+            chunk['metadata'].update(get_array_chunk(self.invertdata,start_frame,agent_id,duration))
                 
         return chunk
     
@@ -1595,7 +1605,7 @@ class Dataset(torch.utils.data.Dataset):
             params['labels'][key] = [oper.to_dict() for oper in data.operations]
         return params
 
-    def item_to_data(self,item: dict[str, np.ndarray | torch.Tensor]) -> dict:
+    def item_to_data(self,item: dict[str, np.ndarray | torch.Tensor],subindex: dict | None = None) -> dict:
         """
         item_to_data(item)
         Converts an item (as returned by __getitem__) or the prediction of a model to a dictionary of 
@@ -1615,16 +1625,43 @@ class Dataset(torch.utils.data.Dataset):
                 'labels': A dictionary of Data objects for each label in the dataset.labels.keys(). Missing if 
                 'labels', 'continuous', etc. not in item.
         """
+        
+        continuous_key = None
+        discrete_key = None
+        if 'labels' in item: 
+            continuous_key = 'labels'
+        elif 'continuous' in item:
+            continuous_key = 'continuous'
+        if 'labels_discrete' in item:
+            discrete_key = 'labels_discrete'
+        elif 'discrete' in item:
+            discrete_key = 'discrete'            
+        
+        # if subindex is provided, convert item to full size with NaNs in missing entries
         datadict = {}
+        issubindex = subindex is not None
+        if issubindex:
+            item0 = item
+            item = {}
+            if 'input' in item0:
+                item['input'] = self._subindex_to_full(item0['input'],subindex,nfeatdim=1)
+            if continuous_key is not None:
+                item[continuous_key] = self._subindex_to_full(item0[continuous_key],subindex,nfeatdim=1)
+            if discrete_key is not None:
+                item[discrete_key] = self._subindex_to_full(item0[discrete_key],subindex,nfeatdim=2)
+            if 'metadata' in item0:
+                item['metadata'] = item0['metadata']
+                logging.warning("Subindexing metadata has not been debugged!!! Not sure what should happen!")            
+            
         if 'input' in item:
             datadict['inputs'] = {}
             input_dict = self.split_input_by_names(item['input'])
             for k,v in input_dict.items():
                 if 'metadata' in item and 'inputs' in item['metadata'] and k in item['metadata']['inputs']:
-                    metadatacurr = item['metadata']['inputs'][k]
+                    invertdatacurr = item['metadata']['inputs'][k]
                 else:
-                    metadatacurr = None
-                datadict['inputs'][k] = Data(name=self.inputs[k].name, array=v, operations=self.inputs[k].operations, invertdata=metadatacurr)
+                    invertdatacurr = None
+                datadict['inputs'][k] = Data(name=self.inputs[k].name, array=v, operations=self.inputs[k].operations, invertdata=invertdatacurr)
         continuous_key = None
         discrete_key = None
         if 'labels' in item: 
@@ -1640,15 +1677,49 @@ class Dataset(torch.utils.data.Dataset):
             output_dict = self.split_output_by_names(item,continuous_key=continuous_key,discrete_key=discrete_key)
             for k,v in output_dict.items():
                 if 'metadata' in item and 'labels' in item['metadata'] and k in item['metadata']['labels']:
-                    metadatacurr = item['metadata']['labels'][k]
+                    invertdatacurr = item['metadata']['labels'][k]
                 else:
-                    metadatacurr = None
-                datadict['labels'][k] = Data(name=self.labels[k].name, array=v, operations=self.labels[k].operations, invertdata=metadatacurr)
+                    invertdatacurr = None
+                datadict['labels'][k] = Data(name=self.labels[k].name, array=v, operations=self.labels[k].operations, invertdata=invertdatacurr)
         datadict['metadata'] = {k: v for k,v in item.get('metadata',{}).items() if k not in ['inputs','labels']}        
         if 'useoutputmask' in item:
             datadict['useoutputmask'] = item['useoutputmask']
         
         return datadict
+    
+    def _subindex_to_full(self,x,subindex,nfeatdim=1):
+        """
+        _subindex_to_full(x,subindex)
+        Converts a subindexed array x to a full array with NaNs in missing entries.
+        Args:
+            x (np.ndarray  |  torch.Tensor): Input array of size (..., d), where d are the feature dimension(s). The total number of 
+            entries in all but the last nfeatdim dimension(s) should match the number of entries in subindex. For example, if 
+            x is of shape (n_batches, l, d) then subindex should contain n_batches*l entries.
+            subindex (dict): Subindex dictionary with keys 'agent_id' and 'frame' describing what x corresponds to in the full array.
+            'agent_id' is of shape (n_batches, l) and 'frame' is of shape (n_batches, l).
+        Returns:
+            y (np.ndarray): Full array of shape (n_agents, n_frames, d) with NaNs in missing entries. y[idx] will be set to x, and
+            idx is computed from subindex.
+        """
+
+        n_agents = self.get_n_agents()
+        n_frames = self.get_n_frames()
+        if isinstance(x, torch.Tensor):
+            x = x.detach().cpu().numpy()
+        d = x.shape[-nfeatdim:] # last dimension(s) are feature dimensions
+        x = x.reshape((-1,)+d) # flatten all but last nfeatdim dimensions
+        sz = (n_agents*n_frames,)+d # will be (n_agents, n_frames, d) when reshaped
+        y = np.full(sz,np.nan,dtype=x.dtype)
+        # repeat agent_id to match frame dimension if dimensions don't match
+        if subindex['agent_id'].ndim < subindex['frame'].ndim:
+            agent_id = np.broadcast_to(subindex['agent_id'][:,None],subindex['frame'].shape).flatten()
+        frame = subindex['frame'].flatten()
+        if isinstance(frame, torch.Tensor):
+            frame = frame.detach().cpu().numpy()
+        idx = np.ravel_multi_index((agent_id,frame),(n_agents,n_frames))
+        assert len(idx) == len(np.unique(idx)), "subindex contains duplicate entries"
+        y[idx] = x
+        return y.reshape((n_agents,n_frames)+d)
 
 
 class DataLoader(torch.utils.data.DataLoader):

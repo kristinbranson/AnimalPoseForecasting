@@ -2,7 +2,7 @@ name: transformer
 channels:
   - conda-forge
 dependencies:
-  - python=3.13
+  - python=3.12
   - pip
   - numpy
   - scipy
@@ -19,3 +19,4 @@ dependencies:
   - pip:
       - torch==2.9.1
       - torchvision
+      - -e ..

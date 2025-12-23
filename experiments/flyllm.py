@@ -239,7 +239,7 @@ def make_dataset(
     else:
         auxiliary = None
 
-    metadata = {'labels': { 'velocity': {'pose': flyids.T, 'velocity': pose.array} },
+    invertdata = {'labels': { 'velocity': {'pose': flyids.T, 'velocity': pose.array} },
                 'inputs': { 'pose': {'pose': flyids.T},
                             'velocity': {'pose': flyids.T} }}
 
@@ -248,7 +248,7 @@ def make_dataset(
     args = {
         'context_length': config['contextl'],
         'isstart': isstart,
-        'metadata': metadata,
+        'invertdata': invertdata,
         'useoutputmask': useoutputmask
     }
 

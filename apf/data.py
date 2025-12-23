@@ -314,20 +314,22 @@ def discretize_labels(movement, bin_edges, soften_to_ends=False):
         lastbin = 1
 
     for i in range(nfeat):
-        # nans will get put in the last bin...
-        binnum = np.digitize(movement[:, i], bin_edges[i, :])
+        isdata = ~np.isnan(movement[:,i])
+        idxdata = np.nonzero(isdata)[0]
+        binnum = np.digitize(movement[isdata, i], bin_edges[i, :])
         binnum = np.minimum(nbins - 1, np.maximum(0, binnum - 1))
         # soft binning
         # don't soften into end bins
-        idxsmall = (movement[:, i] < bin_centers[i, binnum]) & (binnum > lastbin)
-        idxlarge = (movement[:, i] > bin_centers[i, binnum]) & (binnum < (nbins - 1 - lastbin))
-        idxedge = (idxsmall == False) & (idxlarge == False)
+        issmall = (movement[isdata, i] < bin_centers[i, binnum]) & (binnum > lastbin)
+        islarge = (movement[isdata, i] > bin_centers[i, binnum]) & (binnum < (nbins - 1 - lastbin))
+        idxedge = (issmall == False) & (islarge == False)
         # distance from bin center, max should be .5
-        d = (np.abs(movement[:, i] - bin_centers[i, binnum]) / bin_width[i, binnum])
+        d = (np.abs(movement[isdata, i] - bin_centers[i, binnum]) / bin_width[i, binnum])
         d[idxedge] = 0.
-        labels[np.arange(n), i, binnum] = 1. - d
-        labels[idxsmall, i, binnum[idxsmall] - 1] = d[idxsmall]
-        labels[idxlarge, i, binnum[idxlarge] + 1] = d[idxlarge]
+        labels[idxdata, i, binnum] = 1. - d
+        labels[idxdata[issmall], i, binnum[issmall] - 1] = d[issmall]
+        labels[idxdata[islarge], i, binnum[islarge] + 1] = d[islarge]
+        labels[isdata==False, i, :] = np.nan
 
         # d[:,-1] = True
         # d[:,1:-1] = movement[:,i,None] <= bin_edges[None,1:-1,i]
