@@ -81,6 +81,9 @@ class Operation(ABC):
                 'module': self.__class__.__module__,
                 'attributes': attributes
                 }
+        
+    def __str__(self):
+        return f"Operation {self.name} of class {self.__class__.__name__}"
 
     @classmethod
     def from_dict(cls, oper_params: dict):
@@ -120,6 +123,12 @@ class Data(NamedTuple):
     # Operations that have been applied to the data (can be later applied in inverse to obtain original data).
     operations: list[Operation] = []
     invertdata: Any = None # any additional data needed for inverting the operations, e.g. flyid for Pose operation
+    
+    def __str__(self):
+        s = f"Data {self.name} with shape {self.array.shape} and operations:\n"
+        for op in self.operations:
+            s += f"  {str(op)}\n"
+        return s[:-1]
 
 @dataclass
 class Identity(Operation):
@@ -188,6 +197,9 @@ class Zscore(Operation):
         if not ismultiagent:
             inverted = inverted[0]
         return inverted
+    
+    def __str__(self):
+        return f"Operation {self.name} of class Zscore with mean shape {self.mean.shape if self.mean is not None else None} and std shape {self.std.shape if self.std is not None else None}"
 
 @dataclass
 class OddRoot(Operation):
@@ -228,6 +240,9 @@ class OddRoot(Operation):
             or (n_frames, n_features) float array
         """
         return data**self.root
+    
+    def __str__(self):
+        return f"Operation {self.name} of class OddRoot with root {self.root}"
 
 @dataclass
 class Subset(Operation):
@@ -256,6 +271,9 @@ class Subset(Operation):
 
     def invert(self, data: np.ndarray) -> None:
         LOG.error(f"Operation {self} is not invertible")
+        
+    def __str__(self):
+        return f"Operation {self.name} of class Subset with include_ids {self.include_ids}"
 
 
 # TODO: Move this to apf/data, and find where I copied it from and use the one from apf/data there as well
@@ -473,6 +491,9 @@ class Discretize(Operation):
         if isinstance(data, Data):
             data = data.array
         return data.reshape(data.shape[:-1] + (-1,self.nbins))
+    
+    def __str__(self):
+        return f"Operation {self.name} of class Discretize with {self.nbins if self.bin_centers is not None else None} bins"
         
 
 @dataclass
@@ -598,6 +619,12 @@ class Fusion(Operation):
             count += n_dims
             
         return res
+    
+    def __str__(self):
+        s = f"Operation {self.name} of class Fusion with operations:\n"
+        for i, op in enumerate(self.operations):
+            s += f"  {i}: {str(op)}, indices: {self.indices_per_op[i]}\n"
+        return s[:-1]
 
 @dataclass
 class Roll(Operation):
@@ -664,6 +691,8 @@ class Roll(Operation):
 
         return unrolled_data
 
+    def __str__(self):
+        return f"Operation {self.name} of class Roll with dt {self.dt}"
 
 @dataclass
 class LocalVelocity(Operation):
@@ -734,6 +763,9 @@ class LocalVelocity(Operation):
             pose = pose[0, ...]
             
         return pose
+    
+    def __str__(self):
+        return f"Operation {self.name} of class LocalVelocity with is_angle {self.is_angle}"
 
 
 @dataclass
@@ -818,6 +850,9 @@ class GlobalVelocity(Operation):
         
         return inverted
 
+    def __str__(self):
+        return f"Operation {self.name} of class GlobalVelocity with tspred {self.tspred}"
+
 # no dataclass decorator, directly defined __init__
 class Velocity(Operation):
     """ Combines global and local velocity.
@@ -874,6 +909,9 @@ class Velocity(Operation):
         else:
             kwargs_per_op = None
         return self.fusion.invert(velocity, kwargs_per_op)
+    
+    def __str__(self):
+        return f"Operation {self.name} of class Velocity => {str(self.fusion)}"
 
 
 @dataclass(frozen=True)

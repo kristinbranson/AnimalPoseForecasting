@@ -215,7 +215,6 @@ if (not debugcheat) and (savepredfile is not None):
     np.savez(savepredfile,all_pred=all_pred,metadata=metadata)
 
 # %%
-
 # load all_pred and labelidx from savepredfile
 if savepredfile is not None and os.path.exists(savepredfile):
     print(f'Loading predictions from {savepredfile}')
@@ -224,33 +223,17 @@ if savepredfile is not None and os.path.exists(savepredfile):
     metadata = tmp['metadata'].item()
 
 # %%
-print(all_pred.keys())
-print(all_pred['discrete'].shape)
-print(metadata.keys())
-print(val_dataset.get_n_agents())
-print(val_dataset.get_n_frames())
-print(val_dataset.inputs.keys())
-print(val_dataset.inputs['pose'].array.shape)
-
-# %%
+# convert to data objects, match with val_dataset labels
 pred_data = val_dataset.item_to_data(all_pred,subindex=metadata)
 
-# %%
-print(pred_data)
-print(pred_data['labels']['velocity'].array.shape)
-fig,ax = plt.subplots(2,1,figsize=(10,6))
-ax[0].imshow(np.all(np.isnan(pred_data['labels']['velocity'].array),axis=-1),aspect='auto',cmap='gray',vmin=0,vmax=1)
-ax[1].imshow(np.all(np.isnan(val_dataset.labels['velocity'].array),axis=-1),aspect='auto',cmap='gray',vmin=0,vmax=1)
+# sanity check -- plot NaN masks for predicted and ground truth labels
+fig,ax = plt.subplots(2,1,figsize=(10,6),sharex=True,sharey=True)
+ax[0].imshow(np.all(np.isnan(pred_data['labels']['velocity'].array),axis=-1),aspect='auto',cmap='gray',vmin=0,vmax=1,interpolation='none')
+ax[0].set_title('Predicted NaN mask')
+ax[1].imshow(np.all(np.isnan(val_dataset.labels['velocity'].array),axis=-1),aspect='auto',cmap='gray',vmin=0,vmax=1,interpolation='none')
+ax[1].set_title('Ground truth NaN mask')
 plt.colorbar(ax[1].images[0], ax=ax, orientation='vertical')
 
-anyisnan = np.any(np.isnan(pred_data['labels']['velocity'].array),axis=-1)
-allisnan = np.all(np.isnan(pred_data['labels']['velocity'].array),axis=-1)
-print(f'N any real = {np.count_nonzero(~allisnan)}, N total = {allisnan.size}, fraction any real = {np.count_nonzero(~allisnan)/allisnan.size:.4f}')
-print(f'N all real = {np.count_nonzero(~anyisnan)}, N total = {anyisnan.size}, fraction all real = {np.count_nonzero(~anyisnan)/anyisnan.size:.4f}')
-predcontanyisnan = np.any(np.isnan(all_pred['continuous'].numpy()),axis=-1)
-print(f'N pred continuous all real = {np.count_nonzero(~predcontanyisnan)}, N total = {predcontanyisnan.size}, fraction all real = {np.count_nonzero(~predcontanyisnan)/predcontanyisnan.size:.4f}')
-preddiscanyisnan = np.any(np.any(np.isnan(all_pred['discrete'].numpy()),axis=-1),axis=-1)
-print(f'N pred discrete all real = {np.count_nonzero(~preddiscanyisnan)}, N total = {preddiscanyisnan.size}, fraction all real = {np.count_nonzero(~preddiscanyisnan)/preddiscanyisnan.size:.4f}')
 
 # %%
 # compare predictions to labels

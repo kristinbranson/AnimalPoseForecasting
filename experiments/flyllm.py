@@ -65,6 +65,15 @@ class Sensory(Operation):
     def invert(self, sensory: np.ndarray) -> None:
         LOG.error(f"Operation {self} is not invertible")
         return None
+    
+    def __str__(self):
+        s = f"Operation {self.name} of class Sensory with idxinfo keys:\n"
+        if self.idxinfo is not None:
+            for key in self.idxinfo:
+                s += f"  {key}: {self.idxinfo[key]}\n"
+        else:
+            s += "  idxinfo is None\n"
+        return s[:-1]
 
 
 @dataclass
@@ -104,7 +113,9 @@ class Pose(Operation):
             Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array
         """
         return feat2kp(pose.T, scale_perfly=self.scale_perfly, flyid=flyid).T
-
+    
+    def __str__(self):
+        return f"Operation {self.name} of class Pose with scale_perfly shape: {self.scale_perfly.shape if self.scale_perfly is not None else 'None'}"
 
 def load_data(
         config: dict,
