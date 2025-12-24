@@ -1,6 +1,11 @@
 # use jupytext percent format instead.
 *.ipynb
+*.asv
 .idea
+*.orig
+*.gif
+*.png
+*.out
 
 ## Below are Github defaults for a python project
 # Byte-compiled / optimized / DLL files

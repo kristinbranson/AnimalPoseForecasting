@@ -21,6 +21,8 @@
 # %%
 # %load_ext autoreload
 # %autoreload 2
+import linecache
+linecache.clearcache()
 
 import numpy as np
 
@@ -234,27 +236,22 @@ ax[1].imshow(np.all(np.isnan(val_dataset.labels['velocity'].array),axis=-1),aspe
 ax[1].set_title('Ground truth NaN mask')
 plt.colorbar(ax[1].images[0], ax=ax, orientation='vertical')
 
+for key in pred_data['labels']:
+    print(f'Predicted {key} = {pred_data["labels"][key]}')
+for key in val_dataset.labels:
+    print(f'Label {key} = {val_dataset.labels[key]}')
+for key in val_dataset.inputs:
+    print(f'Input {key} = {val_dataset.inputs[key]}')
+
 
 # %%
-# compare predictions to labels
-
-# pred_data is a list of FlyExample objects
-# new code can use val_dataset.item_to_data()
-pred_data,true_data = val_dataset.create_data_from_pred(all_pred, labelidx)
-
-# compute error in various ways
-err_example = []
-for pred_example,true_example in tqdm.tqdm(zip(pred_data,true_data),total=len(pred_data)):
-    errcurr = true_example.labels.compute_error(pred_example.labels)
-    err_example.append(errcurr)
-
-# combine errors
-err_total = FlyPoseLabels.combine_errors(err_example)
-
-for k,v in err_total.items():
-    print(f'{k}: {type(v)}')
-    if type(v) is np.ndarray:
-        print(f'    {v.shape}')
+import importlib
+import flyllm.evaluation
+importlib.reload(flyllm.evaluation)  # reload the evaluation
+import linecache
+linecache.clearcache()
+from flyllm.evaluation import compute_error
+next_frame_err = compute_error(val_dataset,val_data,pred_data)
 
 # %%
 # plot multi errors

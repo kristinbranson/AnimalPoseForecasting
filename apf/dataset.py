@@ -1187,12 +1187,13 @@ def get_post_operations(operations: list[Operation], name: str | None = None, da
         return None
     return operations[idx + 1:]
 
-def get_pre_operations(operations: list[Operation], name: str) -> list[Operation] | None:
+def get_pre_operations(operations: list[Operation], name: str, inclusive: bool = False) -> list[Operation] | None:
     """ Get a list of operations that come before the operation with the given name.
 
     Args:
         operations: List of operations to search from.
         name: Name of operation to find.
+        inclusive: Whether to include the operation with the given name in the returned list. Default is False.
 
     Returns:
         A list of operations preceding the input prefix.
@@ -1200,8 +1201,9 @@ def get_pre_operations(operations: list[Operation], name: str) -> list[Operation
     _, idx = get_operation(operations, name, return_idx = True)
     if idx is None:
         return None
+    if inclusive:
+        idx += 1
     return operations[:idx]
-
 
 def apply_operations(data: Data, operations: list[Operation]) -> Data:
     """ Apply a list of operations to data.
@@ -1217,14 +1219,26 @@ def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data,
                              operations: list | None = None, invertdata: dict | None = None,
                              extraargs: dict = {}):
     """ Apply the inverse of operations to data, in reverse order.
+    
+    Args: 
+    data: Data to invert. Can be ndarray, Tensor, or Data object. If a Data object, operations and invertdata
+        are extracted from it if not provided. 
+    operations: List of operations to invert. If None, extracted from data. 
+    invertdata: Dictionary mapping operation names to arguments to provide to the invert method.
+        If None, extracted from data.
+    extraargs: Dict with extra arguments to provide to the invert methods of operations. Entries are operation name to
+        dict of keyword arguments.
+    
+    Returns:
+        array: Data inverted, ndarray or Tensor
     """
     
     # allow data to be a Data object, in which case we extract operations and invertdata from it
-    if isinstance(data, Data):
-        if operations is None:
-            operations = data.operations
-        if invertdata is None:
-            invertdata = data.invertdata
+    if operations is None and hasattr(data, 'operations'):
+        operations = data.operations
+    if invertdata is None and hasattr(data, 'invertdata'):
+        invertdata = data.invertdata
+    if not isinstance(data, (np.ndarray, torch.Tensor)) and hasattr(data, 'array'):
         data = data.array
     
     for oper in reversed(operations):
@@ -1241,13 +1255,14 @@ def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data,
         
     return data
 
-def invert_to_named(data: Data, name: str, **kwargs) -> np.ndarray | torch.Tensor:
+def invert_to_named(data: Data, name: str, return_data: bool = False, **kwargs) -> np.ndarray | torch.Tensor:
     """ Inverts data to the state after operation name has been applied. 
 
     Args:
         data: Data to invert.
         name: Name of operation to invert to.
-    Any extra args passed to apply_inverse_operations.
+        return_data: Whether to return a Data object or just the array. Default is False.
+    Any extra args passed as extraargs to apply_inverse_operations.
 
     Returns:
         array: Data inverted to the state after operation name has been applied, ndarray or Tensor
@@ -1256,6 +1271,13 @@ def invert_to_named(data: Data, name: str, **kwargs) -> np.ndarray | torch.Tenso
     if post_opers is None:
         raise ValueError(f"Operation '{name}' not found in data operations")
     array = apply_inverse_operations(data, operations=post_opers, extraargs=kwargs)
+    if return_data:
+        operations = get_pre_operations(data.operations, name, inclusive=True)
+        invertdata = {}
+        for op in operations:
+            if isinstance(data.invertdata,dict) and op.name in data.invertdata:
+                invertdata[op.name] = data.invertdata[op.name]
+        return Data(name=name, array=array, operations=operations, invertdata=invertdata)
 
     return array
 
@@ -1759,6 +1781,15 @@ class Dataset(torch.utils.data.Dataset):
         y[idx] = x
         return y.reshape((n_agents,n_frames)+d)
 
+def array_to_data(array: np.ndarray, datalike: Data) -> Data:
+    """
+    array_to_data(array, datalike)
+    Converts an array to a Data object using the operations and name from datalike.
+    Args:
+        array (np.ndarray): Array to convert to Data object.
+        datalike (Data): Data object to copy operations and name from.
+    """
+    return Data(name=datalike.name, array=array, operations=datalike.operations)
 
 class DataLoader(torch.utils.data.DataLoader):
     """ A thin wrapper around torch's DataLoader to use collate_nested_dicts as the collate_fn.
