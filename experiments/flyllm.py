@@ -98,7 +98,11 @@ class Pose(Operation):
         """
         if scale_perfly is not None:
             self.scale_perfly = scale_perfly
-        return kp2feat(Xkp=Xkp.T, scale_perfly=scale_perfly, flyid=flyid, isdata=isdata).T
+            
+        array = kp2feat(Xkp=Xkp.T, scale_perfly=scale_perfly, flyid=flyid, isdata=isdata).T
+        invertdata = {'flyid': flyid.T}
+        
+        return array, invertdata
 
     def invert(self, pose: np.ndarray, flyid: np.ndarray | int = None):
         """ Computes keypoints from pose features.
@@ -112,7 +116,7 @@ class Pose(Operation):
         Returns:
             Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array
         """
-        return feat2kp(pose.T, scale_perfly=self.scale_perfly, flyid=flyid).T
+        return feat2kp(pose.T, scale_perfly=self.scale_perfly, flyid=flyid.T).T
     
     def __str__(self):
         return f"Operation {self.name} of class Pose with scale_perfly shape: {self.scale_perfly.shape if self.scale_perfly is not None else 'None'}"

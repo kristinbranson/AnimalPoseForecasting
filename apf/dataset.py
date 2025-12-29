@@ -33,7 +33,7 @@ class Operation(ABC):
     name = None
 
     @abstractmethod
-    def apply(self, data: np.ndarray) -> np.ndarray:
+    def apply(self, data: np.ndarray) -> np.ndarray | tuple[np.ndarray, Any]:
         pass
 
     @abstractmethod
@@ -56,10 +56,18 @@ class Operation(ABC):
             if input is Data, returns a new Data with processed array and this operation appended to operaitons.
         """
         if isinstance(data, Data):
+            res = self.apply(data.array, **kwargs)
+            if isinstance(res, tuple):
+                array, invert_data_curr = res
+            else:
+                array = res
+                invert_data_curr = None
+            invert_data = {**(data.invertdata or {}), self.name: invert_data_curr} if invert_data_curr is not None else data.invertdata
             return Data(
                 name=f"{data.name}_{self.name}",
-                array=self.apply(data.array, **kwargs),
-                operations=data.operations + [self]
+                array=array,
+                operations=data.operations + [self],
+                invertdata=invert_data
             )
         elif isinstance(data, np.ndarray):
             return self.apply(data, **kwargs)
@@ -129,6 +137,9 @@ class Data(NamedTuple):
         for op in self.operations:
             s += f"  {str(op)}\n"
         return s[:-1]
+    
+    def shape(self):
+        return self.array.shape
 
 @dataclass
 class Identity(Operation):
@@ -437,8 +448,10 @@ class Discretize(Operation):
 
         if DOTIME:
             LOG.info(f"Discretize apply took {toc(start_time):.2f} seconds")
-            
-        return data_flat_discrete.reshape(sz_rest + (-1,))
+        
+        invertdata = {'to_discretize': data}
+        
+        return data_flat_discrete.reshape(sz_rest + (-1,)), invertdata
 
     def invert(self, data: np.ndarray, do_sampling: bool = True) -> np.ndarray:
         """ Unbins the data.
@@ -546,7 +559,15 @@ class Fusion(Operation):
             kwargs_per_op = [{} for _ in self.operations]
         elif ~isinstance(kwargs_per_op, list):
             kwargs_per_op = [kwargs_per_op for _ in self.operations]
-        processed = [op.apply(data[..., indices], **kwargs) for op, indices, kwargs in zip(self.operations, self.indices_per_op, kwargs_per_op)]
+        processed = []
+        invertdata = []
+        for op, indices, kwargs in zip(self.operations, self.indices_per_op, kwargs_per_op):
+            res = op.apply(data[..., indices], **kwargs)
+            if isinstance(res, tuple):
+                processed.append(res[0])
+                invertdata.append(res[1])
+            else:
+                processed.append(res)
         self.dims_per_op = [proc.shape[-1] for proc in processed]
         fused = np.concatenate(processed, axis=-1)
         
@@ -556,7 +577,7 @@ class Fusion(Operation):
         if DOTIME:
             LOG.info(f"Fusion apply took {toc(start_time):.2f} seconds")
 
-        return fused
+        return fused, {'kwargs_per_op': invertdata}
 
     def invert(self, data: np.ndarray, kwargs_per_op=None) -> np.ndarray:
         """ Inverts subsets of the processed data using the operation inverses.
@@ -694,6 +715,29 @@ class Roll(Operation):
     def __str__(self):
         return f"Operation {self.name} of class Roll with dt {self.dt}"
 
+def multistart_cumsum(x: np.ndarray, x0s: list[np.ndarray], t0s: list[np.ndarray]) -> np.ndarray:
+    """ Computes cumulative sum of x with multiple starting points.
+
+    Args:
+        x: (n_agents, n_frames, ...) float array
+        x0s: list of arrays for each agent of shape (n_t0s, ...)
+        t0s: list of arrays for each agent of shape (n_t0s,)
+
+    Returns:
+        cumsum_x: (n_agents, n_frames, ...) float array
+    """
+    n_agents = x.shape[0]
+    n_frames = x.shape[1]
+    szrest = x.shape[2:]
+    cumsum_x = np.full((n_agents, n_frames+1) + szrest, np.nan)
+    for agent_id in range(n_agents):
+        t0scurr = t0s[agent_id]
+        t1scurr = np.r_[t0scurr[1:], n_frames] # there could be some nans in here but cumsum will propagate them
+        x0scurr = x0s[agent_id]
+        for t0,t1,x0 in zip(t0scurr, t1scurr, x0scurr):
+            cumsum_x[agent_id, t0:t1+1] = np.cumsum(np.concatenate([x0[None],x[agent_id, t0:t1]], axis=0),axis=0)
+    return cumsum_x[:, :-1]
+
 @dataclass
 class LocalVelocity(Operation):
     """ Computes the relative pose movement from t to t + 1.
@@ -728,18 +772,28 @@ class LocalVelocity(Operation):
             set_invalid_ends(pose_velocity, isstart, dt=1)
         pose_velocity = pose_velocity[0]
         pose_velocity = pose_velocity.T
+        agent_ids,ts = np.nonzero(isstart.T)
+        n_agents = isstart.shape[1]
+        t0s = [ts[agent_ids==agent_id] for agent_id in range(n_agents)]
+        x0s = [pose[agent_id, t0s[agent_id], :] for agent_id in range(n_agents)]
         
         if not ismultiagent:
             pose_velocity = pose_velocity[0, ...]
-            
-        return pose_velocity
+            x0s = x0s[0, ...]
+                        
+        return pose_velocity, {'x0s': x0s, 't0s': t0s}
 
-    def invert(self, velocity: np.ndarray, x0: np.ndarray = None) -> np.ndarray:
+    def invert(self, velocity: np.ndarray, x0 : np.ndarray | None = None, 
+               x0s: list[np.ndarray] | None = None, t0s: list[np.ndarray] | None = None) -> np.ndarray:
         """ Compute pose from pose velocity and an initial pose.
 
         Args:
             velocity: Delta pose (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
-            x0: Initial pose (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
+            x0: Initial pose (n_agents, n_pose_features) float array or (n_pose_features) float array, or None. Defaults to None. 
+            x0s: Initial poses at t0s frames, list of arrays for each agent of shape (n_t0s, n_pose_features), or None. Defaults to None.
+                x0 takes priority to x0s if both are provided. t0s must also be provided if x0s is provided.
+            t0s: List of arrays indicating the frames where new tracks start for each agent, or None. Defaults to None. 
+                x0s must also be provided if t0s is provided.
 
         Returns:
             pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
@@ -751,11 +805,17 @@ class LocalVelocity(Operation):
                 x0 = x0[None, ...]
         
         # Note: here we are assuming dt=1
-        if x0 is None:
-            n_agents, _, n_features = velocity.shape
-            x0 = np.zeros((n_agents, n_features))
-        velocity = np.concatenate([x0[:, None, :], velocity], axis=1)[:, :-1, :]
-        pose = np.cumsum(velocity, axis=1)
+        # single x0 for all frames
+        if (x0 is not None) or (t0s is None):
+            if x0 is None:
+                n_agents, _, n_features = velocity.shape
+                x0 = np.zeros((n_agents, n_features))
+            velocity = np.concatenate([x0[:, None, :], velocity], axis=1)[:, :-1, :]
+            pose = np.cumsum(velocity, axis=1)
+        else:
+            # x0s at multipe frames
+            pose = multistart_cumsum(velocity, x0s, t0s)
+            
         if self.is_angle is not None:
             pose[..., self.is_angle] = modrange(pose[..., self.is_angle], -np.pi, np.pi)
             
@@ -807,20 +867,33 @@ class GlobalVelocity(Operation):
         movement_global = movement_global.reshape((-1, n_frames, n_flies))
         
         movement_global = movement_global.T
+
+        isdata = ~np.all(np.isnan(position),axis=-1)
+        agent_ids,ts = np.nonzero(isstart.T & isdata)
+        n_agents = isstart.shape[1]
+        t0s = [ts[agent_ids==agent_id] for agent_id in range(n_agents)]
+        x0s = [position[agent_id, t0s[agent_id], :] for agent_id in range(n_agents)]
         
         if not ismultiagent:
             movement_global = movement_global[0, ...]
+            x0s = x0s[0, ...]
 
-        return movement_global
+        return movement_global, {'x0s': x0s, 't0s': t0s}
 
-    def invert(self, velocity: np.ndarray, x0: np.ndarray | None = None):
+    def invert(self, velocity: np.ndarray, x0: np.ndarray | None = None,
+               x0s: list[np.ndarray] | None = None, t0s: list[np.ndarray] | None = None) -> np.ndarray:
         """ Compute position from global movement and an initial position.
 
         NOTE: This assumes velocity is only given for dt=1
 
         Args:
             velocity: Global movmement (n_agents,  n_frames, 3) float array or (n_frames, 3) float array
-            x0: Initial pose (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
+            x0: Initial pose (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array.
+                Defaults to None.
+            x0s: Initial poses at t0s frames, list of arrays for each agent of shape (n_t0s, n_pose_features), or None. Defaults to None.
+                x0 takes priority to x0s if both are provided. t0s must also be provided if x0s is provided.
+            t0s: List of arrays indicating the frames where new tracks start for each agent, or None. Defaults to None. 
+                x0s must also be provided if t0s is provided.
 
         Returns:
             pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
@@ -831,17 +904,24 @@ class GlobalVelocity(Operation):
             if x0 is not None:
                 x0 = x0[None, ...]
         
-        if x0 is None:
-            n_agents, _, n_dim = velocity.shape
-            x0 = np.zeros((n_agents, n_dim))
+        if (x0 is not None) or (t0s is None):
+            if x0 is None:
+                n_agents, _, n_dim = velocity.shape
+                x0 = np.zeros((n_agents, n_dim))
 
-        d_theta = np.concatenate([x0[:, None, 2], velocity[:, :, 2]], axis=1)
-        theta = modrange(np.cumsum(d_theta, axis=1), -np.pi, np.pi)[:, :-1]
+            d_theta = np.concatenate([x0[:, None, 2], velocity[:, :, 2]], axis=1)
+            theta = np.cumsum(d_theta, axis=1)[:, :-1]
+        else:
+            theta = multistart_cumsum(velocity[..., 2], [x0s_agent[:, 2] for x0s_agent in x0s], t0s)
+        theta = modrange(theta, -np.pi, np.pi)
 
         d_pos_rel = velocity[..., [1, 0]]
         d_pos = rotate_2d_points(d_pos_rel.transpose((1, 2, 0)), -theta.T).transpose((2, 0, 1))
-        d_pos = np.concatenate([x0[:, None, :2], d_pos], axis=1)
-        pos = np.cumsum(d_pos, axis=1)[:, :-1, :]
+        if x0 is not None:
+            d_pos = np.concatenate([x0[:, None, :2], d_pos], axis=1)
+            pos = np.cumsum(d_pos, axis=1)[:, :-1, :]
+        else:
+            pos = multistart_cumsum(d_pos, [x0s_agent[:, :2] for x0s_agent in x0s], t0s)
         
         inverted = np.concatenate([pos, theta[:, :, None]], axis=-1)
         
@@ -887,9 +967,10 @@ class Velocity(Operation):
         Returns:
             velocity: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
-        return self.fusion.apply(pose, kwargs_per_op={'isstart': isstart})
+        res = self.fusion.apply(pose, kwargs_per_op={'isstart': isstart})
+        return res
 
-    def invert(self, velocity: np.ndarray, x0: np.ndarray | None = None):
+    def invert(self, velocity: np.ndarray, x0: np.ndarray | None = None, kwargs_per_op: list[dict] | None = None):
         """ Compute pose from pose velocity and an initial pose.
 
         Args:
@@ -899,15 +980,14 @@ class Velocity(Operation):
         Returns:
             pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
-        if x0 is not None:
-            
-            # if has a value for every frame, just take the first frame
-            if x0.ndim == velocity.ndim:
-                x0 = x0[0]
-            
-            kwargs_per_op = [{'x0': x0[..., self.global_inds]}, {'x0': x0[..., self.local_inds]}]
-        else:
-            kwargs_per_op = None
+        if kwargs_per_op is not None:
+            if x0 is not None:
+                
+                # if has a value for every frame, just take the first frame
+                if x0.ndim == velocity.ndim:
+                    x0 = x0[0]
+                
+                kwargs_per_op = [{'x0': x0[..., self.global_inds]}, {'x0': x0[..., self.local_inds]}]
         return self.fusion.invert(velocity, kwargs_per_op)
     
     def __str__(self):

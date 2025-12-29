@@ -203,26 +203,29 @@ print(f'Cuda memory reserved for model: {memreserved:.3f} GB')
 
 # %%
 debugcheat = False
-import importlib
-importlib.reload(flyllm.prediction)  # reload the prediction
+forcecompute = False
 from flyllm.prediction import predict_all
 
-tmpsavepredfile = savepredfile.with_name(savepredfile.stem + '_tmp.npz')
-all_pred, metadata = predict_all(dataset=val_dataset, model=opt_model, config=config, keepall=False, debugcheat=debugcheat, 
-                                savepredfile=tmpsavepredfile, saveinterval=600, stride=pred_stride)
+if debugcheat or forcecompute or (savepredfile is None) or (not savepredfile.exists()):
 
-# save all_pred and metadata to a numpy file
-if (not debugcheat) and (savepredfile is not None):
-    print(f'Saving predictions to {savepredfile}')
-    np.savez(savepredfile,all_pred=all_pred,metadata=metadata)
+    tmpsavepredfile = savepredfile.with_name(savepredfile.stem + '_tmp.npz')
+    all_pred, metadata = predict_all(dataset=val_dataset, model=opt_model, config=config, keepall=False, debugcheat=debugcheat, 
+                                    savepredfile=tmpsavepredfile, saveinterval=600, stride=pred_stride)
 
-# %%
-# load all_pred and labelidx from savepredfile
-if savepredfile is not None and os.path.exists(savepredfile):
+    # save all_pred and metadata to a numpy file
+    if (not debugcheat) and (savepredfile is not None):
+        print(f'Saving predictions to {savepredfile}')
+        np.savez(savepredfile,all_pred=all_pred,metadata=metadata)
+else:
+    # load all_pred and labelidx from savepredfile
     print(f'Loading predictions from {savepredfile}')
     tmp = np.load(savepredfile,allow_pickle=True)
     all_pred = tmp['all_pred'].item()
     metadata = tmp['metadata'].item()
+
+# %%
+print(val_dataset.labels['velocity'].operations[1])
+print(val_dataset.labels['velocity'].operations[1].invertdata)
 
 # %%
 # convert to data objects, match with val_dataset labels
@@ -252,6 +255,9 @@ import linecache
 linecache.clearcache()
 from flyllm.evaluation import compute_error
 next_frame_err = compute_error(val_dataset,val_data,pred_data)
+
+# %%
+val_dataset.labels['velocity'].invertdata is None
 
 # %%
 # plot multi errors
