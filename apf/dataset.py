@@ -55,7 +55,8 @@ class Operation(ABC):
             If input is np.ndarray, returns a np.ndarray processed by the operation,
             if input is Data, returns a new Data with processed array and this operation appended to operaitons.
         """
-        if isinstance(data, Data):
+        if hasattr(data, 'array') and hasattr(data, 'operations') and hasattr(data, 'invertdata') and hasattr(data, 'name'):
+            # instead of checking for Data object, check for attributes
             res = self.apply(data.array, **kwargs)
             if isinstance(res, tuple):
                 array, invert_data_curr = res
@@ -92,6 +93,15 @@ class Operation(ABC):
         
     def __str__(self):
         return f"Operation {self.name} of class {self.__class__.__name__}"
+    
+    def feature_names(self):
+        """
+        Returns a list of feature names after applying this operation.
+        """
+        if self.array is None:
+            return None
+        n_feat = self.array.shape[-1]
+        return [f"{self.name}_feat{feat_id}" for feat_id in range(n_feat)]
 
     @classmethod
     def from_dict(cls, oper_params: dict):
@@ -715,28 +725,44 @@ class Roll(Operation):
     def __str__(self):
         return f"Operation {self.name} of class Roll with dt {self.dt}"
 
-def multistart_cumsum(x: np.ndarray, x0s: list[np.ndarray], t0s: list[np.ndarray]) -> np.ndarray:
+def multistart_cumsum(x: np.ndarray, x0s: list[np.ndarray], t0s: list[np.ndarray], dt=None) -> np.ndarray:
     """ Computes cumulative sum of x with multiple starting points.
 
     Args:
         x: (n_agents, n_frames, ...) float array
-        x0s: list of arrays for each agent of shape (n_t0s, ...)
+        x0s: list of arrays for each agent of shape (n_t0s, dt, ...) if dt is not None, else (n_t0s, ...)
         t0s: list of arrays for each agent of shape (n_t0s,)
+        dt: time difference between x0s and first value in x to be summed. if None, assumed to be 1
 
     Returns:
         cumsum_x: (n_agents, n_frames, ...) float array
     """
+        
     n_agents = x.shape[0]
     n_frames = x.shape[1]
     szrest = x.shape[2:]
-    cumsum_x = np.full((n_agents, n_frames+1) + szrest, np.nan)
-    for agent_id in range(n_agents):
-        t0scurr = t0s[agent_id]
-        t1scurr = np.r_[t0scurr[1:], n_frames] # there could be some nans in here but cumsum will propagate them
-        x0scurr = x0s[agent_id]
-        for t0,t1,x0 in zip(t0scurr, t1scurr, x0scurr):
-            cumsum_x[agent_id, t0:t1+1] = np.cumsum(np.concatenate([x0[None],x[agent_id, t0:t1]], axis=0),axis=0)
-    return cumsum_x[:, :-1]
+    
+    if dt is None:
+        cumsum_x = np.full((n_agents, n_frames+1) + szrest, np.nan)
+        for agent_id in range(n_agents):
+            t0scurr = t0s[agent_id]
+            t1scurr = np.r_[t0scurr[1:], n_frames] # there could be some nans in here but cumsum will propagate them
+            x0scurr = x0s[agent_id]
+            for t0,t1,x0 in zip(t0scurr, t1scurr, x0scurr):
+                cumsum_x[agent_id, t0:t1+1] = np.cumsum(np.concatenate([x0[None],x[agent_id, t0:t1]], axis=0),axis=0)
+        return cumsum_x[:, :-1]
+
+    # example if dt = 2:
+    # [y0,y1,y2,y3,y4,...]
+    # x = [y2-y0, y3-y1, y4-y2, ...]
+    # cumsum_x = [y0 + x[0], y1 + x[1], y0 + x[0] + x[2], y1 + x[1] + x[3], ...]
+    # and x0s[:,i] corresponds to y_i for i in [0, dt-1]
+
+    cumsum_x = np.full((n_agents, n_frames) + szrest, np.nan)    
+    t0s_sub = [t0s_agent//dt for t0s_agent in t0s]
+    for i in range(dt):
+        cumsum_x[:,i::dt] = multistart_cumsum(x[:,i::dt], [x0s_agent[:,i] for x0s_agent in x0s], t0s_sub)
+    return cumsum_x
 
 @dataclass
 class LocalVelocity(Operation):
@@ -859,20 +885,29 @@ class GlobalVelocity(Operation):
         Xorigin = position[..., :2].T
         Xtheta = position[..., 2].T
         _, n_frames, n_flies = Xorigin.shape
+        # dXoriginrel: (len(tspred), 2, n_frames, n_agents) 
+        # dtheta: (len(tspred), n_flies, n_frames)
         dXoriginrel, dtheta = compute_global_velocity(Xorigin, Xtheta, self.tspred)
         movement_global = np.concatenate((dXoriginrel[:, [1, 0]], dtheta[:, None, :, :]), axis=1)
         if isstart is not None:
             for movement, dt in zip(movement_global, self.tspred):
                 set_invalid_ends(movement, isstart, dt=dt)
-        movement_global = movement_global.reshape((-1, n_frames, n_flies))
-        
+        # ([forward[dt1, sideways[dt1], dtheta[dt1], forward[dt2], sideways[dt2], dtheta[dt2], ...], n_frames, n_agents)
+        movement_global = movement_global.reshape((-1, n_frames, n_flies)) 
+        # n_agents, n_frames, n_features        
         movement_global = movement_global.T
 
         isdata = ~np.all(np.isnan(position),axis=-1)
-        agent_ids,ts = np.nonzero(isstart.T & isdata)
-        n_agents = isstart.shape[1]
+        n_agents = isdata.shape[0]
+        isstart1 = np.c_[np.ones(n_agents,dtype=bool), isdata[:,1:] & ~isdata[:,:-1]]
+        if isstart is not None:
+            isstart1 = isstart.T | isstart1
+        agent_ids,ts = np.nonzero(isstart1 & isdata)
+        max_dt = max(self.tspred)
+        
         t0s = [ts[agent_ids==agent_id] for agent_id in range(n_agents)]
-        x0s = [position[agent_id, t0s[agent_id], :] for agent_id in range(n_agents)]
+        # x0s[agent_id] is (len(t0s[agent_id]),min_dt,3)
+        x0s = [position[agent_id, t0s[agent_id][:,None]+np.arange(max_dt)[None,:]] for agent_id in range(n_agents)]
         
         if not ismultiagent:
             movement_global = movement_global[0, ...]
@@ -881,7 +916,7 @@ class GlobalVelocity(Operation):
         return movement_global, {'x0s': x0s, 't0s': t0s}
 
     def invert(self, velocity: np.ndarray, x0: np.ndarray | None = None,
-               x0s: list[np.ndarray] | None = None, t0s: list[np.ndarray] | None = None) -> np.ndarray:
+               x0s: list[np.ndarray] | None = None, t0s: list[np.ndarray] | None = None, dt: int | None = None) -> np.ndarray:
         """ Compute position from global movement and an initial position.
 
         NOTE: This assumes velocity is only given for dt=1
@@ -894,10 +929,21 @@ class GlobalVelocity(Operation):
                 x0 takes priority to x0s if both are provided. t0s must also be provided if x0s is provided.
             t0s: List of arrays indicating the frames where new tracks start for each agent, or None. Defaults to None. 
                 x0s must also be provided if t0s is provided.
+            dt: which tspred to use for inversion. If None, uses the smallest dt in self.tspred.
 
         Returns:
             pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
+        
+        # currently only works for tspred = [1]
+        #assert self.tspred == [1], "GlobalVelocity invert currently only supports tspred = [1]"
+        
+        # invert with smallest dt
+        if dt is None:
+            dt = np.min(self.tspred)
+        else:
+            assert dt in self.tspred, "dt must be in tspred"
+        
         ismultiagent = velocity.ndim == 3
         if not ismultiagent:
             velocity = velocity[None, ...]
@@ -912,7 +958,7 @@ class GlobalVelocity(Operation):
             d_theta = np.concatenate([x0[:, None, 2], velocity[:, :, 2]], axis=1)
             theta = np.cumsum(d_theta, axis=1)[:, :-1]
         else:
-            theta = multistart_cumsum(velocity[..., 2], [x0s_agent[:, 2] for x0s_agent in x0s], t0s)
+            theta = multistart_cumsum(velocity[..., 2], [x0s_agent[..., 2] for x0s_agent in x0s], t0s, dt=dt)
         theta = modrange(theta, -np.pi, np.pi)
 
         d_pos_rel = velocity[..., [1, 0]]
@@ -921,7 +967,7 @@ class GlobalVelocity(Operation):
             d_pos = np.concatenate([x0[:, None, :2], d_pos], axis=1)
             pos = np.cumsum(d_pos, axis=1)[:, :-1, :]
         else:
-            pos = multistart_cumsum(d_pos, [x0s_agent[:, :2] for x0s_agent in x0s], t0s)
+            pos = multistart_cumsum(d_pos, [x0s_agent[..., :2] for x0s_agent in x0s], t0s, dt=dt)
         
         inverted = np.concatenate([pos, theta[:, :, None]], axis=-1)
         
@@ -929,6 +975,9 @@ class GlobalVelocity(Operation):
             inverted = inverted[0, ...]
         
         return inverted
+    
+    def feature_names(self):
+        return ['forward_velocity', 'sideways_velocity', 'angular_velocity'] * len(self.tspred)
 
     def __str__(self):
         return f"Operation {self.name} of class GlobalVelocity with tspred {self.tspred}"

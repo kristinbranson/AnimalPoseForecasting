@@ -224,10 +224,6 @@ else:
     metadata = tmp['metadata'].item()
 
 # %%
-print(val_dataset.labels['velocity'].operations[1])
-print(val_dataset.labels['velocity'].operations[1].invertdata)
-
-# %%
 # convert to data objects, match with val_dataset labels
 pred_data = val_dataset.item_to_data(all_pred,subindex=metadata)
 
@@ -255,9 +251,54 @@ import linecache
 linecache.clearcache()
 from flyllm.evaluation import compute_error
 next_frame_err = compute_error(val_dataset,val_data,pred_data)
+print(next_frame_err.keys())
+# find keys with datamean in their name
+for key in next_frame_err.keys():
+    if 'datamean' in key:
+        print(f'{key}: {next_frame_err[key]}')
 
 # %%
-val_dataset.labels['velocity'].invertdata is None
+import importlib
+import apf.dataset
+importlib.reload(apf.dataset)  # reload the evaluation
+import linecache
+linecache.clearcache()
+
+from flyllm.config import posenames, featglobal
+print('Pose names: ', posenames)
+
+from apf.dataset import Velocity, GlobalVelocity, Subset, invert_to_named
+from experiments.flyllm import featrelative, featangle
+#velocity = Velocity(featrelative=featrelative, featangle=featangle)(val_data['pose'], isstart=val_data['isstart'])
+pose_global = Subset(include_ids=featglobal)(val_data['pose'])
+global_velocity = GlobalVelocity(tspred=[2,5,10])(pose_global,isstart=val_data['isstart'])
+print(global_velocity)
+pose_global1 = invert_to_named(global_velocity,'subset')
+print(pose_global1.shape)
+print(np.allclose(pose_global.array,pose_global1,equal_nan=True))
+for id in range(pose_global.array.shape[0]):
+    if np.all(np.isnan(pose_global.array[id,:])) and np.all(np.isnan(pose_global1[id,:])):
+        print(f'Pose id {id}: all NaNs')
+        continue
+    elif np.allclose(pose_global.array[id,:],pose_global1[id,:],equal_nan=True):
+        print(f'Pose id {id}: all close')
+        continue
+    print(f'Pose id {id}: max abs diff = {np.nanmax(np.abs(pose_global.array[id,:] - pose_global1[id,:]))}')
+id = 2
+tmismatch,fmismatch = np.nonzero(~np.isclose(pose_global.array[id,:],pose_global1[id,:],equal_nan=True))
+print(f'pose id {id} first mismatch at time {tmismatch[0]} feature {fmismatch[0]}')
+print(pose_global.array[id,tmismatch[0]-1:tmismatch[0]+2,fmismatch[0]])
+print(pose_global1[id,tmismatch[0]-1:tmismatch[0]+2,fmismatch[0]])
+
+# pose id 2 first mismatch at time 10000 feature 0
+# [-7.53946829 -0.07114847 -0.2117333 ]
+# [-7.53946829         nan         nan]
+
+# %%
+tmp = np.array([[1.1,10.1],[2.2,20.2],[3.3,30.3]])
+print(tmp.shape)
+print(tmp)
+print(tmp.flatten())
 
 # %%
 # plot multi errors
