@@ -297,6 +297,16 @@ def fit_discretize_data(data, nbins=50, bin_epsilon=None, outlierprct=.001, frac
 
 
 def discretize_labels(movement, bin_edges, soften_to_ends=False):
+    """
+    discretize_labels(movement, bin_edges, soften_to_ends=False)
+    Discretize continuous inputs movement with soft binning into bins defined by bin_edges using np.digitize.
+    Args:
+        movement: Data to discretize, szrest x nfeat, where prod(szrest) = n
+        bin_edges: Bin edges, nfeat x (nbins+1) float
+        soften_to_ends: Whether to allow softening into the end bins. Defaults to False.
+    Returns:
+        labels: Discretized labels, szrest x nfeat x nbins float
+    """
     szrest = movement.shape[:-1]
     n = int(np.prod(szrest))
     movement = movement.reshape((n, -1))

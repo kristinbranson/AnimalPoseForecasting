@@ -15,7 +15,7 @@ from apf.dataset import (
 )
 from apf.data import debug_less_data
 
-from flyllm.config import featrelative, keypointnames, featangle
+from flyllm.config import featrelative, keypointnames, featangle, posenames
 from flyllm.features import (
     kp2feat, compute_sensory_wrapper, compute_scale_perfly, compute_noise_params, feat2kp
 )
@@ -34,8 +34,9 @@ class Sensory(Operation):
         idxinfo: Keeps track of which dimensions of the sensory output correspond to what (e.g. wall, otherflies, ...)        
     """
     
-    localattrs = ['idxinfo']
+    localattrs = ['idxinfo','feature_names']
     idxinfo: dict | None = None
+    feature_names: list | None = None
     
     def apply(self, Xkp: np.ndarray, isdata: np.ndarray | None = None) -> np.ndarray:
         """ Computes sensory features from keypoints.
@@ -55,11 +56,12 @@ class Sensory(Operation):
                 isdatacurr = isdata[:,flyid]
             else:
                 isdatacurr = None
-            feat, idxinfo = compute_sensory_wrapper(Xkp.T, flyid, returnidx=True, isdata=isdatacurr)
+            feat, idxinfo, feature_names = compute_sensory_wrapper(Xkp.T, flyid, returnidx=True, isdata=isdatacurr, returnnames=True)
             feats.append(feat.T)
             if DOTIME:
                 LOG.info(f"Sensory computation for fly {flyid} took {utils.toc(start_time):.2f} seconds")
         self.idxinfo = idxinfo
+        self.feature_names = feature_names
         return np.array(feats)
 
     def invert(self, sensory: np.ndarray) -> None:
@@ -74,7 +76,13 @@ class Sensory(Operation):
         else:
             s += "  idxinfo is None\n"
         return s[:-1]
-
+    
+    def update_feature_names(self, input_feature_names):
+        return self.feature_names
+    
+    def invert_feature_names(self, input_feature_names):
+        LOG.error(f"Operation {self.name} is not invertible")
+        return None
 
 @dataclass
 class Pose(Operation):
@@ -120,6 +128,12 @@ class Pose(Operation):
     
     def __str__(self):
         return f"Operation {self.name} of class Pose with scale_perfly shape: {self.scale_perfly.shape if self.scale_perfly is not None else 'None'}"
+    
+    def update_feature_names(self, input_feature_names):
+        return posenames
+    
+    def invert_feature_names(self, input_feature_names):
+        return keypointnames
 
 def load_data(
         config: dict,
@@ -215,7 +229,7 @@ def make_dataset(
     LOG.info('Computing input and label features for dataset...')
     if DOTIME:
         start_time = utils.tic()
-    track = Data('keypoints', Xkp.T, [])
+    track = Data('keypoints', Xkp.T, [], feature_names=[kp for kp in keypointnames])
     if DOTIME:
         LOG.info(f"Track creation took {utils.toc(start_time):.2f} seconds")
 

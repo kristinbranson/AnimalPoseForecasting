@@ -853,7 +853,7 @@ def ensure_otherflies_touch_mult(data):
         SENSORY_PARAMS['otherflies_touch_mult'] = compute_otherflies_touch_mult(data)
 
 
-def compute_sensory_wrapper(Xkp, flynum, theta_main=None, returnall=False, returnidx=False, isdata=None):
+def compute_sensory_wrapper(Xkp, flynum, theta_main=None, returnall=False, returnidx=False, isdata=None, returnnames=False):
     # other flies positions
     idxother = np.ones(Xkp.shape[-1], dtype=bool)
     idxother[flynum] = False
@@ -914,6 +914,9 @@ def compute_sensory_wrapper(Xkp, flynum, theta_main=None, returnall=False, retur
         
     sensory = np.r_[wall_touch, otherflies_vision]
     idxinfo = {}
+    wall_touch_feature_names = [f'wall_touch_{keypointnames[i]}' for i in kptouch]
+    otherflies_vision_feature_names = [f'otherflies_vision_oma{i}' for i in range(SENSORY_PARAMS['n_oma'])]
+    feature_names = wall_touch_feature_names + otherflies_vision_feature_names
     idxoff = 0
     idxinfo['wall_touch'] = [0, wall_touch.shape[0]]
     idxoff += wall_touch.shape[0]
@@ -924,12 +927,16 @@ def compute_sensory_wrapper(Xkp, flynum, theta_main=None, returnall=False, retur
         sensory = np.r_[sensory, otherflies_touch]
         idxinfo['otherflies_touch'] = [idxoff, idxoff + otherflies_touch.shape[0]]
         idxoff += otherflies_touch.shape[0]
+        otherflies_touch_feature_names = [f'otherflies_touch_main_{keypointnames[i]}_to_other_{keypointnames[j]}' for i in kptouch for j in kptouch_other]
+        feature_names = feature_names + otherflies_touch_feature_names
 
     ret = (sensory,)
     if returnall:
         ret = ret + (wall_touch, otherflies_vision, otherflies_touch)
     if returnidx:
         ret = ret + (idxinfo,)
+    if returnnames:
+        ret = ret + (feature_names,)
 
     return ret
 

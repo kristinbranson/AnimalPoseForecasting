@@ -36,8 +36,10 @@ def compute_error(dataset,true_data,pred_data,nsamples=10):
     pred_fusion = invert_to_named(pred_labels,'fusion',return_data=True)
     fusion_op = pred_fusion.operations[-1]
     pred_unfused = fusion_op.unfuse(pred_fusion)
+    feature_names_unfused = fusion_op.unfuse_feature_names(pred_fusion)
     pred_discrete = pred_unfused['discretize'] # n_agents x n_frames x (d_discrete * nbins)
     pred_continuous = pred_unfused['identity'] # n_agents x n_frames x d_continuous
+    feature_names_discrete = feature_names_unfused['discretize']
     idx = [op.name for op in fusion_op.operations].index('discretize')
     discretize_op = fusion_op.operations[idx]    
     pred_discrete = discretize_op.unflatten(pred_discrete) # n_agents x n_frames x d_discrete x nbins
@@ -65,6 +67,7 @@ def compute_error(dataset,true_data,pred_data,nsamples=10):
 
     # error in velocity predictions    
     dvelocity = true_velocity.array[isdata][None,...] - pred_velocity[:,isdata]
+    velocity_feature_names = true_velocity.feature_names
     assert ~np.any(np.isnan(dvelocity)), 'dsample has unexpected nans'
     velocity_absdiff_samplemean = np.mean(np.abs(dvelocity),axis=0) # mean over samples, (n,dpose)
     velocity_absdiff_samplemin = np.min(np.abs(dvelocity),axis=0) # min over samples, (n,dpose)
@@ -85,6 +88,8 @@ def compute_error(dataset,true_data,pred_data,nsamples=10):
     return {
         'isdata': isdata,
         'n': n,
+        'velocity_feature_names': velocity_feature_names,
+        'discrete_velocity_feature_names': feature_names_discrete,
         'velocity_absdiff_samplemean_datamean': velocity_absdiff_samplemean_datamean,
         'velocity_absdiff_samplemin_datamean': velocity_absdiff_samplemin_datamean,
         'discrete_velocity_ce_datamean': discrete_velocity_ce_datamean,

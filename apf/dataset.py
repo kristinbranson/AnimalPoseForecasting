@@ -64,11 +64,15 @@ class Operation(ABC):
                 array = res
                 invert_data_curr = None
             invert_data = {**(data.invertdata or {}), self.name: invert_data_curr} if invert_data_curr is not None else data.invertdata
+            feature_names = self.update_feature_names(data.feature_names)
+            if feature_names is None or len(feature_names) != array.shape[-1]:
+                feature_names = [f'{data.name}_{self.name}_{i}' for i in range(array.shape[-1])]
             return Data(
                 name=f"{data.name}_{self.name}",
                 array=array,
                 operations=data.operations + [self],
-                invertdata=invert_data
+                invertdata=invert_data,
+                feature_names=feature_names
             )
         elif isinstance(data, np.ndarray):
             return self.apply(data, **kwargs)
@@ -94,14 +98,25 @@ class Operation(ABC):
     def __str__(self):
         return f"Operation {self.name} of class {self.__class__.__name__}"
     
-    def feature_names(self):
+    def update_feature_names(self, input_feature_names: list[str]):
+        """ Updates the feature names after applying the operation.
+        Args:
+            input_feature_names: List of feature names before applying the operation.
+        Returns:
+            output_feature_names: List of feature names after applying the operation.
         """
-        Returns a list of feature names after applying this operation.
+            
+        return input_feature_names
+    
+    def invert_feature_names(self, input_feature_names: list[str]):
+        """ Updates the feature names after inverting the operation.
+        Args:
+            input_feature_names: List of feature names before inverting the operation.
+        Returns:
+            output_feature_names: List of feature names after inverting the operation.
         """
-        if self.array is None:
-            return None
-        n_feat = self.array.shape[-1]
-        return [f"{self.name}_feat{feat_id}" for feat_id in range(n_feat)]
+            
+        return input_feature_names
 
     @classmethod
     def from_dict(cls, oper_params: dict):
@@ -141,6 +156,7 @@ class Data(NamedTuple):
     # Operations that have been applied to the data (can be later applied in inverse to obtain original data).
     operations: list[Operation] = []
     invertdata: Any = None # any additional data needed for inverting the operations, e.g. flyid for Pose operation
+    feature_names: list[str] | None = None
     
     def __str__(self):
         s = f"Data {self.name} with shape {self.array.shape} and operations:\n"
@@ -148,21 +164,41 @@ class Data(NamedTuple):
             s += f"  {str(op)}\n"
         return s[:-1]
     
+    def print_feature_names(self):
+        if self.feature_names is not None and len(self.feature_names)>0:
+            s = ""
+            for i,fn in enumerate(self.feature_names):
+                s += f"{i}. {fn}\n"
+        else:
+            s = "  No feature names\n"
+        print(s[:-1])
+        return
+    
     def shape(self):
         return self.array.shape
-
+    
+    @staticmethod
+    def copy_with(data: 'Data', **kwargs) -> 'Data':
+        return data._replace(**kwargs)
+    
 @dataclass
 class Identity(Operation):
     """ This operation passes data through without modifications.
 
     Can be useful in combination with Fusion when a subset of dimensions needs to be operated on and others not.
     """
-    def apply(self, data: np.ndarray):
+    def apply(self, data: np.ndarray):      
         return data
 
     def invert(self, data: np.ndarray):
         return data
-
+    
+    def update_feature_names(self, input_feature_names):
+        return input_feature_names
+    
+    def invert_feature_names(self, input_feature_names):
+        return input_feature_names
+    
 @dataclass
 class Zscore(Operation):
     """ Zscores and unzscores data.
@@ -221,6 +257,12 @@ class Zscore(Operation):
     
     def __str__(self):
         return f"Operation {self.name} of class Zscore with mean shape {self.mean.shape if self.mean is not None else None} and std shape {self.std.shape if self.std is not None else None}"
+    
+    def update_feature_names(self, input_feature_names):
+        return [f'{name}_zscored' for name in input_feature_names]
+    
+    def invert_feature_names(self, input_feature_names):
+        return [name.replace('_zscored','') for name in input_feature_names]
 
 @dataclass
 class OddRoot(Operation):
@@ -264,6 +306,12 @@ class OddRoot(Operation):
     
     def __str__(self):
         return f"Operation {self.name} of class OddRoot with root {self.root}"
+    
+    def update_feature_names(self, input_feature_names):
+        return [f'{name}_root{self.root}' for name in input_feature_names]
+    
+    def invert_feature_names(self, input_feature_names):
+        return [name.replace(f'_root{self.root}','') for name in input_feature_names]
 
 @dataclass
 class Subset(Operation):
@@ -291,10 +339,22 @@ class Subset(Operation):
         return data[..., self.include_ids]
 
     def invert(self, data: np.ndarray) -> None:
-        LOG.error(f"Operation {self} is not invertible")
+        LOG.error(f"Operation {self.name} is not invertible")
+        return None
         
     def __str__(self):
         return f"Operation {self.name} of class Subset with include_ids {self.include_ids}"
+    
+    def update_feature_names(self, input_feature_names):
+        if hasattr(self.include_ids, 'dtype') and self.include_ids.dtype == bool:
+            include_ids = np.nonzero(self.include_ids)[0]
+        else:
+            include_ids = self.include_ids
+        return [input_feature_names[i] for i in include_ids]
+    
+    def invert_feature_names(self, input_feature_names):
+        LOG.error(f"Operation {self.name} is not invertible")
+        return None
 
 
 # TODO: Move this to apf/data, and find where I copied it from and use the one from apf/data there as well
@@ -454,6 +514,7 @@ class Discretize(Operation):
         n_feat = data.shape[-1]
         data_flat = data.reshape((-1, n_feat))
 
+        # n x n_feat x nbins float
         data_flat_discrete = discretize_labels(data_flat, self.bin_edges, soften_to_ends=True)
 
         if DOTIME:
@@ -517,6 +578,20 @@ class Discretize(Operation):
     
     def __str__(self):
         return f"Operation {self.name} of class Discretize with {self.nbins if self.bin_centers is not None else None} bins"
+    
+    def update_feature_names(self, input_feature_names):
+        output_feature_names = np.empty((len(input_feature_names), self.nbins), dtype=object)
+        for i,name in enumerate(input_feature_names):
+            for b in range(self.nbins):
+                output_feature_names[i, b] = f'{name}_bin{b}'
+        return output_feature_names.flatten().tolist()
+    
+    def invert_feature_names(self, input_feature_names):
+        nfeat = len(input_feature_names) // self.nbins
+        output_feature_names = []
+        for i in range(nfeat):
+            output_feature_names.append(input_feature_names[i*self.nbins].replace(f'_bin0',''))
+        return output_feature_names
         
 
 @dataclass
@@ -637,25 +712,72 @@ class Fusion(Operation):
         corresponding to that operation.
         Args:
             data: Either np.ndarray or torch.Tensor or Data
+        Returns:
+            res: dict with keys being operation names and values being the corresponding parts of the data.
         """
         if isinstance(data, Data):
             data = data.array
         res = {}
-        
         count = 0
         for i, indices in enumerate(self.indices_per_op):
             opname = self.operations[i].name
             n_dims = self.dims_per_op[i]
             res[opname] = data[..., count:count + n_dims]
             count += n_dims
-            
+        
         return res
+        
+    def unfuse_feature_names(self, data: Data) -> dict[str, list[str]]:
+        """
+        feature_names_per_op = fusion_op.unfuse_feature_names(feature_names)
+        Returns a dict with a key for each operation. The value for each key is the list of feature names
+        corresponding to that operation.
+        Args:
+            feature_names: list of feature names corresponding to the fused data. 
+        Returns:
+            res: dict with keys being operation names and values being the corresponding feature names.
+        """
+        if data.feature_names is None:
+            return None
+        res = {}
+        count = 0
+        for i, indices in enumerate(self.indices_per_op):
+            opname = self.operations[i].name
+            n_dims = self.dims_per_op[i]
+            res[opname] = data.feature_names[count:count + n_dims]
+            count += n_dims
+        return res
+        
+        
     
     def __str__(self):
         s = f"Operation {self.name} of class Fusion with operations:\n"
         for i, op in enumerate(self.operations):
             s += f"  {i}: {str(op)}, indices: {self.indices_per_op[i]}\n"
         return s[:-1]
+    
+    def update_feature_names(self, input_feature_names):
+        output_feature_names = []
+        for i, op in enumerate(self.operations):
+            indices = self.indices_per_op[i]
+            input_names_op = [input_feature_names[j] for j in indices]
+            output_names_op = op.update_feature_names(input_names_op)
+            output_feature_names.extend(output_names_op)
+        return output_feature_names
+    
+    def invert_feature_names(self, input_feature_names):
+        nfeat = max([max(indices) for indices in self.indices_per_op]) + 1
+        output_feature_names = [f'feat_{i}' for i in range(nfeat)]
+        count = 0
+        for i, op in enumerate(self.operations):
+            indices = self.indices_per_op[i]
+            n_dims = self.dims_per_op[i]
+            input_names_op = input_feature_names[count:count + n_dims]
+            output_names_op = op.invert_feature_names(input_names_op)
+            for j, name in zip(indices, output_names_op):
+                output_feature_names[j] = name
+            count += n_dims
+        return output_feature_names
 
 @dataclass
 class Roll(Operation):
@@ -724,6 +846,12 @@ class Roll(Operation):
 
     def __str__(self):
         return f"Operation {self.name} of class Roll with dt {self.dt}"
+    
+    def update_feature_names(self, input_feature_names):
+        return [f'{name}_rolled{self.dt}' for name in input_feature_names]
+    
+    def invert_feature_names(self, input_feature_names):
+        return [name.replace(f'_rolled{self.dt}','') for name in input_feature_names]
 
 def multistart_cumsum(x: np.ndarray, x0s: list[np.ndarray], t0s: list[np.ndarray], dt=None) -> np.ndarray:
     """ Computes cumulative sum of x with multiple starting points.
@@ -852,6 +980,12 @@ class LocalVelocity(Operation):
     
     def __str__(self):
         return f"Operation {self.name} of class LocalVelocity with is_angle {self.is_angle}"
+    
+    def update_feature_names(self, input_feature_names):
+        return [f'{name}_velocity' for name in input_feature_names]
+    
+    def invert_feature_names(self, input_feature_names):
+        return [name.replace('_velocity','') for name in input_feature_names]
 
 
 @dataclass
@@ -934,10 +1068,7 @@ class GlobalVelocity(Operation):
         Returns:
             pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
-        
-        # currently only works for tspred = [1]
-        #assert self.tspred == [1], "GlobalVelocity invert currently only supports tspred = [1]"
-        
+                
         # invert with smallest dt
         if dt is None:
             dt = np.min(self.tspred)
@@ -976,8 +1107,12 @@ class GlobalVelocity(Operation):
         
         return inverted
     
-    def feature_names(self):
-        return ['forward_velocity', 'sideways_velocity', 'angular_velocity'] * len(self.tspred)
+    def update_feature_names(self, input_feature_names):
+        return [name for dt in self.tspred for name  in [f'forward_velocity_{dt}', f'sideways_velocity_{dt}', f'angular_velocity_{dt}']]
+    
+    def invert_feature_names(self, input_feature_names):
+        output_feature_names = ['x_position', 'y_position', 'orientation']
+        return output_feature_names
 
     def __str__(self):
         return f"Operation {self.name} of class GlobalVelocity with tspred {self.tspred}"
@@ -1041,6 +1176,12 @@ class Velocity(Operation):
     
     def __str__(self):
         return f"Operation {self.name} of class Velocity => {str(self.fusion)}"
+    
+    def update_feature_names(self, input_feature_names):
+        return self.fusion.update_feature_names(input_feature_names)
+    
+    def invert_feature_names(self, input_feature_names):
+        return self.fusion.invert_feature_names(input_feature_names)
 
 
 @dataclass(frozen=True)
@@ -1346,7 +1487,7 @@ def apply_operations(data: Data, operations: list[Operation]) -> Data:
 
 def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data, 
                              operations: list | None = None, invertdata: dict | None = None,
-                             extraargs: dict = {}):
+                             extraargs: dict = {}, return_feature_names: bool = False):
     """ Apply the inverse of operations to data, in reverse order.
     
     Args: 
@@ -1360,6 +1501,7 @@ def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data,
     
     Returns:
         array: Data inverted, ndarray or Tensor
+        feature_names (optional): List of feature names after inversion. Only returned if return_feature_names is True.
     """
     
     # allow data to be a Data object, in which case we extract operations and invertdata from it
@@ -1367,8 +1509,13 @@ def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data,
         operations = data.operations
     if invertdata is None and hasattr(data, 'invertdata'):
         invertdata = data.invertdata
+    feature_names = None
+    if hasattr(data,'feature_names'):
+        feature_names = data.feature_names
     if not isinstance(data, (np.ndarray, torch.Tensor)) and hasattr(data, 'array'):
         data = data.array
+    if feature_names is None:
+        feature_names = [f'feat_{i}' for i in range(data.shape[-1])]
     
     for oper in reversed(operations):
         invertdataargs = invertdata.get(oper.name, None) if invertdata else None
@@ -1381,8 +1528,13 @@ def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data,
         elif invertdataargs is not None:
             args.append(invertdataargs)
         data = oper.invert(data, *args, **kwargs)
-        
-    return data
+        if return_feature_names:
+            feature_names = oper.invert_feature_names(feature_names)
+
+    if return_feature_names:
+        return data, feature_names
+    else:      
+        return data
 
 def invert_to_named(data: Data, name: str, return_data: bool = False, **kwargs) -> np.ndarray | torch.Tensor:
     """ Inverts data to the state after operation name has been applied. 
@@ -1396,17 +1548,24 @@ def invert_to_named(data: Data, name: str, return_data: bool = False, **kwargs) 
     Returns:
         array: Data inverted to the state after operation name has been applied, ndarray or Tensor
     """
-    post_opers = get_post_operations(data.operations, name)
+    if name == 'original':
+        post_opers = data.operations
+    else:
+        post_opers = get_post_operations(data.operations, name)
+        
     if post_opers is None:
         raise ValueError(f"Operation '{name}' not found in data operations")
-    array = apply_inverse_operations(data, operations=post_opers, extraargs=kwargs)
+    array, feature_names = apply_inverse_operations(data, operations=post_opers, extraargs=kwargs, return_feature_names=True)
     if return_data:
-        operations = get_pre_operations(data.operations, name, inclusive=True)
+        if name == 'original':
+            operations = []
+        else:
+            operations = get_pre_operations(data.operations, name, inclusive=True)
         invertdata = {}
         for op in operations:
             if isinstance(data.invertdata,dict) and op.name in data.invertdata:
                 invertdata[op.name] = data.invertdata[op.name]
-        return Data(name=name, array=array, operations=operations, invertdata=invertdata)
+        return Data(name=name, array=array, operations=operations, invertdata=invertdata, feature_names=feature_names)
 
     return array
 
@@ -1850,7 +2009,7 @@ class Dataset(torch.utils.data.Dataset):
                     invertdatacurr = item['metadata']['inputs'][k]
                 else:
                     invertdatacurr = None
-                datadict['inputs'][k] = Data(name=self.inputs[k].name, array=v, operations=self.inputs[k].operations, invertdata=invertdatacurr)
+                datadict['inputs'][k] = Data.copy_with(self.inputs[k],array=v,invertdata=invertdatacurr)
         continuous_key = None
         discrete_key = None
         if 'labels' in item: 
@@ -1869,7 +2028,7 @@ class Dataset(torch.utils.data.Dataset):
                     invertdatacurr = item['metadata']['labels'][k]
                 else:
                     invertdatacurr = None
-                datadict['labels'][k] = Data(name=self.labels[k].name, array=v, operations=self.labels[k].operations, invertdata=invertdatacurr)
+                datadict['labels'][k] = Data.copy_with(self.labels[k],array=v,invertdata=invertdatacurr)
         datadict['metadata'] = {k: v for k,v in item.get('metadata',{}).items() if k not in ['inputs','labels']}        
         if 'useoutputmask' in item:
             datadict['useoutputmask'] = item['useoutputmask']
@@ -1918,7 +2077,7 @@ def array_to_data(array: np.ndarray, datalike: Data) -> Data:
         array (np.ndarray): Array to convert to Data object.
         datalike (Data): Data object to copy operations and name from.
     """
-    return Data(name=datalike.name, array=array, operations=datalike.operations)
+    return Data.copy_with(datalike,array=array)
 
 class DataLoader(torch.utils.data.DataLoader):
     """ A thin wrapper around torch's DataLoader to use collate_nested_dicts as the collate_fn.

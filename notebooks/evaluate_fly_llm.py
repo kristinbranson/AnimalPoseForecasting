@@ -68,7 +68,7 @@ timestamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
 print('Timestamp: ' + timestamp)
 
 # %% [markdown]
-# ### Configuration
+# ### Configuration and load data
 
 # %%
 # configuration parameters for this model
@@ -246,16 +246,72 @@ for key in val_dataset.inputs:
 # %%
 import importlib
 import flyllm.evaluation
+import apf.dataset
 importlib.reload(flyllm.evaluation)  # reload the evaluation
+importlib.reload(apf.dataset)
 import linecache
 linecache.clearcache()
 from flyllm.evaluation import compute_error
 next_frame_err = compute_error(val_dataset,val_data,pred_data)
 print(next_frame_err.keys())
-# find keys with datamean in their name
-for key in next_frame_err.keys():
-    if 'datamean' in key:
-        print(f'{key}: {next_frame_err[key]}')
+
+feature_names = val_data['velocity'].feature_names
+for key in ['velocity_absdiff_samplemean_datamean', 'velocity_absdiff_samplemin_datamean']:
+    assert(len(feature_names) == next_frame_err[key].shape[0]), f'Feature names length {len(feature_names)} does not match next_frame_err shape {next_frame_err[key].shape[0]}'
+    print(f'Next frame error for {key}:')
+    for i in range(next_frame_err[key].shape[0]):
+        print(f'dim {i} ({feature_names[i]}): {next_frame_err[key][i]}')
+
+
+# %%
+import importlib
+import apf.dataset
+importlib.reload(apf.dataset)
+from apf.dataset import invert_to_named, apply_inverse_operations
+
+def check_inversion(datao,datar,isdata=None):
+    for id in range(datao.array.shape[0]):
+        arr_o = datao.array[id]
+        arr_r = datar.array[id]
+        if isdata is not None:
+            mask = isdata[id]
+            arr_o = arr_o[mask]
+            arr_r = arr_r[mask]
+        if np.all(np.isnan(arr_o)) and np.all(np.isnan(arr_r)):
+            print(f'All NaN for id {id}')
+            continue
+        if np.allclose(arr_o,arr_r,atol=1e-6,equal_nan=True):
+            print(f'All close for id {id}')
+        else:
+            diff = np.abs(arr_o - arr_r)
+            maxdiff = np.nanmax(diff)
+            meandiff = np.nanmean(diff)
+            print(f'Id {id}: meandiff = {meandiff}, maxdiff = {maxdiff}')
+            isnanmismatch = np.isnan(arr_o) != np.isnan(arr_r)
+            if np.any(isnanmismatch):
+                print(f'NaN mismatch for id {id} for {np.count_nonzero(isnanmismatch)} elements')
+    if len(datar.feature_names) != len(datao.feature_names):
+        print(f'Feature name length mismatch: original {len(datao.feature_names)}, reconstructed {len(datar.feature_names)}')
+    for i,featname in enumerate(datao.feature_names):
+        if i >= len(datar.feature_names):
+            break
+        name_r = datar.feature_names[i]
+        if featname != name_r:
+            print(f'Feature name mismatch at index {i}: original "{featname}", reconstructed "{name_r}"')
+
+print(val_data.keys())
+print('track: ' + str(val_data['track'].feature_names))
+print('pose: ' + str(val_data['pose'].feature_names))
+print('velocity: ' + str(val_data['velocity'].feature_names))
+print('sensory: ' + str(val_data['sensory'].feature_names))
+
+track1 = invert_to_named(val_data['pose'],'original',return_data=True)
+print('Checking inversion from pose to track:')
+check_inversion(val_data['track'],track1,val_data['isdata'].T)
+    
+pose1 = invert_to_named(val_data['velocity'],'pose',return_data=True)
+print('Checking inversion from velocity to pose:')
+check_inversion(val_data['pose'],pose1)
 
 # %%
 import importlib
@@ -272,6 +328,7 @@ from experiments.flyllm import featrelative, featangle
 #velocity = Velocity(featrelative=featrelative, featangle=featangle)(val_data['pose'], isstart=val_data['isstart'])
 pose_global = Subset(include_ids=featglobal)(val_data['pose'])
 global_velocity = GlobalVelocity(tspred=[2,5,10])(pose_global,isstart=val_data['isstart'])
+print(global_velocity.feature_names)
 print(global_velocity)
 pose_global1 = invert_to_named(global_velocity,'subset')
 print(pose_global1.shape)
@@ -286,19 +343,14 @@ for id in range(pose_global.array.shape[0]):
     print(f'Pose id {id}: max abs diff = {np.nanmax(np.abs(pose_global.array[id,:] - pose_global1[id,:]))}')
 id = 2
 tmismatch,fmismatch = np.nonzero(~np.isclose(pose_global.array[id,:],pose_global1[id,:],equal_nan=True))
-print(f'pose id {id} first mismatch at time {tmismatch[0]} feature {fmismatch[0]}')
-print(pose_global.array[id,tmismatch[0]-1:tmismatch[0]+2,fmismatch[0]])
-print(pose_global1[id,tmismatch[0]-1:tmismatch[0]+2,fmismatch[0]])
+if len(tmismatch) > 0:
+    print(f'pose id {id} first mismatch at time {tmismatch[0]} feature {fmismatch[0]}')
+    print(pose_global.array[id,tmismatch[0]-1:tmismatch[0]+2,fmismatch[0]])
+    print(pose_global1[id,tmismatch[0]-1:tmismatch[0]+2,fmismatch[0]])
 
 # pose id 2 first mismatch at time 10000 feature 0
 # [-7.53946829 -0.07114847 -0.2117333 ]
 # [-7.53946829         nan         nan]
-
-# %%
-tmp = np.array([[1.1,10.1],[2.2,20.2],[3.3,30.3]])
-print(tmp.shape)
-print(tmp)
-print(tmp.flatten())
 
 # %%
 # plot multi errors
