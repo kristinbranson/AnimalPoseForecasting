@@ -2,6 +2,45 @@ import torch
 import numpy as np
 from apf.dataset import invert_to_named, array_to_data
 
+def labels_to_discrete_continuous(data_labels):
+    
+    # discrete and continuous (z-scored) predictions
+        
+    data_fusion = invert_to_named(data_labels,'fusion',return_data=True)
+    fusion_op = data_fusion.operations[-1]
+    velocity_unfused = fusion_op.unfuse(data_fusion)
+    feature_names_unfused = fusion_op.unfuse_feature_names(data_fusion)
+    velocity_discrete = velocity_unfused['discretize'] # n_agents x n_frames x (d_discrete * nbins)
+    velocity_continuous = velocity_unfused['identity'] # n_agents x n_frames x d_continuous
+    feature_names_discrete = feature_names_unfused['discretize']
+    feature_names_continuous = feature_names_unfused['identity']
+    idx = [op.name for op in fusion_op.operations].index('discretize')
+    discretize_op = fusion_op.operations[idx]    
+    velocity_discrete = discretize_op.unflatten(velocity_discrete) # n_agents x n_frames x d_discrete x nbins
+    feature_names_discrete = discretize_op.invert_feature_names(feature_names_discrete)
+    n_bins = velocity_discrete.shape[-1]
+    d_discrete = velocity_discrete.shape[-2]
+    d_continuous = velocity_continuous.shape[-1]
+    
+    return {
+        'discrete': velocity_discrete,
+        'continuous': velocity_continuous,
+        'discrete_feature_names': feature_names_discrete,
+        'continuous_feature_names': feature_names_continuous,
+        'n_bins': n_bins,
+        'd_discrete': d_discrete,
+        'd_continuous': d_continuous
+    }
+    
+def labels_to_velocity_samples(data_labels,nsamples=10):
+    # invert to velocity -- discrete features will be inverted to continuous by sampling
+    # do this nsamples times -- this is not the most efficient way to do this
+    for samplei in range(nsamples):
+        velocity_curr, feature_names = invert_to_named(data_labels, 'velocity', return_feature_names=True)
+        if samplei==0:
+            velocity_samples = np.zeros((nsamples,)+velocity_curr.shape,dtype=velocity_curr.dtype)
+        velocity_samples[samplei,...] = velocity_curr
+    return velocity_samples, feature_names
 
 def compute_error(dataset,true_data,pred_data,nsamples=10):
     """
@@ -33,41 +72,18 @@ def compute_error(dataset,true_data,pred_data,nsamples=10):
     isdata = ~np.all(np.isnan(pred_labels.array),axis=-1)
 
     # discrete and continuous (z-scored) predictions
-    pred_fusion = invert_to_named(pred_labels,'fusion',return_data=True)
-    fusion_op = pred_fusion.operations[-1]
-    pred_unfused = fusion_op.unfuse(pred_fusion)
-    feature_names_unfused = fusion_op.unfuse_feature_names(pred_fusion)
-    pred_discrete = pred_unfused['discretize'] # n_agents x n_frames x (d_discrete * nbins)
-    pred_continuous = pred_unfused['identity'] # n_agents x n_frames x d_continuous
-    feature_names_discrete = feature_names_unfused['discretize']
-    idx = [op.name for op in fusion_op.operations].index('discretize')
-    discretize_op = fusion_op.operations[idx]    
-    pred_discrete = discretize_op.unflatten(pred_discrete) # n_agents x n_frames x d_discrete x nbins
-    n_bins = pred_discrete.shape[-1]
-    d_discrete = pred_discrete.shape[-2]
-    d_continuous = pred_continuous.shape[-1]
+    pred_discrete_continuous = labels_to_discrete_continuous(pred_labels)
+    true_discrete_continuous = labels_to_discrete_continuous(true_labels)
 
-    # invert to velocity -- discrete features will be inverted to continuous by sampling
-    # do this nsamples times -- this is not the most efficient way to do this
-    for samplei in range(nsamples):
-        pred_velocity_curr = invert_to_named(pred_fusion, 'velocity')
-        if samplei==0:
-            pred_velocity = np.zeros((nsamples,)+pred_velocity_curr.shape,dtype=pred_velocity_curr.dtype)
-        pred_velocity[samplei,...] = pred_velocity_curr
+    # velocity samples
+    pred_velocity, velocity_feature_names = labels_to_velocity_samples(pred_labels,nsamples=nsamples) # (nsamples, n_agents, n_frames, dpose)
         
     true_velocity = true_data['velocity']
-    
-    # discrete and continuous (z-scored) true
-    true_fusion = invert_to_named(true_labels,'fusion',return_data=True)
-    true_unfused = fusion_op.unfuse(true_fusion)
-    true_discrete = discretize_op.unflatten(true_unfused['discretize']) # n_agents x n_frames x d_discrete x nbins
-    true_continuous = true_unfused['identity'] # n_agents x n_frames x d_continuous
-    
+        
     n = np.count_nonzero(isdata).item()
 
     # error in velocity predictions    
     dvelocity = true_velocity.array[isdata][None,...] - pred_velocity[:,isdata]
-    velocity_feature_names = true_velocity.feature_names
     assert ~np.any(np.isnan(dvelocity)), 'dsample has unexpected nans'
     velocity_absdiff_samplemean = np.mean(np.abs(dvelocity),axis=0) # mean over samples, (n,dpose)
     velocity_absdiff_samplemin = np.min(np.abs(dvelocity),axis=0) # min over samples, (n,dpose)
@@ -76,20 +92,21 @@ def compute_error(dataset,true_data,pred_data,nsamples=10):
 
     # error in discrete velocity predictions -- cross-entropy
     discrete_velocity_ce = torch.nn.functional.cross_entropy(
-        torch.tensor(pred_discrete[isdata].reshape(-1,n_bins)),
-        torch.tensor(true_discrete[isdata].reshape(-1,n_bins)),
-        reduction='none').reshape(n,d_discrete).numpy() # (n, ddiscrete)
+        torch.tensor(pred_discrete_continuous['discrete'][isdata].reshape(-1,pred_discrete_continuous['n_bins'])),
+        torch.tensor(true_discrete_continuous['discrete'][isdata].reshape(-1,pred_discrete_continuous['n_bins'])),
+        reduction='none').reshape(n,pred_discrete_continuous['d_discrete']).numpy() # (n, ddiscrete)
     discrete_velocity_ce_datamean = np.mean(discrete_velocity_ce,axis=0) # mean over data points, (ddiscrete,)
 
     # error in continuous velocity predictions
-    continuous_zvelocity_absdiff = np.abs(true_continuous[isdata] - pred_continuous[isdata]) # (n,dcontinuous)
+    continuous_zvelocity_absdiff = np.abs(true_discrete_continuous['continuous'][isdata] - pred_discrete_continuous['continuous'][isdata]) # (n,dcontinuous)
     continuous_zvelocity_absdiff_datamean = np.mean(continuous_zvelocity_absdiff,axis=0) # mean over data points, (dcontinuous,)
 
     return {
         'isdata': isdata,
         'n': n,
         'velocity_feature_names': velocity_feature_names,
-        'discrete_velocity_feature_names': feature_names_discrete,
+        'discrete_velocity_feature_names': pred_discrete_continuous['discrete_feature_names'],
+        'continuous_zvelocity_feature_names': pred_discrete_continuous['continuous_feature_names'],
         'velocity_absdiff_samplemean_datamean': velocity_absdiff_samplemean_datamean,
         'velocity_absdiff_samplemin_datamean': velocity_absdiff_samplemin_datamean,
         'discrete_velocity_ce_datamean': discrete_velocity_ce_datamean,

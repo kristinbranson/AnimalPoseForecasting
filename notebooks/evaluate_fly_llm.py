@@ -237,11 +237,13 @@ plt.colorbar(ax[1].images[0], ax=ax, orientation='vertical')
 
 for key in pred_data['labels']:
     print(f'Predicted {key} = {pred_data["labels"][key]}')
+    pred_data['labels'][key].print_feature_names()
 for key in val_dataset.labels:
     print(f'Label {key} = {val_dataset.labels[key]}')
+    val_dataset.labels[key].print_feature_names()
 for key in val_dataset.inputs:
     print(f'Input {key} = {val_dataset.inputs[key]}')
-
+    val_dataset.inputs[key].print_feature_names()
 
 # %%
 import importlib
@@ -255,15 +257,30 @@ from flyllm.evaluation import compute_error
 next_frame_err = compute_error(val_dataset,val_data,pred_data)
 print(next_frame_err.keys())
 
-feature_names = val_data['velocity'].feature_names
+feature_names = next_frame_err['velocity_feature_names']
 for key in ['velocity_absdiff_samplemean_datamean', 'velocity_absdiff_samplemin_datamean']:
     assert(len(feature_names) == next_frame_err[key].shape[0]), f'Feature names length {len(feature_names)} does not match next_frame_err shape {next_frame_err[key].shape[0]}'
     print(f'Next frame error for {key}:')
     for i in range(next_frame_err[key].shape[0]):
         print(f'dim {i} ({feature_names[i]}): {next_frame_err[key][i]}')
+        
+key = 'discrete_velocity_ce_datamean'
+feature_names = next_frame_err['discrete_velocity_feature_names']
+assert (len(feature_names) == next_frame_err[key].shape[0]), f'Feature names length {len(feature_names)} does not match next_frame_err shape {next_frame_err[key].shape[0]}'
+print(f'Next frame error for {key}:')
+for i in range(next_frame_err[key].shape[0]):
+    print(f'dim {i} ({feature_names[i]}): {next_frame_err[key][i]}')
 
+key = 'continuous_zvelocity_absdiff_datamean'
+feature_names = next_frame_err['continuous_zvelocity_feature_names']
+assert (len(feature_names) == next_frame_err[key].shape[0]), f'Feature names length {len(feature_names)} does not match next_frame_err shape {next_frame_err[key].shape[0]}'
+print(f'Next frame error for {key}:')
+for i in range(next_frame_err[key].shape[0]):
+    print(f'dim {i} ({feature_names[i]}): {next_frame_err[key][i]}')
 
 # %%
+# DEBUG : check inversion operations
+
 import importlib
 import apf.dataset
 importlib.reload(apf.dataset)
@@ -313,7 +330,11 @@ pose1 = invert_to_named(val_data['velocity'],'pose',return_data=True)
 print('Checking inversion from velocity to pose:')
 check_inversion(val_data['pose'],pose1)
 
+
+
 # %%
+# DEBUG: check inversion of global velocity
+
 import importlib
 import apf.dataset
 importlib.reload(apf.dataset)  # reload the evaluation
@@ -328,8 +349,8 @@ from experiments.flyllm import featrelative, featangle
 #velocity = Velocity(featrelative=featrelative, featangle=featangle)(val_data['pose'], isstart=val_data['isstart'])
 pose_global = Subset(include_ids=featglobal)(val_data['pose'])
 global_velocity = GlobalVelocity(tspred=[2,5,10])(pose_global,isstart=val_data['isstart'])
-print(global_velocity.feature_names)
-print(global_velocity)
+global_velocity.print_feature_names()
+
 pose_global1 = invert_to_named(global_velocity,'subset')
 print(pose_global1.shape)
 print(np.allclose(pose_global.array,pose_global1,equal_nan=True))
@@ -353,30 +374,62 @@ if len(tmismatch) > 0:
 # [-7.53946829         nan         nan]
 
 # %%
+val_dataset.chunk_indices
+val_data['flyids']
+print(pred_data['labels']['velocity'].shape)
+print(pred_data['labels']['velocity'].invertdata)
+np.unique(val_data['flyids'][val_data['isdata']])
+(val_data['flyids']==11) & (val_data['isdata'])
+
+# %%
 # plot multi errors
-from flyllm.plotting import plot_multi_pred_vs_true
+import importlib
+import flyllm.plotting
+import apf.dataset
+import flyllm.evaluation
+importlib.reload(flyllm.plotting)  # reload the evaluation
+importlib.reload(apf.dataset)
+importlib.reload(flyllm.evaluation)
+import linecache
+linecache.clearcache()
+from flyllm.plotting import plot_pred_vs_true
+from apf.dataset import copy_data_subindex
+from flyllm.evaluation import labels_to_velocity_samples
 
 savefig = False
+featsplot = None
 featsplot=[0,1,2,14, 16, 20, 22, 24, 26]
-toplots = [{'i': 0, 'tsplot': np.arange(8500,8800)}, {'i': 89, 'tsplot': np.arange(32400,32700)}, ]
-nsamples = 100
+#toplots = [{'id': 3, 'tsplot': np.arange(8500,8800)}, {'id': 435, 'tsplot': np.arange(32400,32700)}, ]
+toplots = [{'id': 11, 'tsplot': np.arange(8500,8800)}, {'id': 13, 'tsplot': np.arange(500,10000)}, ]
+nsamples = 10
 ylim_nstd = 5
 
 for toplot in toplots:
-    i = toplot['i']
+    id = toplot['id']
     tsplot = toplot['tsplot']
-    pred_example = pred_data[i]
-    true_example = true_data[i]
-    id = true_example.metadata['id']
+    
+    tidx,ididx = np.nonzero((val_data['flyids'] == id) & val_data['isdata'])
+    assert len(ididx) > 0, f'Fly id {id} not in validation data flyids'
+    assert np.all(ididx==ididx[0]), 'Multiple indices for fly id'
+    ididx = ididx[0]
+    assert len(tidx) > np.max(tsplot), f'Not enough timepoints for fly id {id} to cover tsplot'
+    tidx = tidx[tsplot]
+    
+    pred_example = copy_data_subindex(pred_data['labels']['velocity'], agentidx=[ididx,], frameidx=tidx)
+    print(pred_example)
+    true_example = copy_data_subindex(val_data['velocity'], agentidx=[ididx,], frameidx=tidx)
+    
+    fig = plot_pred_vs_true(true_example,pred_example,ylim_nstd=ylim_nstd,nsamples=nsamples,plotbinedges=True)
 
-    fig = plot_multi_pred_vs_true(pred_example,true_example,ylim_nstd=ylim_nstd,nsamples=nsamples,tsplot=tsplot,plotbinedges=True,featsplot=featsplot)
+    # # save this figure as a pdf
+    # if savefig:
+    #     fig.savefig(os.path.join(outfigdir,f'multi_pred_vs_true_{config["model_nickname"]}_fly{id}_{tsplot[0]}_to_{tsplot[-1]}.pdf'))
+    #     plt.close(fig)
+    # else:
+    #     break
 
-    # save this figure as a pdf
-    if savefig:
-        fig.savefig(os.path.join(outfigdir,f'multi_pred_vs_true_{config["model_nickname"]}_fly{id}_{tsplot[0]}_to_{tsplot[-1]}.pdf'))
-        plt.close(fig)
-    else:
-        break
+# %%
+np.unique(val_data['flyids'])
 
 # %%
 bin_edges = true_example.labels.get_discretize_params(zscored=True)['bin_edges']

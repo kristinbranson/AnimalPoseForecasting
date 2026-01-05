@@ -25,6 +25,9 @@ import flyllm
 import flyllm.dataset
 import apf.dataset
 import apf.utils
+from experiments.flyllm import get_bin_edges
+
+from flyllm.evaluation import labels_to_velocity_samples
 
 def select_featidx_plot(train_dataset, ntspred_plot, ntsplot_global=None, ntsplot_relative=None):
     if ntsplot_global is None:
@@ -1757,27 +1760,27 @@ def plot_multi_pred_iter_vs_true(pred_example,true_example,color_true='k',sample
     fig.tight_layout()
     
     return fig
+
+def plot_pred_vs_true(true_data,pred_data,color_true='k',featcolors=None,ylim_nstd=None,nsamples=100,
+                     fig=None,ylims=None,featsplot=None,samplealpha=None,
+                     truelw=.5,truems=3,predlw=1,predms=6,plotbinedges=False,bincolor=[.6,.6,.6]):
     
-def plot_multi_pred_vs_true(pred_example,true_example,color_true='k',featcolors=None,ylim_nstd=None,nsamples=100,
-                            tsplot=None,fig=None,ylims=None,featsplot=None,samplealpha=None,
-                            truelw=.5,truems=3,predlw=1,predms=6,plotbinedges=False,bincolor=[.6,.6,.6]):
+    # plot errors
+
+    pred_samples,featnames = labels_to_velocity_samples(pred_data,nsamples=nsamples) # pred_samples shape: (nsamples,nids=1,ntimepoints,d_features)
+    isdiscrete = ~np.all(np.isclose(pred_samples[[0,]],pred_samples,equal_nan=True),axis=(0,1,2))
+    true_velocity = true_data.array
+    nfeats = pred_samples.shape[-1]
     
-    # plot multi errors
-
-    multi_names = true_example.labels.get_multi_names()
-
-    if tsplot is None:
-        tsplot = np.arange(pred_example.ntimepoints-1)
-
-    multi_pred = pred_example.labels.get_multi(nsamples=0,collapse_samples=True,use_todiscretize=False)
-    multi_pred_sample = pred_example.labels.get_multi(nsamples=nsamples,collapse_samples=True,use_todiscretize=False)
-    #multi_pred_meansample = np.nanmean(multi_pred_sample,axis=0)
-    multi_true = true_example.labels.get_multi(use_todiscretize=True)
-    multi_isdiscrete = pred_example.labels.get_multi_isdiscrete()
-    #bestsample = np.argmin(np.abs(multi_pred_sample-multi_true[None,...]),axis=0)
+    assert pred_samples.shape[1] == 1, "Can only plot single id at a time"
+    pred_samples = pred_samples[:,0] # shape: (nsamples,ntimepoints,d_features)
+    assert true_velocity.shape[0] == 1, "Can only plot single id at a time"
+    true_velocity = true_velocity[0] # shape: (ntimepoints,d_features)
 
     if featsplot is None:
-        featsplot = np.arange(true_example.labels.d_multi)
+        featsplot = np.arange(nfeats)
+    elif type(featsplot[0]) is str:
+        featsplot = [featnames.index(f) for f in featsplot]
 
     if fig is None:
         fig,ax = plt.subplots(len(featsplot),1,sharex=True,figsize=(16,4*len(featsplot)))
@@ -1793,39 +1796,48 @@ def plot_multi_pred_vs_true(pred_example,true_example,color_true='k',featcolors=
 
     if ylims is None:
         if ylim_nstd is not None:
-            zscore_params = true_example.labels.zscore_params
-            zscore_params.keys()
-            ylims = zscore_params['mu_labels'] + ylim_nstd*np.array([-1,1])[:,None]*zscore_params['sig_labels'][None,:]
+            zscore_op = apf.dataset.get_operation(pred_data.operations,'zscore')
+            mu = zscore_op.mean
+            sig = zscore_op.std
+            ylims = mu + ylim_nstd*np.array([-1,1])[:,None]*sig[None,:]
+            
+    if plotbinedges:
+        bin_edges,idxdiscrete = get_bin_edges(pred_data,zscored=False) # bin_edges is d_discrete x (nbins+1)
+        isdiscrete = np.zeros((nfeats,),dtype=bool)
+        isdiscrete[idxdiscrete] = True
 
     for axi,featnum in enumerate(featsplot):
-        plotsamples = multi_isdiscrete[featnum]
+        plotsamples = isdiscrete[featnum]
 
         color = featcolors[featnum%nfeatcolors]
 
         if plotsamples:
             c = color.copy()
             c[-1] = samplealpha
-            for i in range(multi_pred_sample.shape[0]):
-                h, = ax[axi].plot(multi_pred_sample[i,tsplot,featnum],'.',color=c,ms=predms)
+            for i in range(pred_samples.shape[0]):
+                h = ax[axi].plot(pred_samples[i,:,featnum],'.',color=c,ms=predms)
                 if i == 0:
-                    h.set_label('Predicted')
+                    h[0].set_label('Predicted')
         else:
-            ax[axi].plot(multi_pred[tsplot,featnum],'.-',label='Predicted',color=color,lw=predlw,ms=predms)
-        ax[axi].plot(multi_true[tsplot,featnum],'.-',label='True',color=color_true,lw=truelw,ms=truems)
+            ax[axi].plot(pred_samples[0,:,featnum],'.-',label='Predicted',color=color,lw=predlw,ms=predms)
+        ax[axi].plot(true_velocity[:,featnum],'.-',label='True',color=color_true,lw=truelw,ms=truems)
+
+        xlim = ax[axi].get_xlim()
+
+        if plotsamples and plotbinedges:
+            discretei = np.nonzero(idxdiscrete==featnum)[0][0]
+            for bini in range(bin_edges.shape[1]-1):
+                ax[axi].plot([xlim[0],xlim[1]],[bin_edges[discretei,bini],bin_edges[discretei,bini]],'--',lw=.5,color=bincolor)
 
         if ylims is not None:
             ylim = ylims[:,featnum]
         else:
             ylim = ax[axi].get_ylim()
-        xlim = ax[axi].get_xlim()
-
-        if plotsamples and plotbinedges:
-            hbin = plot_bin_edges(featnum,example=pred_example,ax=ax[axi],lw=.5,color=bincolor,zscored=False,xplot=xlim)
-
+            
         ax[axi].set_ylim(ylim)
         ax[axi].set_xlim(xlim)
         ax[axi].legend()
-        ax[axi].set_ylabel(f'{multi_names[featnum]}')
+        ax[axi].set_ylabel(f'{featnames[featnum]}')
 
     fig.tight_layout()
     

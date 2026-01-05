@@ -174,6 +174,7 @@ class Data(NamedTuple):
         print(s[:-1])
         return
     
+    @property
     def shape(self):
         return self.array.shape
     
@@ -187,7 +188,7 @@ class Identity(Operation):
 
     Can be useful in combination with Fusion when a subset of dimensions needs to be operated on and others not.
     """
-    def apply(self, data: np.ndarray):      
+    def apply(self, data: np.ndarray):
         return data
 
     def invert(self, data: np.ndarray):
@@ -748,7 +749,19 @@ class Fusion(Operation):
             count += n_dims
         return res
         
-        
+    def get_indices_for_operation(self, operation_name: str) -> np.ndarray | None:
+        """
+        indices = fusion_op.get_indices_for_operation(operation_name)
+        Returns the indices corresponding to the given operation name.
+        Args:
+            operation_name: Name of the operation.
+        Returns:
+            indices: np.ndarray of indices corresponding to the operation, or None if not found.
+        """
+        for i, op in enumerate(self.operations):
+            if op.name == operation_name:
+                return self.indices_per_op[i]
+        return None
     
     def __str__(self):
         s = f"Operation {self.name} of class Fusion with operations:\n"
@@ -1404,7 +1417,7 @@ def get_operation(
             return oper
     if recursive:
         for i, oper in enumerate(operations):
-            if isinstance(oper, Fusion):
+            if hasattr(oper, 'operations'):
                 suboper, subidx = get_operation(oper.operations, name, return_idx=True, recursive=True)
                 if suboper is not None:
                     if return_idx:
@@ -1536,7 +1549,7 @@ def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data,
     else:      
         return data
 
-def invert_to_named(data: Data, name: str, return_data: bool = False, **kwargs) -> np.ndarray | torch.Tensor:
+def invert_to_named(data: Data, name: str | list | tuple, return_data: bool = False, return_feature_names: bool = False, **kwargs) -> np.ndarray | torch.Tensor:
     """ Inverts data to the state after operation name has been applied. 
 
     Args:
@@ -1548,6 +1561,13 @@ def invert_to_named(data: Data, name: str, return_data: bool = False, **kwargs) 
     Returns:
         array: Data inverted to the state after operation name has been applied, ndarray or Tensor
     """
+    
+    if isinstance(name, (list, tuple)):
+        rest = name[1:]
+        name = name[0]
+    else:
+        rest = None
+    
     if name == 'original':
         post_opers = data.operations
     else:
@@ -1556,6 +1576,25 @@ def invert_to_named(data: Data, name: str, return_data: bool = False, **kwargs) 
     if post_opers is None:
         raise ValueError(f"Operation '{name}' not found in data operations")
     array, feature_names = apply_inverse_operations(data, operations=post_opers, extraargs=kwargs, return_feature_names=True)
+
+    # unfuse etc
+    while True:
+    
+        if rest is None or len(rest) == 0:
+            break
+
+        name1 = rest[0]
+        rest = rest[1:]
+
+        op = get_operation(data.operations, name1)
+        if op is None:
+            raise ValueError(f"Operation '{name1}' not found in data operations")
+        if isinstance(op,Fusion):
+            array = op.unfuse(array)
+            feature_names = op.unfuse_feature_names(feature_names)
+        else:
+            raise ValueError(f"Unknown how to process operation '{name1}' of type {type(op)} after inversion")
+    
     if return_data:
         if name == 'original':
             operations = []
@@ -1566,6 +1605,9 @@ def invert_to_named(data: Data, name: str, return_data: bool = False, **kwargs) 
             if isinstance(data.invertdata,dict) and op.name in data.invertdata:
                 invertdata[op.name] = data.invertdata[op.name]
         return Data(name=name, array=array, operations=operations, invertdata=invertdata, feature_names=feature_names)
+
+    if return_feature_names:
+        return array, feature_names
 
     return array
 
@@ -2078,6 +2120,25 @@ def array_to_data(array: np.ndarray, datalike: Data) -> Data:
         datalike (Data): Data object to copy operations and name from.
     """
     return Data.copy_with(datalike,array=array)
+
+def copy_data_subindex(data: Data, agentidx: slice | np.ndarray | list | None = None, frameidx: slice | np.ndarray | list | None = None) -> Data:
+    """
+    copy_data_subindex(data, agentidx, frameidx)
+    Copies a subindex of a Data object to a new Data object.
+    Args:
+        data (Data): Data object to copy from.
+        agentidx (slice | np.ndarray | list | None): Indices for the agent dimension.
+        frameidx (slice | np.ndarray | list | None): Indices for the frame dimension.
+    Returns:
+        Data: New Data object with the subindexed array.
+        invertdata is set to None as we haven't implemented subindexing for invertdata
+    """
+    array_sub = data.array
+    if agentidx is not None:
+        array_sub = array_sub[agentidx]
+    if frameidx is not None:
+        array_sub = array_sub[:,frameidx]
+    return Data.copy_with(data,array=array_sub,invertdata=None)
 
 class DataLoader(torch.utils.data.DataLoader):
     """ A thin wrapper around torch's DataLoader to use collate_nested_dicts as the collate_fn.

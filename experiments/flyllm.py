@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from apf.io import load_and_filter_data
 from apf.dataset import (
     Zscore, Discretize, Data, Dataset, Operation, Fusion, Subset, Roll, Identity,
-    Velocity, GlobalVelocity, apply_opers_from_data, apply_opers_from_data_params
+    Velocity, GlobalVelocity, apply_opers_from_data, apply_opers_from_data_params, get_operation
 )
 from apf.data import debug_less_data
 
@@ -349,3 +349,27 @@ def make_dataset(
         return dataset, flyids, track, pose, velocity, sensory, dataset_params, isdata, isstart, useoutputmask
     else:
         return dataset
+
+def get_bin_edges(velocity_data: Data, zscored=None) -> np.ndarray:
+    """ Gets the bin edges from a velocity Data object with a Discretize operation.
+
+    Args:
+        velocity_data: Data object containing velocity data with Discretize operation.
+        zscored: Whether to return the zscored or absolute bin edges. If None, returns whatever is in the Discretize operation.
+
+    Returns:
+        bin_edges: np.ndarray of shape (n_discrete_features, n_bins + 1) with bin edges
+        idxdiscrete: Indices of the discrete features in the velocity data
+    """
+    fusion_op = get_operation(velocity_data.operations,'fusion')
+    idxdiscrete = fusion_op.get_indices_for_operation('discretize')
+    discretize_op = get_operation(fusion_op.operations,'discretize')
+    bin_edges = discretize_op.bin_edges
+    if zscored is None or zscored == True:
+        return bin_edges, idxdiscrete
+    zscore_op = get_operation(velocity_data.operations,'zscore',recursive=True)
+    sig = zscore_op.std[idxdiscrete]
+    mu = zscore_op.mean[idxdiscrete]
+    bin_edges = bin_edges * sig[:, None] + mu[:, None]
+    
+    return bin_edges, idxdiscrete
