@@ -48,6 +48,7 @@ import os
 from pathlib import Path
 
 from flyllm.prepare import init_flyllm
+from flyllm.prediction import predict_all
 from flyllm.evaluation import compute_error
 from flyllm.plotting import plot_pred_vs_true
 from apf.dataset import copy_data_subindex
@@ -69,12 +70,24 @@ LOG.info('isnotebook: ' + str(ISNOTEBOOK))
 # %%
 # state
 
-timestamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
-print('Timestamp: ' + timestamp)
+try:
+    print('Timestamp: ' + timestamp)
+except NameError:
+    timestamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
+    print('No timestamp found, setting to current time: ' + timestamp)
 
-# store the random state so we can reproduce the same results
-randstate_np = np.random.get_state()
-randstate_torch = torch.random.get_rng_state()
+# if randstate_np varialble exists, use it to set the random state
+try:
+    # reseed numpy random number generator with randstate_np
+    np.random.set_state(randstate_np)
+    # reseed torch random number generator with randstate_torch
+    torch.random.set_rng_state(randstate_torch)
+    print('Reseeding random state from saved state.')
+except NameError:
+    print('No saved random state found, using current state.')
+    # store the random state so we can reproduce the same results
+    randstate_np = np.random.get_state()
+    randstate_torch = torch.random.get_rng_state()
 
 # %% [markdown]
 # ### Configuration and load data
@@ -144,8 +157,6 @@ if posestatsfile is not None:
 
 import cProfile
 import pstats
-
-from flyllm.prediction import predict_all
 
 doprofile = False
 dodebug = False
@@ -280,57 +291,76 @@ for i in range(next_frame_err[key].shape[0]):
     print(f'dim {i} ({feature_names[i]}): {next_frame_err[key][i]}')
 
 # %%
-# # DEBUG : check inversion operations
+# DEBUG : check inversion operations
 
-# import importlib
-# import apf.dataset
-# importlib.reload(apf.dataset)
-# from apf.dataset import invert_to_named, apply_inverse_operations
+import importlib
+import apf.dataset
+importlib.reload(apf.dataset)
+import linecache
+linecache.clearcache()
+from apf.dataset import LocalVelocity
+from apf.dataset import invert_to_named, apply_inverse_operations
 
-# def check_inversion(datao,datar,isdata=None):
-#     for id in range(datao.array.shape[0]):
-#         arr_o = datao.array[id]
-#         arr_r = datar.array[id]
-#         if isdata is not None:
-#             mask = isdata[id]
-#             arr_o = arr_o[mask]
-#             arr_r = arr_r[mask]
-#         if np.all(np.isnan(arr_o)) and np.all(np.isnan(arr_r)):
-#             print(f'All NaN for id {id}')
-#             continue
-#         if np.allclose(arr_o,arr_r,atol=1e-6,equal_nan=True):
-#             print(f'All close for id {id}')
-#         else:
-#             diff = np.abs(arr_o - arr_r)
-#             maxdiff = np.nanmax(diff)
-#             meandiff = np.nanmean(diff)
-#             print(f'Id {id}: meandiff = {meandiff}, maxdiff = {maxdiff}')
-#             isnanmismatch = np.isnan(arr_o) != np.isnan(arr_r)
-#             if np.any(isnanmismatch):
-#                 print(f'NaN mismatch for id {id} for {np.count_nonzero(isnanmismatch)} elements')
-#     if len(datar.feature_names) != len(datao.feature_names):
-#         print(f'Feature name length mismatch: original {len(datao.feature_names)}, reconstructed {len(datar.feature_names)}')
-#     for i,featname in enumerate(datao.feature_names):
-#         if i >= len(datar.feature_names):
-#             break
-#         name_r = datar.feature_names[i]
-#         if featname != name_r:
-#             print(f'Feature name mismatch at index {i}: original "{featname}", reconstructed "{name_r}"')
+def check_inversion(datao,datar,isdata=None):
+    for id in range(datao.array.shape[0]):
+        arr_o = datao.array[id]
+        arr_r = datar.array[id]
+        if isdata is not None:
+            mask = isdata[id]
+            arr_o = arr_o[mask]
+            arr_r = arr_r[mask]
+        if np.all(np.isnan(arr_o)) and np.all(np.isnan(arr_r)):
+            print(f'All NaN for id {id}')
+            continue
+        if np.allclose(arr_o,arr_r,atol=1e-6,equal_nan=True):
+            print(f'All close for id {id}')
+        else:
+            diff = np.abs(arr_o - arr_r)
+            maxdiff = np.nanmax(diff)
+            meandiff = np.nanmean(diff)
+            print(f'Id {id}: meandiff = {meandiff}, maxdiff = {maxdiff}')
+            isnanmismatch = np.isnan(arr_o) != np.isnan(arr_r)
+            if np.any(isnanmismatch):
+                print(f'NaN mismatch for id {id} for {np.count_nonzero(isnanmismatch)} elements')
+    if len(datar.feature_names) != len(datao.feature_names):
+        print(f'Feature name length mismatch: original {len(datao.feature_names)}, reconstructed {len(datar.feature_names)}')
+    for i,featname in enumerate(datao.feature_names):
+        if i >= len(datar.feature_names):
+            break
+        name_r = datar.feature_names[i]
+        if featname != name_r:
+            print(f'Feature name mismatch at index {i}: original "{featname}", reconstructed "{name_r}"')
 
-# print(val_data.keys())
-# print('track: ' + str(val_data['track'].feature_names))
-# print('pose: ' + str(val_data['pose'].feature_names))
-# print('velocity: ' + str(val_data['velocity'].feature_names))
-# print('sensory: ' + str(val_data['sensory'].feature_names))
+print(val_data.keys())
+print('track: ' + str(val_data['track'].feature_names))
+print('pose: ' + str(val_data['pose'].feature_names))
+print('velocity: ' + str(val_data['velocity'].feature_names))
+print('sensory: ' + str(val_data['sensory'].feature_names))
 
-# track1 = invert_to_named(val_data['pose'],'original',return_data=True)
-# print('Checking inversion from pose to track:')
-# check_inversion(val_data['track'],track1,val_data['isdata'].T)
+track1 = invert_to_named(val_data['pose'],'original',return_data=True)
+print('Checking inversion from pose to track:')
+check_inversion(val_data['track'],track1,val_data['isdata'].T)
     
-# pose1 = invert_to_named(val_data['velocity'],'pose',return_data=True)
-# print('Checking inversion from velocity to pose:')
-# check_inversion(val_data['pose'],pose1)
+pose1 = invert_to_named(val_data['velocity'],'pose',return_data=True)
+print('Checking inversion from velocity to pose:')
+check_inversion(val_data['pose'],pose1)
 
+# subindex invertdata test
+
+idx = (slice(None), slice(1000,2000))
+isdata_sub = val_data['isdata'].T[*idx]
+track_sub = val_data['track'].copy_subindex(*idx)
+print('track_sub:')
+print(track_sub)
+pose_sub = val_data['pose'].copy_subindex(*idx)
+print('pose_sub:')
+print(pose_sub)
+track_subr = invert_to_named(pose_sub,'original',return_data=True)
+print('Checking inversion from pose_sub to track_sub:')
+check_inversion(track_sub,track_subr,isdata_sub)
+velocity_sub = val_data['velocity'].copy_subindex(*idx)
+print('velocity_sub:')
+print(velocity_sub)
 
 
 # %%
@@ -410,14 +440,8 @@ for toplot in toplots:
         break
 
 # %%
+# NOT DEBUGGED
 
-# %%
-# reseed numpy random number generator with randstate_np
-np.random.set_state(randstate_np)
-# reseed torch random number generator with randstate_torch
-torch.random.set_rng_state(randstate_torch)
-
-# %%
 # choose data to initialive behavior modeling
 
 animate_pose_params = {'figsizebase': 8,'ms': 4, 'focus_ms':8, 'lw': .75, 'focus_lw': 2}
@@ -456,10 +480,14 @@ ani = animate_predict_open_loop(model, val_dataset, Xkp_init, fliespred, scales_
                           animate_pose_params=animate_pose_params)
 
 # %%
+# NOT DEBUGGED
+
 # show the animation
 HTML(ani.to_html5_video())
 
 # %%
+# NOT DEBUGGED
+
 # write the video to file 
 vidtime = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
 flynumstr = '_'.join([str(x) for x in fliespred])
@@ -469,6 +497,8 @@ save_animation(ani, savevidfile)
 print('Finished writing.')
 
 # %%
+# NOT DEBUGGED
+
 # simulate all flies
 
 animate_pose_params = {'figsizebase': 8,'ms': 4, 'focus_ms':8, 'lw': .75, 'focus_lw': 2}
@@ -511,6 +541,8 @@ ani = animate_predict_open_loop(model, val_dataset, Xkp_init, fliespred, scales_
                           animate_pose_params=animate_pose_params)
 
 # %%
+# NOT DEBUGGED
+
 vidtime = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
 flynumstr = 'all'
 savevidfile = os.path.join(config['savedir'], f"samplevideo_{modeltype_str}_{savetime}_{vidtime}_t0_{metadata['t0']}_flies{flynumstr}.mp4")
@@ -519,14 +551,37 @@ save_animation(ani, savevidfile)
 print('Finished writing.')
 
 # %%
-# create dataset for iterative prediction evaluation
-max_tpred = 150
-iter_val_dataset = FlyTestDataset(valX,config['contextl']+max_tpred+1,**dataset_params,need_labels=True,need_metadata=True,need_init=True,make_copy=True)
+val_dataset.chunk_indices[0]
+
+# %%
+# OBSOLETE
+# # create dataset for iterative prediction evaluation
+# max_tpred = 150
+# iter_val_dataset = FlyTestDataset(valX,config['contextl']+max_tpred+1,**dataset_params,need_labels=True,need_metadata=True,need_init=True,make_copy=True)
 
 # %%
 # all_pred_iter is a list of length N of FlyExample objects
 # labelidx_iter is an ndarray of which test example each FlyExample corresponds to
-all_pred_iter, labelidx_iter = predict_iterative_all(valdata,iter_val_dataset,model,max_tpred,N=10,keepall=False,nsamples=10)
+
+# reset
+val_dataset.set_context_length(config['contextl'])
+val_dataset.set_stride()
+
+import flyllm.prediction
+import importlib
+importlib.reload(flyllm.prediction)
+from flyllm.prediction import predict_iterative_all
+import linecache
+linecache.clearcache()
+max_tpred = 150
+stride = max_tpred # this doesn't have to be max_tpred
+val_dataset.set_stride(stride) 
+all_pred_iter, labelidx_iter = predict_iterative_all(val_dataset,model,val_data['track'],max_tpred,N=8,keepall=False,nsamples=10)
+
+# reset
+val_dataset.set_context_length(config['contextl'])
+val_dataset.set_stride()
+
 
 # %%
 # plot multi predictions vs true

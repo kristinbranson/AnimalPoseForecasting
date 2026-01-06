@@ -8,10 +8,11 @@ from apf.models import (
     pred_apply_fun,
     get_causal_mask
 )
-from apf.dataset import DataLoader
+from apf.dataset import DataLoader, Data
 from flyllm.pose import FlyExample
 from contextlib import nullcontext
 import datetime
+import copy
 from flyllm.features import regularize_pose
 
 def predict_all(dataset=None, model=None, config=None, keepall=True, earlystop=None, debugcheat=False,
@@ -335,7 +336,67 @@ def predict_all(dataset=None, model=None, config=None, keepall=True, earlystop=N
 #     return all_pred, labelidx  # ,all_mask,all_pred_discrete,all_labels_discrete
 
 
-def predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model, dataset, maxcontextl=np.inf, debug=False,
+# def pad_datadict(datadict: dict, 
+#                  tpadbefore: int = 0, tpadafter: int = 0, 
+#                  padval: float = np.nan, 
+#                  timedim: int = -2,
+#                  inplace: bool = False):
+#     """ Extends all Data objects in a datadict by textend frames.
+
+#     Args:
+#         datadict: Dictionary of Data objects to extend. Should have keys 'inputs' and 'labels', each containing a dict of Data objects.
+#             Time dimension is the timedim dimension of the arrays in the Data objects.
+#         tpadbefore: Number of frames to pad before the data. Default: 0
+#         tpadafter: Number of frames to pad after the data. Default: 0
+#         padval: Value to use for padding. Default: np.nan
+#         timedim: Dimension corresponding to time in the arrays. Default: -2
+#         inplace: Whether to modify the datadict in place or return a new one. Default: False
+#     """
+#     if not inplace:
+#         datadict = copy.deepcopy(datadict)
+
+#     for key1 in ['inputs','labels']:
+#         for key2 in datadict[key1].keys():
+#             if timedim < 0:
+#                 timedim_curr = datadict[key1][key2].array.ndim + timedim
+#             else:
+#                 timedim_curr = timedim
+#             padby = {timedim_curr: (tpadbefore, tpadafter)}
+#             datadict[key1][key2].array = np.pad(datadict[key1][key2].array,padby,mode='constant',constant_values=padval)
+
+#     if 'useoutputmask' in datadict:
+#         # timedim always -1
+#         timedim_curr = datadict['useoutputmask'].ndim - 1
+#         padby = {timedim_curr: (tpadbefore, tpadafter)}
+#         datadict['useoutputmask'] = np.pad(datadict['useoutputmask'],True,mode='constant',constant_values=False)
+            
+#     if tpadbefore > 0:
+#         datadict['metadata']['start_frame'] -= tpadbefore
+#     if tpadbefore > 0 or tpadafter > 0:
+#         datadict['metadata']['duration'] += tpadbefore + tpadafter
+
+#     return datadict
+        
+
+def pretile_datadict(datadict: dict, reps: int):
+    """ Replicates all Data objects in a datadict by given number of times along a new first dimension.
+
+    Args:
+        datadict: Dictionary of Data objects to tile. Should have keys 'inputs' and 'labels', each containing a dict of Data objects.
+        reps: Number of times to replicate
+    """
+    datadict = {k: v for k, v in datadict.items()}  # shallow copy
+
+    for key1 in ['inputs','labels']:
+        for key2 in datadict[key1].keys():
+            datadict[key1][key2] = Data.copy_with(datadict[key1][key2], array=np.tile(datadict[key1][key2].array[None], (reps,)+ (1,)*datadict[key1][key2].array.ndim))
+
+    if 'useoutputmask' in datadict:
+        datadict['useoutputmask'] = np.tile(datadict['useoutputmask'][None], (reps,)+ (1,)*datadict['useoutputmask'].ndim)
+
+    return datadict
+
+def predict_iterative(data_examples, Xkp_fill, burnin, tpred, model, dataset, maxcontextl=np.inf, debug=False,
                       need_weights=False, nsamples=0, labels_true=None, posestats=None, dampenconstant=0, prctilelim=None):
 
     """
@@ -359,6 +420,10 @@ def predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model,
         and samples are collapsed. Default 0.
         labels_true (list of FlyPoseLabels objects, optional): true labels for debugging. Default None
     """
+
+
+    # exampleobjs_pred = predict_iterative([data_example,], Xkp_fill, tpred, model, dataset, maxcontextl=contextl,
+    #                                     debug=False, need_weights=False, nsamples=nsamples, **kwargs)
     
     model.eval()
 
@@ -368,21 +433,13 @@ def predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model,
         device = w.device
 
     if nsamples > 0:
-        for example_pred in examples_pred:
-            example_pred.pre_tile(nsamples)
+        data_examples = [pretile_datadict(data_example, reps=nsamples) for data_example in data_examples]
 
-    tpred = examples_pred[0].ntimepoints
-    nfliespred = len(examples_pred)
+    nfliespred = len(data_examples)
     if need_weights:
-        attn_weights = [None, ] * tpred
+        attn_weights = [None, ] * tpred # this probably doesn't work if nfliespred > 1
 
-    if dataset.ismasked():
-        # to do: figure this out for flattened models
-        masktype = 'last'
-        dummy = np.zeros((1, dataset.d_output))
-        dummy[:] = np.nan
-    else:
-        masktype = None
+    masktype = None
 
     # start predicting motion from frame burnin-1 to burnin = t
     masksizeprev = None
@@ -390,7 +447,7 @@ def predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model,
     # global position of each fly in the previous frame, so that we don't have to integrate to compute position
     pose_prev = []
     for i in range(nfliespred):
-        pose_curr = examples_pred[i].labels.get_next_pose(ts=np.arange(burnin),use_todiscretize=True)[...,-1,:]
+        pose_curr = data_examples[i].labels.get_next_pose(ts=np.arange(burnin),use_todiscretize=True)[...,-1,:]
         pose_prev.append(pose_curr)
     
     for t in tqdm.trange(burnin, tpred): 
@@ -400,10 +457,10 @@ def predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model,
             # copy frames up to t
             # don't use the init_pose
             # get_next_pose[:,-1] will be nan
-            example_pred = examples_pred[i].copy_subindex(ts=np.arange(t0, t+1),needinit=False)
+            data_example = data_examples[i].copy_subindex(ts=np.arange(t0, t+1),needinit=False)
             # inputs will go from t0 through t
             # labels (unused) will go from t0+example_pred.starttoff through t+example_pred.starttoff
-            test_example = example_pred.get_train_example()
+            test_example = data_example.get_train_example()
             xcurr = test_example['input']
             assert not torch.any(torch.isnan(xcurr))
             xcurr, _, _ = dataset.mask_input(xcurr, masktype)
@@ -499,16 +556,16 @@ def predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model,
                 pred = pred_apply_fun(pred, lambda x: x[:, [-1,], ...].cpu().numpy() if type(x) is torch.Tensor else x)
                 
             # set the label for frame t, but not the inputs yet
-            examples_pred[i].labels.set_prediction(pred,ts=t)
+            data_examples[i].labels.set_prediction(pred,ts=t)
 
             if (posestats is not None) and ((dampenconstant > 0) or (prctilelim is not None)):
-                pose = examples_pred[i].labels.get_next_pose(ts=[t,],init_pose=pose_prev[i], use_todiscretize=True)
+                pose = data_examples[i].labels.get_next_pose(ts=[t,],init_pose=pose_prev[i], use_todiscretize=True)
                 # pose for frames [t-1,t]
                 pose[...,-1,:] = regularize_pose(pose[...,-1,:],posestats,dampenconstant,prctilelim=prctilelim)
-                examples_pred[i].labels.set_next_pose(pose,ts=[t,])
+                data_examples[i].labels.set_next_pose(pose,ts=[t,])
 
             # get pose/keypoints for predicted frame
-            Xkpcurr = examples_pred[i].labels.get_next_keypoints(ts=[t,],init_pose=pose_prev[i])
+            Xkpcurr = data_examples[i].labels.get_next_keypoints(ts=[t,],init_pose=pose_prev[i])
 
 
             # store keypoints predicted for this frame            
@@ -516,7 +573,7 @@ def predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model,
 
 
             #globapos_curr = examples_pred[i].labels.get_next_pose_global(ts=[t,],globalpos0=globalpos_prev[i])
-            pose_curr = examples_pred[i].labels.get_next_pose(ts=[t,],init_pose=pose_prev[i])
+            pose_curr = data_examples[i].labels.get_next_pose(ts=[t,],init_pose=pose_prev[i])
             pose_prev[i] = pose_curr[...,-1,:]
             #globalpos_prev[i] = globapos_curr
                 
@@ -526,23 +583,38 @@ def predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model,
             # update observations for the next frame
             for i,fly in enumerate(fliespred):
                 # this is just one frame of inputs, so don't crop the end
-                examples_pred[i].inputs.set_inputs_from_keypoints(Xkp_fill[...,:,:,[t+1,],:],fly,scale=scales[i],ts=[t+1,],npad=0)
+                data_examples[i].inputs.set_inputs_from_keypoints(Xkp_fill[...,:,:,[t+1,],:],fly,scale=scales[i],ts=[t+1,],npad=0)
 
     if need_weights:
-        return examples_pred, attn_weights
+        return data_examples, attn_weights
     else:
-        return examples_pred
+        return data_examples
 
+def clear_predictions(example: dict, burnin: int):
+    """Clear predictions in example dict after burnin frame by setting to nan."""
 
-def predict_iterative_all(rawdata, dataset, model, tpred, N=None, keepall=True, debugcheat=False, nsamples=0, labelidx=None, **kwargs):
+    exampleout = {k: v for k, v in example.items()}
+    exampleout['input'][...,burnin+1:,:] = np.nan
+    for key in ['labels','labels_discrete','continuous','discrete']:
+        if not key in example:
+            continue
+        exampleout[key][...,burnin:,:] = np.nan
+    return exampleout
+
+def predict_iterative_all(dataset, model, track, tpred, N=None, keepall=True, debugcheat=False, nsamples=0, labelidx=None, stride=None, **kwargs):
 
     # total number of frames we will crop out for each example
-    ttotal = dataset.contextl
-    burnin = ttotal - tpred
+    contextl = dataset.context_length
+    burnin = contextl - 1
+
+    if stride is None:
+        stride = tpred
+
+    dataset.set_context_length(contextl+tpred-1)
+    dataset.set_stride(stride)
 
     #example_params = dataset.get_flyexample_params()
     model.eval()
-    dataset.set_eval_mode()
     
     if labelidx is not None:
         N = len(labelidx)
@@ -557,31 +629,43 @@ def predict_iterative_all(rawdata, dataset, model, tpred, N=None, keepall=True, 
     for i,examplei in tqdm.tqdm(enumerate(labelidx),total=N):
 
         example = dataset[examplei]
-        exampleobj = FlyExample(example_in=example,dataset=dataset)
+        example = clear_predictions(example, burnin)
+        data_example = dataset.item_to_data(example)
 
         if debugcheat:
-            exampleobj_pred = exampleobj
-        else:
-            exampleobj.labels.erase_labels(ts=slice(burnin+1,None))
+            
+            # copy into data_example
+            pred = dataset.get_chunk(example['metadata']['start_frame']+contextl-1,tpred,example['metadata']['agent_id'])
+            data_pred = dataset.item_to_data(pred)
+            key1 = 'inputs'
+            for key2 in data_pred[key1].keys():
+                data_example[key1][key2].array[burnin+1:,:] = data_pred[key1][key2].array[1:,:]
+            key1 = 'labels'
+            for key2 in data_pred[key1].keys():
+                data_example[key1][key2].array[burnin:,:] = data_pred[key1][key2].array
 
-            metadata = exampleobj.get_metadata()
-            scale = exampleobj.labels.get_scale()
-            agentnum = metadata['flynum']
-            t0 = metadata['t0']
+        else:
+
+            agentnum = example['metadata']['agent_id']
+            t0 = example['metadata']['start_frame']
 
             # get positions of all agents
-            Xkp_true = rawdata['X'][...,t0:t0+ttotal+1,:].copy()
-            # nan out the fly we are predicting
-            Xkp_fill = Xkp_true.copy()
-            Xkp_fill[...,burnin+1:,agentnum] = np.nan
-            if nsamples > 0:
-                Xkp_fill = np.tile(Xkp_fill[None],(nsamples,1,1,1,1))
+            Xkp_true = track.array[:,t0:t0+contextl+tpred+1].copy() # added 1 because predicting velocity
 
-            exampleobjs_pred = predict_iterative([exampleobj,], [agentnum,], [scale,], Xkp_fill, burnin, model, dataset, maxcontextl=burnin,
-                                                        debug=False, need_weights=False, nsamples=nsamples, **kwargs)
+            # erase the fly we are predicting
+            Xkp_fill = Xkp_true.copy()
+            Xkp_fill[agentnum,burnin+1:] = np.nan
+            if nsamples > 0:
+                Xkp_fill = np.tile(Xkp_fill[None],[nsamples,]+[1,]*(Xkp_fill.ndim))
+
+            exampleobjs_pred = predict_iterative([data_example,], Xkp_fill, burnin, tpred, model, dataset, maxcontextl=contextl,
+                                                debug=False, need_weights=False, nsamples=nsamples, **kwargs)
 
             exampleobj_pred = exampleobjs_pred[0]
         all_pred.append(exampleobj_pred)
+        
+    dataset.set_context_length(contextl)
+    dataset.set_stride()
 
     return all_pred, labelidx  # ,all_mask,all_pred_discrete,all_labels_discrete
 

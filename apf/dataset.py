@@ -149,6 +149,18 @@ class Operation(ABC):
         obj = actual_class(**args)
 
         return obj
+    
+    def invertdata_subindex(self, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None = None):
+        """
+        Subindexes the invertdata for the operation.
+        Args:
+            invertdata: Invertdata for the operation.
+            idx: List of indices to subindex the invertdata.
+            dataarray: Optional data array that was processed by the operation, can be used for context.
+        Returns:
+            Subindexed invertdata.
+        """
+        return invertdata
 
 class Data(NamedTuple):
     name: str
@@ -159,7 +171,11 @@ class Data(NamedTuple):
     feature_names: list[str] | None = None
     
     def __str__(self):
-        s = f"Data {self.name} with shape {self.array.shape} and operations:\n"
+        s = f"Data {self.name} with shape {self.array.shape} and operations:"
+        if len(self.operations) == 0:
+            s += "[]\n"
+        else:
+            s += "\n"
         for op in self.operations:
             s += f"  {str(op)}\n"
         return s[:-1]
@@ -181,6 +197,20 @@ class Data(NamedTuple):
     @staticmethod
     def copy_with(data: 'Data', **kwargs) -> 'Data':
         return data._replace(**kwargs)
+    
+    def copy_subindex(data: 'Data', *idx) -> 'Data':
+        idx = tuple(slice(None) if idxcurr is None else idxcurr for idxcurr in idx)
+        array_sub = data.array
+        if len(idx) > 0:
+            array_sub = array_sub[idx]
+        invertdata_sub = None
+        if data.invertdata is not None:
+            invertdata_sub = {}
+            for op in data.operations:
+                if op.name not in data.invertdata:
+                    continue
+                invertdata_sub[op.name] = op.invertdata_subindex(data.invertdata[op.name], idx, dataarray=data.array)
+        return Data.copy_with(data, array=array_sub, invertdata=invertdata_sub)
     
 @dataclass
 class Identity(Operation):
@@ -525,7 +555,7 @@ class Discretize(Operation):
         
         return data_flat_discrete.reshape(sz_rest + (-1,)), invertdata
 
-    def invert(self, data: np.ndarray, do_sampling: bool = True) -> np.ndarray:
+    def invert(self, data: np.ndarray, do_sampling: bool = True, to_discretize: np.ndarray | None = None, use_to_discretize: bool = False) -> np.ndarray:
         """ Unbins the data.
 
         Args:
@@ -549,7 +579,10 @@ class Discretize(Operation):
         n_agents, n_frames, n_bin_feat = data.shape
         n_bins = self.bin_centers.shape[-1]
         n_feat = n_bin_feat // n_bins
-        if do_sampling:
+        if use_to_discretize:
+            assert to_discretize is not None, "to_discretize must be provided if use_to_discretize is True"
+            continuous = to_discretize.copy()
+        elif do_sampling:
             continuous = sample_discrete_labels(data.reshape((n_agents, n_frames, n_feat, n_bins)), self.bin_samples)[0]
         else:
             continuous = labels_discrete_to_continuous(data.reshape((n_agents, n_frames, n_feat, n_bins)), self.bin_centers)
@@ -593,7 +626,47 @@ class Discretize(Operation):
         for i in range(nfeat):
             output_feature_names.append(input_feature_names[i*self.nbins].replace(f'_bin0',''))
         return output_feature_names
+    
+    def invertdata_subindex(self, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None = None):
+        """
+        Subindexes the invertdata for the operation.
+        Args:
+            invertdata: Invertdata for the operation.
+            idx: List of indices to subindex the invertdata.
+            dataarray: Optional data array that was processed by the operation, can be used for context.
+        Returns:
+            Subindexed invertdata.
+        """
+        # invertdata: {'to_discretize': data}
+        assert isinstance(invertdata, dict) and 'to_discretize' in invertdata, "invertdata must be a dict with key 'to_discretize'"
         
+        return {'to_discretize': invertdata['to_discretize'][idx]}
+
+def fusion_invertdata_subindex(fusionop: Operation, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None = None):
+    """
+    Subindexes the invertdata for Fusion-like operations.
+    Args:
+        invertdata: Invertdata for the operation.
+        idx: List or tuple of indices to subindex the invertdata.
+        dataarray: Optional data array that was processed by the operation, can be used for context.
+    Returns:
+        Subindexed invertdata.
+    """
+    # invertdata: {'kwargs_per_op': data}
+    assert isinstance(invertdata, dict) and 'kwargs_per_op' in invertdata, "invertdata must be a dict with key 'kwargs_per_op'"
+
+    invertdata_sub = {}
+    invertdata_sub['kwargs_per_op'] = []
+    count = 0
+    for i, op in enumerate(fusionop.operations):
+        if dataarray is None:
+            dataarray_op = None
+        else:
+            n_dims = fusionop.dims_per_op[i]
+            dataarray_op = dataarray[..., count:count + n_dims]
+            count += n_dims
+        invertdata_sub['kwargs_per_op'].append(op.invertdata_subindex(invertdata['kwargs_per_op'][i], idx, dataarray=dataarray_op))
+    return invertdata_sub
 
 @dataclass
 class Fusion(Operation):
@@ -654,6 +727,7 @@ class Fusion(Operation):
                 invertdata.append(res[1])
             else:
                 processed.append(res)
+                invertdata.append({})
         self.dims_per_op = [proc.shape[-1] for proc in processed]
         fused = np.concatenate(processed, axis=-1)
         
@@ -665,7 +739,7 @@ class Fusion(Operation):
 
         return fused, {'kwargs_per_op': invertdata}
 
-    def invert(self, data: np.ndarray, kwargs_per_op=None) -> np.ndarray:
+    def invert(self, data: np.ndarray, kwargs_per_op=None, **extraargs_per_op) -> np.ndarray:
         """ Inverts subsets of the processed data using the operation inverses.
 
         Args:
@@ -695,7 +769,10 @@ class Fusion(Operation):
         count = 0
         for i, indices in enumerate(self.indices_per_op):
             n_dims = self.dims_per_op[i]
-            inverted[..., indices] = self.operations[i].invert(data[..., count:count + n_dims], **kwargs_per_op[i])
+            kwargs_curr = extraargs_per_op.get(self.operations[i].name, {})
+            if len(kwargs_per_op) > i:
+                kwargs_curr.update(kwargs_per_op[i])
+            inverted[..., indices] = self.operations[i].invert(data[..., count:count + n_dims], **kwargs_curr)
             count += n_dims
             
         if not ismultiagent:
@@ -705,6 +782,18 @@ class Fusion(Operation):
             LOG.info(f"Fusion invert took {toc(start_time):.2f} seconds")
 
         return inverted
+    
+    def invertdata_subindex(self, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None = None):
+        """
+        Subindexes the invertdata for the operation.
+        Args:
+            invertdata: Invertdata for the operation.
+            idx: List or tuple of indices to subindex the invertdata.
+            dataarray: Optional data array that was processed by the operation, can be used for context.
+        Returns:
+            Subindexed invertdata.
+        """
+        return fusion_invertdata_subindex(self, invertdata, idx, dataarray=dataarray)
     
     def unfuse(self, data: Data | np.ndarray | torch.Tensor) -> np.ndarray:
         """
@@ -905,6 +994,45 @@ def multistart_cumsum(x: np.ndarray, x0s: list[np.ndarray], t0s: list[np.ndarray
         cumsum_x[:,i::dt] = multistart_cumsum(x[:,i::dt], [x0s_agent[:,i] for x0s_agent in x0s], t0s_sub)
     return cumsum_x
 
+def velocity_invertdata_subindex(op: Operation, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None):
+    """
+    Subindexes the invertdata for the operation.
+    Args:
+        op: velocity operation (LocalVelocity or GlobalVelocity)
+        invertdata: Invertdata for the operation.
+        idx: List or tuple of indices to subindex the invertdata.
+        dataarray: Optional data array that was processed by the operation, can be used for context.
+    Returns:
+        Subindexed invertdata.
+    """
+    if len(idx) == 0:
+        return invertdata
+
+    assert isinstance(invertdata, dict) and 'x0s' in invertdata and 't0s' in invertdata, \
+        "invertdata must be a dict with keys 'x0s' and 't0s'"
+    assert dataarray is not None, "dataarray must be provided to subindex LocalVelocity invertdata"
+
+    invertdata_sub = {}
+    ismultiagent = dataarray.ndim == 3
+    if ismultiagent:
+        timedim = 1
+    else:
+        timedim = 0
+    if len(idx) > timedim:
+        t_indices = idx[timedim]
+        # need to reconstruct
+        pose = op.invert(dataarray, x0s=invertdata['x0s'], t0s=invertdata['t0s'])
+        pose_sub = pose[idx]
+        _,invertdata_sub = op.apply(pose_sub)
+        return invertdata_sub
+        
+    else:
+        agent_ids = idx[0]
+        invertdata_sub['x0s'] = [invertdata['x0s'][agent_id] for agent_id in agent_ids]
+        invertdata_sub['t0s'] = [invertdata['t0s'][agent_id] for agent_id in agent_ids]
+    
+    return invertdata_sub
+
 @dataclass
 class LocalVelocity(Operation):
     """ Computes the relative pose movement from t to t + 1.
@@ -932,21 +1060,19 @@ class LocalVelocity(Operation):
             pose = pose[None, ...]
             if isstart is not None:
                 isstart = isstart[None, ...]
-        
+                
         pose_velocity = np.moveaxis(compute_relpose_velocity(pose.T, is_angle=self.is_angle), 2, 0)
         if isstart is not None:
             # Set pose deltas that cross individuals to NaN.
             set_invalid_ends(pose_velocity, isstart, dt=1)
         pose_velocity = pose_velocity[0]
         pose_velocity = pose_velocity.T
-        agent_ids,ts = np.nonzero(isstart.T)
-        n_agents = isstart.shape[1]
-        t0s = [ts[agent_ids==agent_id] for agent_id in range(n_agents)]
-        x0s = [pose[agent_id, t0s[agent_id], :] for agent_id in range(n_agents)]
+        
+        t0s = get_velocity_t0s(pose, isstart)
+        x0s = [pose[agent_id, t0scurr, :] for agent_id, t0scurr in enumerate(t0s)]
         
         if not ismultiagent:
             pose_velocity = pose_velocity[0, ...]
-            x0s = x0s[0, ...]
                         
         return pose_velocity, {'x0s': x0s, 't0s': t0s}
 
@@ -980,7 +1106,7 @@ class LocalVelocity(Operation):
             velocity = np.concatenate([x0[:, None, :], velocity], axis=1)[:, :-1, :]
             pose = np.cumsum(velocity, axis=1)
         else:
-            # x0s at multipe frames
+            # x0s at multiple frames
             pose = multistart_cumsum(velocity, x0s, t0s)
             
         if self.is_angle is not None:
@@ -991,6 +1117,19 @@ class LocalVelocity(Operation):
             
         return pose
     
+    def invertdata_subindex(self, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None = None):
+        """
+        Subindexes the invertdata for the operation.
+        Args:
+            invertdata: Invertdata for the operation.
+            idx: List or tuple of indices to subindex the invertdata.
+            dataarray: Optional data array that was processed by the operation, can be used for context.
+        Returns:
+            Subindexed invertdata.
+        """
+        
+        return velocity_invertdata_subindex(self, invertdata, idx, dataarray=dataarray)
+    
     def __str__(self):
         return f"Operation {self.name} of class LocalVelocity with is_angle {self.is_angle}"
     
@@ -999,6 +1138,17 @@ class LocalVelocity(Operation):
     
     def invert_feature_names(self, input_feature_names):
         return [name.replace('_velocity','') for name in input_feature_names]
+
+def get_velocity_t0s(position: np.ndarray, isstart: np.ndarray | None) -> list[np.ndarray]:
+    isdata = ~np.all(np.isnan(position),axis=-1)
+    n_agents = isdata.shape[0]
+    isstart1 = np.c_[np.ones(n_agents,dtype=bool), isdata[:,1:] & ~isdata[:,:-1]]
+    if isstart is not None:
+        isstart1 = isstart.T | isstart1
+    agent_ids,ts = np.nonzero(isstart1 & isdata)
+    
+    t0s = [ts[agent_ids==agent_id] for agent_id in range(n_agents)]
+    return t0s
 
 
 @dataclass
@@ -1044,21 +1194,14 @@ class GlobalVelocity(Operation):
         # n_agents, n_frames, n_features        
         movement_global = movement_global.T
 
-        isdata = ~np.all(np.isnan(position),axis=-1)
-        n_agents = isdata.shape[0]
-        isstart1 = np.c_[np.ones(n_agents,dtype=bool), isdata[:,1:] & ~isdata[:,:-1]]
-        if isstart is not None:
-            isstart1 = isstart.T | isstart1
-        agent_ids,ts = np.nonzero(isstart1 & isdata)
+        t0s = get_velocity_t0s(position, isstart)
         max_dt = max(self.tspred)
         
-        t0s = [ts[agent_ids==agent_id] for agent_id in range(n_agents)]
         # x0s[agent_id] is (len(t0s[agent_id]),min_dt,3)
-        x0s = [position[agent_id, t0s[agent_id][:,None]+np.arange(max_dt)[None,:]] for agent_id in range(n_agents)]
+        x0s = [position[agent_id, t0scurr[:,None]+np.arange(max_dt)[None,:]] for agent_id,t0scurr in enumerate(t0s)]
         
         if not ismultiagent:
             movement_global = movement_global[0, ...]
-            x0s = x0s[0, ...]
 
         return movement_global, {'x0s': x0s, 't0s': t0s}
 
@@ -1119,6 +1262,19 @@ class GlobalVelocity(Operation):
             inverted = inverted[0, ...]
         
         return inverted
+
+    def invertdata_subindex(self, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None = None):
+        """
+        Subindexes the invertdata for the operation.
+        Args:
+            invertdata: Invertdata for the operation.
+            idx: List or tuple of indices to subindex the invertdata.
+            dataarray: Optional data array that was processed by the operation, can be used for context.
+        Returns:
+            Subindexed invertdata.
+        """
+        
+        return velocity_invertdata_subindex(self, invertdata, idx, dataarray=dataarray)
     
     def update_feature_names(self, input_feature_names):
         return [name for dt in self.tspred for name  in [f'forward_velocity_{dt}', f'sideways_velocity_{dt}', f'angular_velocity_{dt}']]
@@ -1186,6 +1342,18 @@ class Velocity(Operation):
                 
                 kwargs_per_op = [{'x0': x0[..., self.global_inds]}, {'x0': x0[..., self.local_inds]}]
         return self.fusion.invert(velocity, kwargs_per_op)
+    
+    def invertdata_subindex(self, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None = None):
+        """
+        Subindexes the invertdata for the operation.
+        Args:
+            invertdata: Invertdata for the operation.
+            idx: List or tuple of indices to subindex the invertdata.
+            dataarray: Optional data array that was processed by the operation, can be used for context.
+        Returns:
+            Subindexed invertdata.
+        """
+        return fusion_invertdata_subindex(self.fusion, invertdata, idx, dataarray=dataarray)
     
     def __str__(self):
         return f"Operation {self.name} of class Velocity => {str(self.fusion)}"
@@ -1827,13 +1995,14 @@ class Dataset(torch.utils.data.Dataset):
         chunk['metadata']['idx'] = idx
         return chunk
 
-    def get_chunk(self, start_frame: int, duration: int, agent_id: int) -> dict[str, np.ndarray | torch.Tensor]:
+    def get_chunk(self, start_frame: int, duration: int, agent_id: int, datadict: dict | None = None) -> dict[str, np.ndarray | torch.Tensor]:
         """ Returns a data chunk from the dataset.
 
             Args:
                 start_frame: Start frame of the chunk
                 duration: Length of the chunk
                 agent_id: Agent id of the chunk
+                datadict: If provided, extracts chunk from this Data object instead of self. Default: None
 
             Returns:
                 chunk: A dictionary containing chunk data. Keys are
@@ -1842,28 +2011,52 @@ class Dataset(torch.utils.data.Dataset):
                     'metadata': Metadata about the chunk, extracted from each key in self.metadata
 
             """
-        labels = get_data_chunk(self.labels, start_frame, agent_id, duration)
+        if datadict is None:
+            labels = get_data_chunk(self.labels, start_frame, agent_id, duration)
+        else:
+            labels = get_data_chunk(datadict['labels'], start_frame, agent_id, duration)
         labels_discrete, labels_continuous = split_discr_cont(labels, self.label_bin_indices)
+        if datadict is None:
+            input = get_data_chunk(self.inputs, start_frame, agent_id, duration).astype(np.float32)
+        else:
+            input = get_data_chunk(datadict['inputs'], start_frame, agent_id, duration).astype(np.float32)
         chunk = {
-            'input': get_data_chunk(self.inputs, start_frame, agent_id, duration).astype(np.float32),
+            'input': input,
         }
         if labels_continuous.shape[-1] > 0:
             chunk['labels'] = labels_continuous.astype(np.float32)
         if labels_discrete.shape[-1] > 0:
             chunk['labels_discrete'] = labels_discrete.astype(np.float32)
-        if self.useoutputmask is None:
+            
+        if ((datadict is None) and (self.useoutputmask is None)) or (datadict is not None and ('useoutputmask' not in datadict)):
             chunk['useoutputmask'] = np.ones((duration,), dtype=bool)
-        else:
+        elif datadict is None:
             chunk['useoutputmask'] = self.useoutputmask[start_frame:(start_frame + duration), agent_id]
+        else: # datadict is not None and 'useoutputmask' in datadict
+            chunk['useoutputmask'] = datadict['useoutputmask'][agent_id,start_frame:(start_frame + duration)] # transposed
+                
         chunk['metadata'] = {
             'start_frame': start_frame,
             'duration': duration,
             'agent_id': agent_id
             }
-        if self.invertdata is not None:
-            chunk['metadata'].update(get_array_chunk(self.invertdata,start_frame,agent_id,duration))
-                
+        
+        if datadict is None:
+            if self.invertdata is not None:
+                chunk['metadata'].update(get_array_chunk(self.invertdata,start_frame,agent_id,duration))
+        else:
+            chunk['metadata'].update(get_datadict_invertdata(datadict)) # todo this should be a subset of invertdata
+
         return chunk
+
+    def set_context_length(self, context_length: int):
+        """ Sets the context length of chunks and recomputes chunk indices.
+
+        Args:
+            context_length: Number of frames in a chunk.
+        """
+        self.context_length = context_length
+        self.recompute_chunk_indices(start_offset=self.start_offset)    
     
     def set_stride(self, stride: int | None = None):
         """ Sets the stride between chunks and recomputes chunk indices.
@@ -1872,6 +2065,8 @@ class Dataset(torch.utils.data.Dataset):
             stride: Interval between the start frames of consecutive chunks.
                 If None, defaults to context_length (non-overlapping chunks).
         """
+        if stride is None:
+            stride = self.context_length
         self.stride = stride
         self.recompute_chunk_indices(start_offset=self.start_offset)
 
@@ -2077,6 +2272,50 @@ class Dataset(torch.utils.data.Dataset):
         
         return datadict
     
+    def data_to_item(self,datadict: dict[str, Data]) -> dict[str, np.ndarray | torch.Tensor]:
+        """
+        data_to_item(datadict)
+        Converts a dictionary of Data objects to an item (as returned by __getitem__) or the prediction of a model.
+        Args:
+            datadict (dict[str, Data]): Dictionary containing Data objects for each key. Should have (some of) the keys:
+                'inputs': A dictionary of Data objects for each input in the dataset.inputs.keys().
+                'labels': A dictionary of Data objects for each label in the dataset.labels.keys().
+        Returns:
+            item (dict[str, np.ndarray  |  torch.Tensor]): Dictionary produced by __getitem__ or a model prediction.
+            Should have (some of) the keys:
+                'input': Concatenated input data, (context_length, d_input) float array
+                'labels' or 'continuous': Concatenated continuous data in labels, (context_length, d_output_continuous) float
+                'labels_discrete' or 'discrete': Concatenated flattened discrete data in labels, 
+                (context_length, d_output_discrete * n_bins) float
+        """
+        
+        item = {}
+        if 'inputs' in datadict:
+            input_list = []
+            for k in self.inputs.keys():
+                input_list.append(datadict['inputs'][k].array)
+            item['input'] = np.concatenate(input_list,axis=-1)
+        if 'labels' in datadict:
+            label_list = []
+            for k in self.labels.keys():
+                label_list.append(datadict['labels'][k].array)
+            concated = np.concatenate(label_list,axis=-1)
+            # split into discrete and continuous
+            n_dim = self.d_output_discrete * self.discretize_nbins + self.d_output_continuous
+            is_binned = np.zeros(n_dim, bool)
+            for inds in self.label_bin_indices:
+                is_binned[inds] = True
+            if np.any(~is_binned):
+                item['labels'] = concated[..., ~is_binned]
+            if np.any(is_binned):
+                item['labels_discrete'] = concated[..., is_binned].reshape(concated.shape[:-1] + (self.d_output_discrete, self.discretize_nbins))
+        if 'metadata' in datadict:
+            item['metadata'] = datadict['metadata']
+        if 'useoutputmask' in datadict:
+            item['useoutputmask'] = datadict['useoutputmask']
+        
+        return item
+    
     def _subindex_to_full(self,x,subindex,nfeatdim=1):
         """
         _subindex_to_full(x,subindex)
@@ -2139,6 +2378,14 @@ def copy_data_subindex(data: Data, agentidx: slice | np.ndarray | list | None = 
     if frameidx is not None:
         array_sub = array_sub[:,frameidx]
     return Data.copy_with(data,array=array_sub,invertdata=None)
+
+def get_datadict_invertdata(datadict: dict[str, Data]) -> dict:
+    invertdata = {}
+    for key in ['inputs','labels']:
+        invertdata[key] = {}
+        for k,data in datadict.get(key,{}).items():
+            invertdata[key][k] = data.invertdata
+    return invertdata
 
 class DataLoader(torch.utils.data.DataLoader):
     """ A thin wrapper around torch's DataLoader to use collate_nested_dicts as the collate_fn.

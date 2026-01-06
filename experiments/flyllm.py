@@ -6,6 +6,8 @@
 import numpy as np
 import logging
 from dataclasses import dataclass, field
+from pyparsing import Any
+import torch
 
 
 from apf.io import load_and_filter_data
@@ -125,6 +127,20 @@ class Pose(Operation):
             Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array
         """
         return feat2kp(pose.T, scale_perfly=self.scale_perfly, flyid=flyid.T).T
+    
+    def invertdata_subindex(self, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None = None):
+        """
+        Subindexes the invertdata for the operation.
+        Args:
+            invertdata: Invertdata for the operation.
+            idx: List or tuple of indices to subindex the invertdata.
+            dataarray: Optional data array that was processed by the operation, can be used for context.
+        Returns:
+            Subindexed invertdata.
+        """
+        
+        assert 'flyid' in invertdata, "Invertdata for Pose operation must have 'flyid' key"
+        return {'flyid': invertdata['flyid'][idx]}
     
     def __str__(self):
         return f"Operation {self.name} of class Pose with scale_perfly shape: {self.scale_perfly.shape if self.scale_perfly is not None else 'None'}"
