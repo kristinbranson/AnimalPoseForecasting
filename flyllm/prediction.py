@@ -435,7 +435,8 @@ def predict_iterative(data_examples, Xkp_fill, burnin, tpred, model, dataset, ma
     if nsamples > 0:
         data_examples = [pretile_datadict(data_example, reps=nsamples) for data_example in data_examples]
 
-    nfliespred = len(data_examples)
+    nagentspred = len(data_examples)
+    agentspred = [data_example['metadata']['agent_id'] for data_example in data_examples]
     if need_weights:
         attn_weights = [None, ] * tpred # this probably doesn't work if nfliespred > 1
 
@@ -445,15 +446,16 @@ def predict_iterative(data_examples, Xkp_fill, burnin, tpred, model, dataset, ma
     masksizeprev = None
     
     # global position of each fly in the previous frame, so that we don't have to integrate to compute position
+    # TODO
     pose_prev = []
-    for i in range(nfliespred):
+    for i in range(nagentspred):
         pose_curr = data_examples[i].labels.get_next_pose(ts=np.arange(burnin),use_todiscretize=True)[...,-1,:]
         pose_prev.append(pose_curr)
     
-    for t in tqdm.trange(burnin, tpred): 
+    for t in tqdm.trange(burnin+1, tpred): 
         t0 = int(np.maximum(t - maxcontextl, 0))
 
-        for i,fly in enumerate(fliespred):
+        for i,agent in enumerate(agentspred):
             # copy frames up to t
             # don't use the init_pose
             # get_next_pose[:,-1] will be nan
@@ -531,7 +533,7 @@ def predict_iterative(data_examples, Xkp_fill, burnin, tpred, model, dataset, ma
                         # dimensions correspond to layer, output frame, input frame
                         attn_weights_curr = torch.cat(attn_weights_curr, dim=0).cpu().numpy()
                         if i == 0:
-                            attn_weights[t] = np.tile(attn_weights_curr[..., None], (1, 1, 1, nfliespred))
+                            attn_weights[t] = np.tile(attn_weights_curr[..., None], (1, 1, 1, nagentspred))
                             attn_weights[t][..., 1:] = np.nan
                         else:
                             attn_weights[t][..., i] = attn_weights_curr
@@ -569,7 +571,7 @@ def predict_iterative(data_examples, Xkp_fill, burnin, tpred, model, dataset, ma
 
 
             # store keypoints predicted for this frame            
-            Xkp_fill[...,:,:,t+1,fly] = Xkpcurr[...,-1,:,:]
+            Xkp_fill[...,:,:,t+1,agent] = Xkpcurr[...,-1,:,:]
 
 
             #globapos_curr = examples_pred[i].labels.get_next_pose_global(ts=[t,],globalpos0=globalpos_prev[i])
@@ -581,9 +583,9 @@ def predict_iterative(data_examples, Xkp_fill, burnin, tpred, model, dataset, ma
         
         if t < tpred-1:
             # update observations for the next frame
-            for i,fly in enumerate(fliespred):
+            for i,agent in enumerate(agentspred):
                 # this is just one frame of inputs, so don't crop the end
-                data_examples[i].inputs.set_inputs_from_keypoints(Xkp_fill[...,:,:,[t+1,],:],fly,scale=scales[i],ts=[t+1,],npad=0)
+                data_examples[i].inputs.set_inputs_from_keypoints(Xkp_fill[...,:,:,[t+1,],:],agent,scale=scales[i],ts=[t+1,],npad=0)
 
     if need_weights:
         return data_examples, attn_weights

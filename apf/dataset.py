@@ -203,6 +203,7 @@ class Data(NamedTuple):
         array_sub = self.array
         if len(idx) > 0:
             array_sub = array_sub[idx]
+        return array_sub
             
     def get_invertdata_subindex(self, *idx) -> dict:
         invertdata_sub = None
