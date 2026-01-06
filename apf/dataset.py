@@ -198,18 +198,25 @@ class Data(NamedTuple):
     def copy_with(data: 'Data', **kwargs) -> 'Data':
         return data._replace(**kwargs)
     
-    def copy_subindex(data: 'Data', *idx) -> 'Data':
+    def get_array_subindex(self, *idx) -> np.ndarray:
         idx = tuple(slice(None) if idxcurr is None else idxcurr for idxcurr in idx)
-        array_sub = data.array
+        array_sub = self.array
         if len(idx) > 0:
             array_sub = array_sub[idx]
+            
+    def get_invertdata_subindex(self, *idx) -> dict:
         invertdata_sub = None
-        if data.invertdata is not None:
+        if self.invertdata is not None:
             invertdata_sub = {}
-            for op in data.operations:
-                if op.name not in data.invertdata:
+            for op in self.operations:
+                if op.name not in self.invertdata:
                     continue
-                invertdata_sub[op.name] = op.invertdata_subindex(data.invertdata[op.name], idx, dataarray=data.array)
+                invertdata_sub[op.name] = op.invertdata_subindex(self.invertdata[op.name], idx, dataarray=self.array)
+        return invertdata_sub
+    
+    def copy_subindex(data: 'Data', *idx) -> 'Data':
+        array_sub = data.get_array_subindex(*idx)
+        invertdata_sub = data.get_invertdata_subindex(*idx)
         return Data.copy_with(data, array=array_sub, invertdata=invertdata_sub)
     
 @dataclass
@@ -1485,9 +1492,9 @@ def get_array_chunk(datas: np.ndarray | torch.Tensor | dict,
 
 def get_data_chunk(
         datas: dict[str, Data],
-        start_frame: int,
-        agent_id: int,
-        duration: int
+        start_frame: int | None = None,
+        agent_id: int | None = None,
+        duration: int | None = None
 ) -> np.ndarray | torch.Tensor:
     """ Extracts and concatenates data for given chunk indices.
 
@@ -1499,8 +1506,14 @@ def get_data_chunk(
 
     Returns:
         data_chunk: (chunk_length, n_feat_flat), float array
-    """    
-    slices = [data.array[agent_id, start_frame:(start_frame + duration)] for data  in datas.values()]
+    """
+    subindex = [slice(None), slice(None)]
+    if agent_id is not None:
+        subindex[0] = agent_id
+    if start_frame is not None and duration is not None:
+        subindex[1] = slice(start_frame, start_frame + duration)
+    slices = [data.array[*subindex] for data  in datas.values()]
+
     if isinstance(slices[0], np.ndarray):
         return np.concatenate(slices, axis=1)
     else:
@@ -1995,14 +2008,13 @@ class Dataset(torch.utils.data.Dataset):
         chunk['metadata']['idx'] = idx
         return chunk
 
-    def get_chunk(self, start_frame: int, duration: int, agent_id: int, datadict: dict | None = None) -> dict[str, np.ndarray | torch.Tensor]:
+    def get_chunk(self, start_frame: int, duration: int, agent_id: int) -> dict[str, np.ndarray | torch.Tensor]:
         """ Returns a data chunk from the dataset.
 
             Args:
                 start_frame: Start frame of the chunk
                 duration: Length of the chunk
                 agent_id: Agent id of the chunk
-                datadict: If provided, extracts chunk from this Data object instead of self. Default: None
 
             Returns:
                 chunk: A dictionary containing chunk data. Keys are
@@ -2010,42 +2022,13 @@ class Dataset(torch.utils.data.Dataset):
                     'labels': Concatenated label chunk, (duration, d_output) float
                     'metadata': Metadata about the chunk, extracted from each key in self.metadata
 
-            """
-        if datadict is None:
-            labels = get_data_chunk(self.labels, start_frame, agent_id, duration)
-        else:
-            labels = get_data_chunk(datadict['labels'], start_frame, agent_id, duration)
-        labels_discrete, labels_continuous = split_discr_cont(labels, self.label_bin_indices)
-        if datadict is None:
-            input = get_data_chunk(self.inputs, start_frame, agent_id, duration).astype(np.float32)
-        else:
-            input = get_data_chunk(datadict['inputs'], start_frame, agent_id, duration).astype(np.float32)
-        chunk = {
-            'input': input,
-        }
-        if labels_continuous.shape[-1] > 0:
-            chunk['labels'] = labels_continuous.astype(np.float32)
-        if labels_discrete.shape[-1] > 0:
-            chunk['labels_discrete'] = labels_discrete.astype(np.float32)
-            
-        if ((datadict is None) and (self.useoutputmask is None)) or (datadict is not None and ('useoutputmask' not in datadict)):
-            chunk['useoutputmask'] = np.ones((duration,), dtype=bool)
-        elif datadict is None:
-            chunk['useoutputmask'] = self.useoutputmask[start_frame:(start_frame + duration), agent_id]
-        else: # datadict is not None and 'useoutputmask' in datadict
-            chunk['useoutputmask'] = datadict['useoutputmask'][agent_id,start_frame:(start_frame + duration)] # transposed
-                
-        chunk['metadata'] = {
-            'start_frame': start_frame,
-            'duration': duration,
-            'agent_id': agent_id
-            }
+        """
+        chunk = get_chunk({'labels': self.labels, 'inputs': self.inputs}, start_frame, duration, agent_id, 
+                          label_bin_indices = self.label_bin_indices, 
+                          useoutputmask = self.useoutputmask, return_invertdata = self.invertdata is None)
         
-        if datadict is None:
-            if self.invertdata is not None:
-                chunk['metadata'].update(get_array_chunk(self.invertdata,start_frame,agent_id,duration))
-        else:
-            chunk['metadata'].update(get_datadict_invertdata(datadict)) # todo this should be a subset of invertdata
+        if self.invertdata is not None:
+            chunk['metadata'].update(get_array_chunk(self.invertdata,start_frame,agent_id,duration))
 
         return chunk
 
@@ -2272,7 +2255,7 @@ class Dataset(torch.utils.data.Dataset):
         
         return datadict
     
-    def data_to_item(self,datadict: dict[str, Data]) -> dict[str, np.ndarray | torch.Tensor]:
+    def data_to_item(self,datadict: dict[str, Data], start_frame=None, agent_id=None, duration=None) -> dict[str, np.ndarray | torch.Tensor]:
         """
         data_to_item(datadict)
         Converts a dictionary of Data objects to an item (as returned by __getitem__) or the prediction of a model.
@@ -2289,31 +2272,14 @@ class Dataset(torch.utils.data.Dataset):
                 (context_length, d_output_discrete * n_bins) float
         """
         
-        item = {}
-        if 'inputs' in datadict:
-            input_list = []
-            for k in self.inputs.keys():
-                input_list.append(datadict['inputs'][k].array)
-            item['input'] = np.concatenate(input_list,axis=-1)
-        if 'labels' in datadict:
-            label_list = []
-            for k in self.labels.keys():
-                label_list.append(datadict['labels'][k].array)
-            concated = np.concatenate(label_list,axis=-1)
-            # split into discrete and continuous
-            n_dim = self.d_output_discrete * self.discretize_nbins + self.d_output_continuous
-            is_binned = np.zeros(n_dim, bool)
-            for inds in self.label_bin_indices:
-                is_binned[inds] = True
-            if np.any(~is_binned):
-                item['labels'] = concated[..., ~is_binned]
-            if np.any(is_binned):
-                item['labels_discrete'] = concated[..., is_binned].reshape(concated.shape[:-1] + (self.d_output_discrete, self.discretize_nbins))
-        if 'metadata' in datadict:
-            item['metadata'] = datadict['metadata']
-        if 'useoutputmask' in datadict:
-            item['useoutputmask'] = datadict['useoutputmask']
+        item = get_chunk(datadict,start_frame, duration, agent_id, 
+                        label_bin_indices = self.label_bin_indices, 
+                        useoutputmask = datadict['useoutputmask'], 
+                        return_invertdata = self.invertdata is None)
         
+        if self.invertdata is not None:
+            item['metadata'].update(get_array_chunk(self.invertdata,start_frame,agent_id,duration))
+
         return item
     
     def _subindex_to_full(self,x,subindex,nfeatdim=1):
@@ -2386,6 +2352,69 @@ def get_datadict_invertdata(datadict: dict[str, Data]) -> dict:
         for k,data in datadict.get(key,{}).items():
             invertdata[key][k] = data.invertdata
     return invertdata
+
+def get_chunk(datadict: dict, 
+            start_frame: int | None = None, 
+            duration: int | None = None, agent_id: int | None = None,
+            useoutputmask: np.ndarray | None = None,
+            label_bin_indices: np.ndarray | None = None,
+            return_invertdata: bool = True) -> dict[str, np.ndarray | torch.Tensor]:
+    
+    """ Returns a data chunk from datadict.
+
+    Args:
+        start_frame: Start frame of the chunk
+        duration: Length of the chunk
+        agent_id: Agent id of the chunk
+        datadict: If provided, extracts chunk from this Data object instead of self. Default: None
+
+    Returns:
+        chunk: A dictionary containing chunk data. Keys are
+            'input': Concatenated input chunk, (duration, d_input) float
+            'labels': Concatenated label chunk, (duration, d_output) float
+            'metadata': Metadata about the chunk, extracted from each key in self.metadata
+
+    """
+    labels = get_data_chunk(datadict['labels'], start_frame, agent_id, duration)
+    if label_bin_indices is None:
+        label_bin_indices, label_n_bins = get_bin_indices(datadict['labels'])
+    labels_discrete, labels_continuous = split_discr_cont(labels, label_bin_indices)
+    input = get_data_chunk(datadict['inputs'], start_frame, agent_id, duration).astype(np.float32)
+    chunk = {
+        'input': input,
+    }
+    if labels_continuous.shape[-1] > 0:
+        chunk['labels'] = labels_continuous.astype(np.float32)
+    if labels_discrete.shape[-1] > 0:
+        chunk['labels_discrete'] = labels_discrete.astype(np.float32)
+    
+    if useoutputmask is not None:
+        chunk['useoutputmask'] = np.ones((duration,), dtype=bool)
+    else:
+        chunk['useoutputmask'] = useoutputmask[start_frame:(start_frame + duration), agent_id]
+            
+    chunk['metadata'] = {
+        'start_frame': start_frame,
+        'duration': duration,
+        'agent_id': agent_id
+        }
+    
+    # invertdata
+    if return_invertdata:
+        do_subindex = (start_frame is not None and duration is not None) or (agent_id is not None)
+        if do_subindex:
+            subindex = [slice(None), slice(None)]
+            if agent_id is not None:
+                subindex[0] = agent_id
+            if start_frame is not None and duration is not None:
+                subindex[1] = slice(start_frame, start_frame + duration)
+
+        for key in ['inputs','labels']:
+            chunk['metadata'][key] = {}
+            for k,data in datadict[key].items():
+                chunk['metadata'][key][k] = data.get_invertdata_subindex(*subindex) if do_subindex else data.invertdata
+
+    return chunk
 
 class DataLoader(torch.utils.data.DataLoader):
     """ A thin wrapper around torch's DataLoader to use collate_nested_dicts as the collate_fn.
