@@ -128,20 +128,6 @@ class Pose(Operation):
         """
         return feat2kp(pose.T, scale_perfly=self.scale_perfly, flyid=flyid.T).T
     
-    def invertdata_subindex(self, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None = None):
-        """
-        Subindexes the invertdata for the operation.
-        Args:
-            invertdata: Invertdata for the operation.
-            idx: List or tuple of indices to subindex the invertdata.
-            dataarray: Optional data array that was processed by the operation, can be used for context.
-        Returns:
-            Subindexed invertdata.
-        """
-        
-        assert 'flyid' in invertdata, "Invertdata for Pose operation must have 'flyid' key"
-        return {'flyid': invertdata['flyid'][idx]}
-    
     def __str__(self):
         return f"Operation {self.name} of class Pose with scale_perfly shape: {self.scale_perfly.shape if self.scale_perfly is not None else 'None'}"
     
@@ -240,6 +226,7 @@ def make_dataset(
         scale_perfly = indata['scale_perfly']
     if DOTIME:
         LOG.info(f"Data loading took {utils.toc(start_time):.2f} seconds")
+    isstart = isstart.T
 
     # Compute features
     LOG.info('Computing input and label features for dataset...')

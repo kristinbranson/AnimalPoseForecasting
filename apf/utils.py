@@ -699,3 +699,29 @@ def toc(start_time=None):
 def get_code_root():
     # find the path to this file
     return str(Path(__file__).parent.parent.resolve())
+
+def reshape_prefix(x,prefixshape):
+    """
+    reshape_prefix(x,prefixshape)
+    Reshape the input array x so that its prefix dimensions match prefixshape.
+    The total number of elements must remain the same.
+    """
+    shapecurr = x.shape
+    newshape = prefixshape + shapecurr[len(prefixshape):]
+    if np.prod(newshape) != np.prod(shapecurr):
+        raise ValueError('reshape_prefix: size mismatch')
+    return x.reshape(newshape)
+
+def tile_prefix(x,prefixnreps):
+    """
+    tile_prefix(x,prefixnreps)
+    Tile the input array's first len(prefixnreps) dimensions by the specified number of repetitions.
+    """
+    if not isinstance(prefixnreps,tuple):
+        if hasattr(prefixnreps,'__len__'):
+            prefixnreps = tuple(prefixnreps)
+        else:
+            prefixnreps = (prefixnreps,)
+    nreps = prefixnreps + (1,)* (x.ndim - len(prefixnreps))
+    x = np.tile(x,nreps)
+    return x

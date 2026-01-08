@@ -8,7 +8,7 @@ from apf.models import (
     pred_apply_fun,
     get_causal_mask
 )
-from apf.dataset import DataLoader, Data
+import apf.dataset
 from flyllm.pose import FlyExample
 from contextlib import nullcontext
 import datetime
@@ -85,7 +85,7 @@ def predict_all(dataset=None, model=None, config=None, keepall=True, earlystop=N
             saveinterval = np.inf
 
         # create dataloader
-        dataloader = DataLoader(dataset, batch_size=batchsize, shuffle=shuffle, pin_memory=True)
+        dataloader = apf.dataset.DataLoader(dataset, batch_size=batchsize, shuffle=shuffle, pin_memory=True)
         
         #example_params = dataset.get_flyexample_params()
         model.eval()
@@ -389,7 +389,7 @@ def pretile_datadict(datadict: dict, reps: int):
 
     for key1 in ['inputs','labels']:
         for key2 in datadict[key1].keys():
-            datadict[key1][key2] = Data.copy_with(datadict[key1][key2], array=np.tile(datadict[key1][key2].array[None], (reps,)+ (1,)*datadict[key1][key2].array.ndim))
+            datadict[key1][key2] = datadict[key1][key2][None].tile(reps)
 
     if 'useoutputmask' in datadict:
         datadict['useoutputmask'] = np.tile(datadict['useoutputmask'][None], (reps,)+ (1,)*datadict['useoutputmask'].ndim)
@@ -447,18 +447,26 @@ def predict_iterative(data_examples, Xkp_fill, burnin, tpred, model, dataset, ma
     
     # global position of each fly in the previous frame, so that we don't have to integrate to compute position
     # TODO
-    pose_prev = []
-    for i in range(nagentspred):
-        pose_curr = data_examples[i].labels.get_next_pose(ts=np.arange(burnin),use_todiscretize=True)[...,-1,:]
-        pose_prev.append(pose_curr)
+    # pose_prev = []
+    # for i in range(nagentspred):
+    #     pose_curr = data_examples[i].labels.get_next_pose(ts=np.arange(burnin),use_todiscretize=True)[...,-1,:]
+    #     pose_prev.append(pose_curr)
     
-    for t in tqdm.trange(burnin+1, tpred): 
+    label_bin_indices = dataset.label_bin_indices
+    
+    for t in tqdm.trange(burnin, burnin+tpred): 
         t0 = int(np.maximum(t - maxcontextl, 0))
+        duration = t - t0 + 1  # inclusive of t
 
         for i,agent in enumerate(agentspred):
             # copy frames up to t
-            # don't use the init_pose
-            # get_next_pose[:,-1] will be nan
+            example = apf.dataset.get_chunk(
+                data_examples[i],
+                start_frame = t0,
+                duration = duration,
+                agent_id = None,
+                label_bin_indices = label_bin_indices                
+            )
             data_example = data_examples[i].copy_subindex(ts=np.arange(t0, t+1),needinit=False)
             # inputs will go from t0 through t
             # labels (unused) will go from t0+example_pred.starttoff through t+example_pred.starttoff

@@ -10,9 +10,8 @@ import inspect
 import copy
 from typing import Any
 
-from apf import utils
 from apf.data import fit_discretize_data, discretize_labels, weighted_sample
-from apf.utils import connected_components, modrange, rotate_2d_points, set_invalid_ends, tic, toc
+from apf.utils import connected_components, modrange, rotate_2d_points, set_invalid_ends, tic, toc, reshape_prefix, tile_prefix
 
 from apf.features import compute_global_velocity, compute_relpose_velocity
 
@@ -150,17 +149,102 @@ class Operation(ABC):
 
         return obj
     
-    def invertdata_subindex(self, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None = None):
+    def invertdata_subindex(self, invertdata: Any, idx: list | tuple):
         """
         Subindexes the invertdata for the operation.
         Args:
-            invertdata: Invertdata for the operation.
+            invertdata: Invertdata for the operation. 
+            invertdata can be:
+                - a dict with keys for each extra argument to invert for this operation. each 
+                    invertdata[key] must be an ndarray or torch.Tensor of size (n_agents, n_frames, ...),
+                    matching data array in prefix shape
+                - a list of invertdata corresponding to sub operations for fusion-like operations
+                - None
+                - If invertdata is not one of these, then you must override this method in the operation class.
             idx: List of indices to subindex the invertdata.
-            dataarray: Optional data array that was processed by the operation, can be used for context.
         Returns:
             Subindexed invertdata.
         """
+        
+        if isinstance(invertdata, np.ndarray) or isinstance(invertdata, torch.Tensor):
+            return invertdata[*idx]
+        opfcn = lambda op, invertdatacurr: op.invertdata_subindex(invertdatacurr, idx)
+        
+        return self.invertdata_applyfcn(invertdata, opfcn)
+    
+    def invertdata_applyfcn(self, invertdata: Any, opfcn):
+        """
+        Apply function opfcn to invertdata for the operation. Assumes that 
+        invertdata is assumed to be either:
+            - None
+            - a np.ndarray or torch.Tensor
+            - a list of invertdata corresponding to sub operations for fusion-like operations
+            - a dict of invertdata for different keys, corresponding to different extra arguments needed for inverting the operation
+        Other types of invertdata must be handled by overriding this method in the operation class.
+        If invertdata is None, None is returned.
+        If invertdata is a np.ndarray or torch.Tensor, opfcn is called on it directly. opfcn must handle this base case. 
+        If invertdata is a list corresponding to a fusion-like operation, the sub-operation's opfcn is called on each list instance. 
+        If invertdata is a dict, the opfcn is called on each dict value.
+        Args:
+            invertdata: Invertdata for the operation.
+            opfcn: Function to apply to the invertdata. Must take two arguments: the operation and the invertdata.
+        """
+        
+        if invertdata is None:
+            return None
+        elif isinstance(invertdata, np.ndarray) or isinstance(invertdata, torch.Tensor):
+            return opfcn(invertdata)
+        elif isinstance(invertdata, list):
+            # fusion-style operation
+            operations = None
+            if hasattr(self,'operations'):
+                operations = self.operations
+            elif hasattr(self,'fusion') and hasattr(self.fusion,'operations'):
+                operations = self.fusion.operations
+
+            if operations is not None:
+                invertdata_sub = []
+                for invertdatacurr, op in zip(invertdata,operations):
+                    invertdata_sub.append(opfcn(op,invertdatacurr))
+            
+            else:
+                invertdata_sub = []
+                for invertdatacurr in invertdata:
+                    invertdata_sub.append(opfcn(self, invertdatacurr))
+            return invertdata_sub
+        elif isinstance(invertdata, dict):
+            invertdata_sub = {}
+            for key in invertdata:
+                invertdata_sub[key] = opfcn(self,invertdata[key])
+            return invertdata_sub
+        else:
+            LOG.warning(f"No default method for applying function to invertdata of type {type(invertdata)}, returning original invertdata")
+        
         return invertdata
+    
+    def invertdata_reshape(self,invertdata,prefixshape):
+        """ Reshapes invertdata's prefix (dimensions before feature dim) to the given shape.
+        Args:
+            prefixshape: New shape for the prefix dimensions.
+        Returns:
+            invertdata is reshaped to have prefixshape in the prefix dimensions
+        """
+        if isinstance(invertdata, np.ndarray) or isinstance(invertdata, torch.Tensor):
+            return reshape_prefix(invertdata,prefixshape)
+        opfcn = lambda op,invertdata: op.invertdata_reshape(invertdata,prefixshape)
+        return self.invertdata_applyfcn(invertdata, opfcn)
+    
+    def invertdata_tile(self,invertdata,nreps):
+        """ Tiles invertdata's prefix (dimensions before feature dim) by the given repetitions.
+        Args:
+            nreps: List of repetitions to tile the prefix dimensions.
+        Returns:
+            Tiled invertdata.
+        """
+        if isinstance(invertdata, np.ndarray) or isinstance(invertdata, torch.Tensor):
+            return tile_prefix(invertdata,nreps)
+        opfcn = lambda op,invertdata: op.invertdata_tile(invertdata,nreps)
+        return self.invertdata_applyfcn(invertdata, opfcn)
 
 class Data(NamedTuple):
     name: str
@@ -168,6 +252,13 @@ class Data(NamedTuple):
     # Operations that have been applied to the data (can be later applied in inverse to obtain original data).
     operations: list[Operation] = []
     invertdata: Any = None # any additional data needed for inverting the operations, e.g. flyid for Pose operation
+    # invertdata is a dict with keys for operation name. Each value can be:
+    #     - a dict with keys for each extra argument to invert for this operation. each 
+    #         invertdata[opname][key] must be an ndarray or torch.Tensor of size (n_agents, n_frames, ...),
+    #         matching data array in prefix shape
+    #     - a list of invertdata corresponding to sub operations for fusion-like operations
+    #     - None
+    #     - If invertdata[opname] is not one of these, then you must override this method in the operation class.
     feature_names: list[str] | None = None
     
     def __str__(self):
@@ -198,27 +289,64 @@ class Data(NamedTuple):
     def copy_with(data: 'Data', **kwargs) -> 'Data':
         return data._replace(**kwargs)
     
-    def get_array_subindex(self, *idx) -> np.ndarray:
-        idx = tuple(slice(None) if idxcurr is None else idxcurr for idxcurr in idx)
-        array_sub = self.array
-        if len(idx) > 0:
-            array_sub = array_sub[idx]
-        return array_sub
-            
-    def get_invertdata_subindex(self, *idx) -> dict:
-        invertdata_sub = None
+    def invertdata_applyfcn(self,opfcn) -> dict:
+        invertdata1 = None
         if self.invertdata is not None:
-            invertdata_sub = {}
+            invertdata1 = {}
             for op in self.operations:
                 if op.name not in self.invertdata:
                     continue
-                invertdata_sub[op.name] = op.invertdata_subindex(self.invertdata[op.name], idx, dataarray=self.array)
-        return invertdata_sub
+                invertdata1[op.name] = opfcn(op,self.invertdata[op.name])
+        return invertdata1
     
-    def copy_subindex(data: 'Data', *idx) -> 'Data':
-        array_sub = data.get_array_subindex(*idx)
-        invertdata_sub = data.get_invertdata_subindex(*idx)
-        return Data.copy_with(data, array=array_sub, invertdata=invertdata_sub)
+    def __getitem__(self, idx) -> 'Data':
+        """ Returns a subindexed version of the Data.
+        Args:
+            idx: List/tuple of indices to subindex the data array.
+            Returns:
+            Subindexed Data object, where
+                - array is subindexed by idx
+                - invertdata is subindexed by idx using each operation's invertdata_subindex method
+        """
+        if ~isinstance(idx,tuple):
+            idx = (idx,)
+        array_sub = self.array
+        if len(idx) > 0:
+            array_sub = array_sub[idx]
+
+        fcn = lambda op,invertdata: op.invertdata_subindex(invertdata,idx)
+        invertdata_sub = self.invertdata_applyfcn(fcn)
+
+        return Data.copy_with(self, array=array_sub, invertdata=invertdata_sub)
+    
+    def reshape(self,prefix_shape) -> 'Data':
+        """ Reshapes the prefix (dimensions before feature dim) to the given shape.
+        Args:
+            prefix_shape: New shape for the prefix dimensions.
+        Returns:
+            Reshaped Data object, where
+                - array is reshaped to have prefix_shape in the prefix dimensions
+                - invertdata is reshaped to have prefix_shape in the prefix dimensions using each operation's invertdata_reshape method
+            """
+        array = reshape_prefix(self.array,prefix_shape)
+        fcn = lambda op,invertdata: op.invertdata_reshape(invertdata,prefix_shape)
+        invertdata = self.invertdata_applyfcn(fcn)
+        return Data.copy_with(self, array=array, invertdata=invertdata)        
+        
+    def tile(self,prefix_tile) -> 'Data':
+        """ Tiles the prefix (dimensions before feature dim) by the given repetitions.
+        Args:
+            prefix_tile: List of repetitions to tile the prefix dimensions.
+        Returns:
+            Tiled Data object, where
+                - array is tiled by prefix_tile in the prefix dimensions
+                - invertdata is tiled by prefix_tile in the prefix dimensions using each operation's invertdata_tile method
+        """
+        array = tile_prefix(self.array,prefix_tile)
+        fcn = lambda op,invertdata: op.invertdata_tile(invertdata,prefix_tile)
+        invertdata = self.invertdata_applyfcn(fcn)
+        return Data.copy_with(self, array=array, invertdata=invertdata)        
+        
     
 @dataclass
 class Identity(Operation):
@@ -634,47 +762,6 @@ class Discretize(Operation):
         for i in range(nfeat):
             output_feature_names.append(input_feature_names[i*self.nbins].replace(f'_bin0',''))
         return output_feature_names
-    
-    def invertdata_subindex(self, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None = None):
-        """
-        Subindexes the invertdata for the operation.
-        Args:
-            invertdata: Invertdata for the operation.
-            idx: List of indices to subindex the invertdata.
-            dataarray: Optional data array that was processed by the operation, can be used for context.
-        Returns:
-            Subindexed invertdata.
-        """
-        # invertdata: {'to_discretize': data}
-        assert isinstance(invertdata, dict) and 'to_discretize' in invertdata, "invertdata must be a dict with key 'to_discretize'"
-        
-        return {'to_discretize': invertdata['to_discretize'][idx]}
-
-def fusion_invertdata_subindex(fusionop: Operation, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None = None):
-    """
-    Subindexes the invertdata for Fusion-like operations.
-    Args:
-        invertdata: Invertdata for the operation.
-        idx: List or tuple of indices to subindex the invertdata.
-        dataarray: Optional data array that was processed by the operation, can be used for context.
-    Returns:
-        Subindexed invertdata.
-    """
-    # invertdata: {'kwargs_per_op': data}
-    assert isinstance(invertdata, dict) and 'kwargs_per_op' in invertdata, "invertdata must be a dict with key 'kwargs_per_op'"
-
-    invertdata_sub = {}
-    invertdata_sub['kwargs_per_op'] = []
-    count = 0
-    for i, op in enumerate(fusionop.operations):
-        if dataarray is None:
-            dataarray_op = None
-        else:
-            n_dims = fusionop.dims_per_op[i]
-            dataarray_op = dataarray[..., count:count + n_dims]
-            count += n_dims
-        invertdata_sub['kwargs_per_op'].append(op.invertdata_subindex(invertdata['kwargs_per_op'][i], idx, dataarray=dataarray_op))
-    return invertdata_sub
 
 @dataclass
 class Fusion(Operation):
@@ -745,7 +832,7 @@ class Fusion(Operation):
         if DOTIME:
             LOG.info(f"Fusion apply took {toc(start_time):.2f} seconds")
 
-        return fused, {'kwargs_per_op': invertdata}
+        return fused, invertdata
 
     def invert(self, data: np.ndarray, kwargs_per_op=None, **extraargs_per_op) -> np.ndarray:
         """ Inverts subsets of the processed data using the operation inverses.
@@ -790,18 +877,6 @@ class Fusion(Operation):
             LOG.info(f"Fusion invert took {toc(start_time):.2f} seconds")
 
         return inverted
-    
-    def invertdata_subindex(self, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None = None):
-        """
-        Subindexes the invertdata for the operation.
-        Args:
-            invertdata: Invertdata for the operation.
-            idx: List or tuple of indices to subindex the invertdata.
-            dataarray: Optional data array that was processed by the operation, can be used for context.
-        Returns:
-            Subindexed invertdata.
-        """
-        return fusion_invertdata_subindex(self, invertdata, idx, dataarray=dataarray)
     
     def unfuse(self, data: Data | np.ndarray | torch.Tensor) -> np.ndarray:
         """
@@ -1002,45 +1077,6 @@ def multistart_cumsum(x: np.ndarray, x0s: list[np.ndarray], t0s: list[np.ndarray
         cumsum_x[:,i::dt] = multistart_cumsum(x[:,i::dt], [x0s_agent[:,i] for x0s_agent in x0s], t0s_sub)
     return cumsum_x
 
-def velocity_invertdata_subindex(op: Operation, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None):
-    """
-    Subindexes the invertdata for the operation.
-    Args:
-        op: velocity operation (LocalVelocity or GlobalVelocity)
-        invertdata: Invertdata for the operation.
-        idx: List or tuple of indices to subindex the invertdata.
-        dataarray: Optional data array that was processed by the operation, can be used for context.
-    Returns:
-        Subindexed invertdata.
-    """
-    if len(idx) == 0:
-        return invertdata
-
-    assert isinstance(invertdata, dict) and 'x0s' in invertdata and 't0s' in invertdata, \
-        "invertdata must be a dict with keys 'x0s' and 't0s'"
-    assert dataarray is not None, "dataarray must be provided to subindex LocalVelocity invertdata"
-
-    invertdata_sub = {}
-    ismultiagent = dataarray.ndim == 3
-    if ismultiagent:
-        timedim = 1
-    else:
-        timedim = 0
-    if len(idx) > timedim:
-        t_indices = idx[timedim]
-        # need to reconstruct
-        pose = op.invert(dataarray, x0s=invertdata['x0s'], t0s=invertdata['t0s'])
-        pose_sub = pose[idx]
-        _,invertdata_sub = op.apply(pose_sub)
-        return invertdata_sub
-        
-    else:
-        agent_ids = idx[0]
-        invertdata_sub['x0s'] = [invertdata['x0s'][agent_id] for agent_id in agent_ids]
-        invertdata_sub['t0s'] = [invertdata['t0s'][agent_id] for agent_id in agent_ids]
-    
-    return invertdata_sub
-
 @dataclass
 class LocalVelocity(Operation):
     """ Computes the relative pose movement from t to t + 1.
@@ -1057,7 +1093,7 @@ class LocalVelocity(Operation):
         Args:
             pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
             isstart: Indicates whether a new fly track starts at a given frame for an agent.
-                (n_frames, n_agents) bool array or (n_frames,) bool array
+                (n_agents,n_frames) bool array or (n_frames,) bool array
 
         Returns:
             velocity: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
@@ -1072,20 +1108,17 @@ class LocalVelocity(Operation):
         pose_velocity = np.moveaxis(compute_relpose_velocity(pose.T, is_angle=self.is_angle), 2, 0)
         if isstart is not None:
             # Set pose deltas that cross individuals to NaN.
-            set_invalid_ends(pose_velocity, isstart, dt=1)
+            set_invalid_ends(pose_velocity, isstart.T, dt=1)
         pose_velocity = pose_velocity[0]
         pose_velocity = pose_velocity.T
-        
-        t0s = get_velocity_t0s(pose, isstart)
-        x0s = [pose[agent_id, t0scurr, :] for agent_id, t0scurr in enumerate(t0s)]
         
         if not ismultiagent:
             pose_velocity = pose_velocity[0, ...]
                         
-        return pose_velocity, {'x0s': x0s, 't0s': t0s}
+        return pose_velocity, {'pose': pose, 'isstart': isstart}
 
     def invert(self, velocity: np.ndarray, x0 : np.ndarray | None = None, 
-               x0s: list[np.ndarray] | None = None, t0s: list[np.ndarray] | None = None) -> np.ndarray:
+               pose: np.ndarray | None = None, isstart: np.ndarray | None = None) -> np.ndarray:
         """ Compute pose from pose velocity and an initial pose.
 
         Args:
@@ -1107,7 +1140,7 @@ class LocalVelocity(Operation):
         
         # Note: here we are assuming dt=1
         # single x0 for all frames
-        if (x0 is not None) or (t0s is None):
+        if (x0 is not None) or (pose is None):
             if x0 is None:
                 n_agents, _, n_features = velocity.shape
                 x0 = np.zeros((n_agents, n_features))
@@ -1115,6 +1148,8 @@ class LocalVelocity(Operation):
             pose = np.cumsum(velocity, axis=1)
         else:
             # x0s at multiple frames
+            t0s = get_velocity_t0s(pose, isstart)
+            x0s = [pose[agent_id, t0scurr, :] for agent_id, t0scurr in enumerate(t0s)]        
             pose = multistart_cumsum(velocity, x0s, t0s)
             
         if self.is_angle is not None:
@@ -1125,19 +1160,6 @@ class LocalVelocity(Operation):
             
         return pose
     
-    def invertdata_subindex(self, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None = None):
-        """
-        Subindexes the invertdata for the operation.
-        Args:
-            invertdata: Invertdata for the operation.
-            idx: List or tuple of indices to subindex the invertdata.
-            dataarray: Optional data array that was processed by the operation, can be used for context.
-        Returns:
-            Subindexed invertdata.
-        """
-        
-        return velocity_invertdata_subindex(self, invertdata, idx, dataarray=dataarray)
-    
     def __str__(self):
         return f"Operation {self.name} of class LocalVelocity with is_angle {self.is_angle}"
     
@@ -1146,13 +1168,13 @@ class LocalVelocity(Operation):
     
     def invert_feature_names(self, input_feature_names):
         return [name.replace('_velocity','') for name in input_feature_names]
-
+    
 def get_velocity_t0s(position: np.ndarray, isstart: np.ndarray | None) -> list[np.ndarray]:
     isdata = ~np.all(np.isnan(position),axis=-1)
     n_agents = isdata.shape[0]
     isstart1 = np.c_[np.ones(n_agents,dtype=bool), isdata[:,1:] & ~isdata[:,:-1]]
     if isstart is not None:
-        isstart1 = isstart.T | isstart1
+        isstart1 = isstart | isstart1
     agent_ids,ts = np.nonzero(isstart1 & isdata)
     
     t0s = [ts[agent_ids==agent_id] for agent_id in range(n_agents)]
@@ -1174,7 +1196,7 @@ class GlobalVelocity(Operation):
         Args:
             position: (n_agents,  n_frames, 3) float array or (n_frames, 3) float array
             isstart: Indicates whether a new fly track starts at a given frame for an agent.
-                (n_frames, n_agents) bool array or (n_frames,) bool array
+                (n_agents, n_frames) bool array or (n_frames,) bool array
 
         Returns:
             velocity: Global pose velocity, flattened over tspred.
@@ -1196,25 +1218,19 @@ class GlobalVelocity(Operation):
         movement_global = np.concatenate((dXoriginrel[:, [1, 0]], dtheta[:, None, :, :]), axis=1)
         if isstart is not None:
             for movement, dt in zip(movement_global, self.tspred):
-                set_invalid_ends(movement, isstart, dt=dt)
+                set_invalid_ends(movement, isstart.T, dt=dt)
         # ([forward[dt1, sideways[dt1], dtheta[dt1], forward[dt2], sideways[dt2], dtheta[dt2], ...], n_frames, n_agents)
         movement_global = movement_global.reshape((-1, n_frames, n_flies)) 
         # n_agents, n_frames, n_features        
         movement_global = movement_global.T
-
-        t0s = get_velocity_t0s(position, isstart)
-        max_dt = max(self.tspred)
-        
-        # x0s[agent_id] is (len(t0s[agent_id]),min_dt,3)
-        x0s = [position[agent_id, t0scurr[:,None]+np.arange(max_dt)[None,:]] for agent_id,t0scurr in enumerate(t0s)]
         
         if not ismultiagent:
             movement_global = movement_global[0, ...]
 
-        return movement_global, {'x0s': x0s, 't0s': t0s}
+        return movement_global, {'pose': position, 'isstart': isstart}
 
     def invert(self, velocity: np.ndarray, x0: np.ndarray | None = None,
-               x0s: list[np.ndarray] | None = None, t0s: list[np.ndarray] | None = None, dt: int | None = None) -> np.ndarray:
+               pose: np.ndarray | None = None, isstart: np.ndarray | None = None, dt: int | None = None) -> np.ndarray:
         """ Compute position from global movement and an initial position.
 
         NOTE: This assumes velocity is only given for dt=1
@@ -1245,7 +1261,7 @@ class GlobalVelocity(Operation):
             if x0 is not None:
                 x0 = x0[None, ...]
         
-        if (x0 is not None) or (t0s is None):
+        if (x0 is not None) or (pose is None):
             if x0 is None:
                 n_agents, _, n_dim = velocity.shape
                 x0 = np.zeros((n_agents, n_dim))
@@ -1253,6 +1269,11 @@ class GlobalVelocity(Operation):
             d_theta = np.concatenate([x0[:, None, 2], velocity[:, :, 2]], axis=1)
             theta = np.cumsum(d_theta, axis=1)[:, :-1]
         else:
+            
+            t0s = get_velocity_t0s(pose, isstart)
+            # x0s[agent_id] is (len(t0s[agent_id]),dt,3)
+            x0s = [pose[agent_id, t0scurr[:,None]+np.arange(dt)[None,:]] for agent_id,t0scurr in enumerate(t0s)]
+            
             theta = multistart_cumsum(velocity[..., 2], [x0s_agent[..., 2] for x0s_agent in x0s], t0s, dt=dt)
         theta = modrange(theta, -np.pi, np.pi)
 
@@ -1270,19 +1291,6 @@ class GlobalVelocity(Operation):
             inverted = inverted[0, ...]
         
         return inverted
-
-    def invertdata_subindex(self, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None = None):
-        """
-        Subindexes the invertdata for the operation.
-        Args:
-            invertdata: Invertdata for the operation.
-            idx: List or tuple of indices to subindex the invertdata.
-            dataarray: Optional data array that was processed by the operation, can be used for context.
-        Returns:
-            Subindexed invertdata.
-        """
-        
-        return velocity_invertdata_subindex(self, invertdata, idx, dataarray=dataarray)
     
     def update_feature_names(self, input_feature_names):
         return [name for dt in self.tspred for name  in [f'forward_velocity_{dt}', f'sideways_velocity_{dt}', f'angular_velocity_{dt}']]
@@ -1323,7 +1331,7 @@ class Velocity(Operation):
         Args:
             pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
             isstart: Indicates whether a new fly track starts at a given frame for an agent.
-                (n_frames, n_agents) bool array or (n_frames,) bool array
+                (n_agents, n_frames) bool array or (n_frames,) bool array
 
         Returns:
             velocity: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
@@ -1331,7 +1339,7 @@ class Velocity(Operation):
         res = self.fusion.apply(pose, kwargs_per_op={'isstart': isstart})
         return res
 
-    def invert(self, velocity: np.ndarray, x0: np.ndarray | None = None, kwargs_per_op: list[dict] | None = None):
+    def invert(self, velocity: np.ndarray, invertdata: np.ndarray | list | None = None):
         """ Compute pose from pose velocity and an initial pose.
 
         Args:
@@ -1341,27 +1349,17 @@ class Velocity(Operation):
         Returns:
             pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
-        if kwargs_per_op is not None:
-            if x0 is not None:
-                
-                # if has a value for every frame, just take the first frame
-                if x0.ndim == velocity.ndim:
-                    x0 = x0[0]
-                
+        kwargs_per_op = None
+        x0 = None
+        if isinstance(invertdata, list):
+            kwargs_per_op = invertdata
+        elif isinstance(invertdata, np.ndarray) | isinstance(invertdata, torch.Tensor):
+            x0 = invertdata
+            # if has a value for every frame, just take the first frame
+            if x0.ndim == velocity.ndim:
+                x0 = x0[0]                
                 kwargs_per_op = [{'x0': x0[..., self.global_inds]}, {'x0': x0[..., self.local_inds]}]
         return self.fusion.invert(velocity, kwargs_per_op)
-    
-    def invertdata_subindex(self, invertdata: Any, idx: list | tuple, dataarray: np.ndarray | torch.Tensor | None = None):
-        """
-        Subindexes the invertdata for the operation.
-        Args:
-            invertdata: Invertdata for the operation.
-            idx: List or tuple of indices to subindex the invertdata.
-            dataarray: Optional data array that was processed by the operation, can be used for context.
-        Returns:
-            Subindexed invertdata.
-        """
-        return fusion_invertdata_subindex(self.fusion, invertdata, idx, dataarray=dataarray)
     
     def __str__(self):
         return f"Operation {self.name} of class Velocity => {str(self.fusion)}"
@@ -1393,7 +1391,7 @@ def compute_sessions(datas: list[Data], isstart: np.ndarray) -> list[Session]:
 
     Args:
         datas: A list of Data, can be a combination of binned and continuous.
-        isstart: (n_frames, n_agents)
+        isstart: (n_agents, n_frames)
 
     Returns:
         sessions: A list of sessions indicating start_frame, duration, and agent_id of valid
@@ -1409,7 +1407,7 @@ def compute_sessions(datas: list[Data], isstart: np.ndarray) -> list[Session]:
 
     sessions = []
     for agent_id in range(max_n_agents):
-        start_frames = np.where(isstart[:, agent_id])[0]
+        start_frames = np.where(isstart[agent_id])[0]
         durations = np.diff(list(start_frames) + [n_frames])
         for start_frame, duration in zip(start_frames, durations):
             frames = np.arange(start_frame, start_frame + duration)
@@ -1516,9 +1514,9 @@ def get_data_chunk(
     slices = [data.array[*subindex] for data  in datas.values()]
 
     if isinstance(slices[0], np.ndarray):
-        return np.concatenate(slices, axis=1)
+        return np.concatenate(slices, axis=-1)
     else:
-        return torch.cat(slices, dim=1)
+        return torch.cat(slices, dim=-1)
 
 
 def get_bin_indices(datas: dict[str, Data]) -> tuple[list[np.ndarray], list[int]]:
@@ -1718,8 +1716,8 @@ def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data,
         args = []
         if isinstance(invertdataargs, dict):
             kwargs = kwargs | invertdataargs
-        elif isinstance(invertdataargs, (list, tuple)):
-            args += list(invertdataargs)
+        # elif isinstance(invertdataargs, (list, tuple)):
+        #     args += list(invertdataargs)
         elif invertdataargs is not None:
             args.append(invertdataargs)
         data = oper.invert(data, *args, **kwargs)
@@ -1879,7 +1877,7 @@ class Dataset(torch.utils.data.Dataset):
             array: (n_agents, n_frames, n_features) float array.
             operations: Operations that have been applied to arrive at this data.
         labels: A dictionary of data labels. Same format as inputs.
-        isstart: Indicates whether a frame is the start of a sequence for an agent, (n_frames, n_agents) bool array
+        isstart: Indicates whether a frame is the start of a sequence for an agent, (n_agents, n_frames) bool array
         context_length: Number of frames in a data chunk provided by __getitem__
         invertdata: Data about the dataset that is needed for applying/inverting operations beyond what can
             be captured by the operations. These are extra arguments to the operations' apply and invert function, and there
@@ -2389,7 +2387,10 @@ def get_chunk(datadict: dict,
     if labels_discrete.shape[-1] > 0:
         chunk['labels_discrete'] = labels_discrete.astype(np.float32)
     
-    if useoutputmask is not None:
+    if useoutputmask is None and 'useoutputmask' in datadict:
+        useoutputmask = datadict['useoutputmask']
+    
+    if useoutputmask is None:
         chunk['useoutputmask'] = np.ones((duration,), dtype=bool)
     else:
         chunk['useoutputmask'] = useoutputmask[start_frame:(start_frame + duration), agent_id]
