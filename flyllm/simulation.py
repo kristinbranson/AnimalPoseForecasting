@@ -400,7 +400,7 @@ def animate_predict_open_loop(model, dataset, Xkp_init, fliespred, scales, tpred
 
     # capture all outputs of predict_open_loop in a tuple
     res = predict_iterative(examples_pred, fliespred, scales, Xkp_fill, burnin, model, dataset, maxcontextl=dataset.contextl+1,
-                            debug=debug, need_weights=plotattnweights, nsamples=nsamplesfuture, 
+                            debugcheat=debug, need_weights=plotattnweights, nsamples=nsamplesfuture, 
                             labels_true=labels_true,**predict_iterative_params)
     if plotattnweights:
         examples_pred,attn_weights0 = res

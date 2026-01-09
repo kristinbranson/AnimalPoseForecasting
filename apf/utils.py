@@ -725,3 +725,66 @@ def tile_prefix(x,prefixnreps):
     nreps = prefixnreps + (1,)* (x.ndim - len(prefixnreps))
     x = np.tile(x,nreps)
     return x
+
+def get_model_device(model: torch.nn.Module) -> torch.device:
+    """ Returns the device of the model parameters.
+
+    Args:
+        model: a torch model
+
+    Returns:
+        device: device of the model parameters
+    """
+    return next(model.parameters()).device
+
+def ndarray_to_tensor(xnp: dict | list | tuple | np.ndarray | None) -> dict:
+    """ Converts all numpy arrays in the input to torch tensors.
+
+    Args:
+        xnp: input with numpy arrays. Can be a dict, list, tuple, numpy array, or None.
+        Will call itself recursively on dicts, lists, and tuples.
+        
+    Returns:
+        xtorch: output dict with torch tensors
+    """
+    xtorch = {}
+    for k, v in xnp.items():
+        if isinstance(v, torch.Tensor):
+            xtorch[k] = v
+        elif v is None:
+            xtorch[k] = None
+        if isinstance(v, np.ndarray):
+            xtorch[k] = torch.tensor(v)
+        elif isinstance(v, dict):
+            xtorch[k] = ndarray_to_tensor(v)
+        elif isinstance(v, list) or isinstance(v, tuple):
+            xtorch[k] = [ndarray_to_tensor(item) for item in v]
+        else:
+            xtorch[k] = v
+    return xtorch
+
+def tensor_to_ndarray(xtorch: dict | list | tuple | torch.Tensor | None) -> dict:
+    """ Converts all torch tensors in the input to numpy arrays.
+
+    Args:
+        xtorch: input with torch tensors. Can be a dict, list, tuple, torch tensor, or None.
+        Will call itself recursively on dicts, lists, and tuples.
+        
+    Returns:
+        xnp: output dict with numpy arrays
+    """
+    xnp = {}
+    for k, v in xtorch.items():
+        if isinstance(v, np.ndarray):
+            xnp[k] = v
+        elif v is None:
+            xnp[k] = None
+        if isinstance(v, torch.Tensor):
+            xnp[k] = v.cpu().numpy()
+        elif isinstance(v, dict):
+            xnp[k] = tensor_to_ndarray(v)
+        elif isinstance(v, list) or isinstance(v, tuple):
+            xnp[k] = [tensor_to_ndarray(item) for item in v]
+        else:
+            xnp[k] = v
+    return xnp

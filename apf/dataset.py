@@ -308,7 +308,7 @@ class Data(NamedTuple):
                 - array is subindexed by idx
                 - invertdata is subindexed by idx using each operation's invertdata_subindex method
         """
-        if ~isinstance(idx,tuple):
+        if not isinstance(idx,tuple):
             idx = (idx,)
         array_sub = self.array
         if len(idx) > 0:
@@ -345,8 +345,26 @@ class Data(NamedTuple):
         array = tile_prefix(self.array,prefix_tile)
         fcn = lambda op,invertdata: op.invertdata_tile(invertdata,prefix_tile)
         invertdata = self.invertdata_applyfcn(fcn)
-        return Data.copy_with(self, array=array, invertdata=invertdata)        
-        
+        return Data.copy_with(self, array=array, invertdata=invertdata)
+    
+    def set_last_frame(self, x: np.ndarray | torch.Tensor, t: int = -1, timedim=1) -> 'Data':
+        """ Sets the last frame of the data array to the given value
+        Note that invertdata is not updated, so care must be taken to ensure consistency
+        Args:
+            x: New data to set at the given time indices. Must have shape (n_agents, n_frames_set, n_features)
+            ts: Time indices to set. Can be an int, list of ints, or np.ndarray of ints.
+            timedim: Which dimension of the data array corresponds to time (default 1)
+        Returns:
+            Data object with data array at time indices ts set to x.
+        """
+        array_new = self.array.copy()
+        nd = array_new.ndim
+        if timedim < 0:
+            timedim = nd + timedim
+        idx = [slice(None),]*nd
+        idx[timedim] = t
+        array_new[tuple(idx)] = x
+        return Data.copy_with(self, array=array_new)
     
 @dataclass
 class Identity(Operation):
@@ -1357,8 +1375,8 @@ class Velocity(Operation):
             x0 = invertdata
             # if has a value for every frame, just take the first frame
             if x0.ndim == velocity.ndim:
-                x0 = x0[0]                
-                kwargs_per_op = [{'x0': x0[..., self.global_inds]}, {'x0': x0[..., self.local_inds]}]
+                x0 = x0[...,0,:]
+            kwargs_per_op = [{'x0': x0[..., self.global_inds]}, {'x0': x0[..., self.local_inds]}]
         return self.fusion.invert(velocity, kwargs_per_op)
     
     def __str__(self):
@@ -2281,6 +2299,21 @@ class Dataset(torch.utils.data.Dataset):
 
         return item
     
+    def get_operations(self) -> tuple[dict, dict]:
+        """
+        get_operations()
+        Returns a dictionary of operations of the dataset. 
+        """
+        operations = {'inputs': {}, 'labels': {}}
+        invertdata = {'inputs': {}, 'labels': {}}
+        for key, data in self.inputs.items():
+            operations['inputs'][key] = data.operations
+            invertdata['inputs'][key] = data.invertdata
+        for key, data in self.labels.items():
+            operations['labels'][key] = data.operations
+            invertdata['labels'][key] = data.invertdata
+        return operations, invertdata
+    
     def _subindex_to_full(self,x,subindex,nfeatdim=1):
         """
         _subindex_to_full(x,subindex)
@@ -2414,7 +2447,7 @@ def get_chunk(datadict: dict,
         for key in ['inputs','labels']:
             chunk['metadata'][key] = {}
             for k,data in datadict[key].items():
-                chunk['metadata'][key][k] = data.get_invertdata_subindex(*subindex) if do_subindex else data.invertdata
+                chunk['metadata'][key][k] = data[*subindex].invertdata if do_subindex else data.invertdata
 
     return chunk
 

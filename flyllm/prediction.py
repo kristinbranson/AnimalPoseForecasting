@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 import tqdm
-from apf.utils import set_batch_concat, allocate_batch_concat, clip_batch_concat
+from apf.utils import set_batch_concat, allocate_batch_concat, clip_batch_concat, get_model_device, ndarray_to_tensor, tensor_to_ndarray
 from apf.models import ( 
     get_output_and_attention_weights,
     pred_apply_fun,
@@ -14,6 +14,29 @@ from contextlib import nullcontext
 import datetime
 import copy
 from flyllm.features import regularize_pose
+
+def predict(example,model,config,mask=None,device=None,is_causal=True,debugcheat=False):
+    
+    if device is None:
+        device = get_model_device(model)
+    if mask is None and is_causal:
+        contextl = example['input'].shape[1]
+        mask = get_causal_mask(device=device, contextl=contextl)        
+    
+    if debugcheat:
+        pred = {'continuous': example['labels'].clone(), 'discrete': example['labels_discrete'].clone(), 
+                'todiscretize': example['labels_todiscretize'].clone()}
+    else:
+        with torch.no_grad():
+            if example['input'].device != device:
+                example['input'] = example['input'].to(device=device)
+            pred = model.output(example['input'], mask=mask, is_causal=is_causal)
+            if config['modelstatetype'] == 'prob':
+                pred = model.maxpred(pred)
+            elif config['modelstatetype'] == 'best':
+                pred = model.randpred(pred)
+    return pred
+    
 
 def predict_all(dataset=None, model=None, config=None, keepall=True, earlystop=None, debugcheat=False,
                 savepredfile=None,saveinterval=600,nkeep=None,batchsize=None,shuffle=False,stride=None):
@@ -110,18 +133,8 @@ def predict_all(dataset=None, model=None, config=None, keepall=True, earlystop=N
         for i,example in tqdm.tqdm(enumerate(dataloader),total=n):
             if earlystop is not None and i >= earlystop:
                 break
-            if debugcheat:
-                pred = {'continuous': example['labels'].clone(), 'discrete': example['labels_discrete'].clone(), 
-                        'todiscretize': example['labels_todiscretize'].clone()}
-            else:
-                with torch.no_grad():
-                    if example['input'].device != device:
-                        example['input'] = example['input'].to(device=device)
-                    pred = model.output(example['input'], mask=mask, is_causal=is_causal)
-                    if config['modelstatetype'] == 'prob':
-                        pred = model.maxpred(pred)
-                    elif config['modelstatetype'] == 'best':
-                        pred = model.randpred(pred)
+            
+            pred = predict(example,model,config,mask=mask,device=device,is_causal=is_causal,debugcheat=debugcheat)
             frame = example['metadata']['start_frame'][:, None] + np.arange(contextl)[None,:]
             if not keepall:
                 # only keep the last nkeep predictions
@@ -335,49 +348,6 @@ def predict_all(dataset=None, model=None, config=None, keepall=True, earlystop=N
 
 #     return all_pred, labelidx  # ,all_mask,all_pred_discrete,all_labels_discrete
 
-
-# def pad_datadict(datadict: dict, 
-#                  tpadbefore: int = 0, tpadafter: int = 0, 
-#                  padval: float = np.nan, 
-#                  timedim: int = -2,
-#                  inplace: bool = False):
-#     """ Extends all Data objects in a datadict by textend frames.
-
-#     Args:
-#         datadict: Dictionary of Data objects to extend. Should have keys 'inputs' and 'labels', each containing a dict of Data objects.
-#             Time dimension is the timedim dimension of the arrays in the Data objects.
-#         tpadbefore: Number of frames to pad before the data. Default: 0
-#         tpadafter: Number of frames to pad after the data. Default: 0
-#         padval: Value to use for padding. Default: np.nan
-#         timedim: Dimension corresponding to time in the arrays. Default: -2
-#         inplace: Whether to modify the datadict in place or return a new one. Default: False
-#     """
-#     if not inplace:
-#         datadict = copy.deepcopy(datadict)
-
-#     for key1 in ['inputs','labels']:
-#         for key2 in datadict[key1].keys():
-#             if timedim < 0:
-#                 timedim_curr = datadict[key1][key2].array.ndim + timedim
-#             else:
-#                 timedim_curr = timedim
-#             padby = {timedim_curr: (tpadbefore, tpadafter)}
-#             datadict[key1][key2].array = np.pad(datadict[key1][key2].array,padby,mode='constant',constant_values=padval)
-
-#     if 'useoutputmask' in datadict:
-#         # timedim always -1
-#         timedim_curr = datadict['useoutputmask'].ndim - 1
-#         padby = {timedim_curr: (tpadbefore, tpadafter)}
-#         datadict['useoutputmask'] = np.pad(datadict['useoutputmask'],True,mode='constant',constant_values=False)
-            
-#     if tpadbefore > 0:
-#         datadict['metadata']['start_frame'] -= tpadbefore
-#     if tpadbefore > 0 or tpadafter > 0:
-#         datadict['metadata']['duration'] += tpadbefore + tpadafter
-
-#     return datadict
-        
-
 def pretile_datadict(datadict: dict, reps: int):
     """ Replicates all Data objects in a datadict by given number of times along a new first dimension.
 
@@ -396,7 +366,31 @@ def pretile_datadict(datadict: dict, reps: int):
 
     return datadict
 
-def predict_iterative(data_examples, Xkp_fill, burnin, tpred, model, dataset, maxcontextl=np.inf, debug=False,
+def copy_pred_to_example(example, pred, ts=None):
+    """ Copy predictions to an example's labels at specified timepoints. Modifies example in place.
+
+    Args:
+        example: Example dict containing 'labels' and 'labels_discrete' ndarrays/tensors
+        pred: Prediction dict containing 'continuous' and 'discrete' ndarrays/tensors
+        ts: Timepoints to copy predictions to. 
+
+    """
+    if isinstance(ts, int):
+        ts = [ts,]
+    if 'continuous' in pred:
+        if ts is None:
+            example['labels'][...] = pred['continuous']
+        else:
+            example['labels'][...,ts,:] = pred['continuous']
+    if 'discrete' in pred:
+        if ts is None:
+            example['labels_discrete'][...] = pred['discrete']
+        else:
+            newshape = list(example['labels_discrete'].shape)
+            newshape[-2] = len(ts)
+            example['labels_discrete'][...,ts,:] = pred['discrete'].reshape(newshape)
+        
+def predict_iterative(data_examples, Xkp_fill, burnin, tpred, model, dataset, config, maxcontextl=np.inf, debugcheat=False,
                       need_weights=False, nsamples=0, labels_true=None, posestats=None, dampenconstant=0, prctilelim=None):
 
     """
@@ -440,6 +434,12 @@ def predict_iterative(data_examples, Xkp_fill, burnin, tpred, model, dataset, ma
     if need_weights:
         attn_weights = [None, ] * tpred # this probably doesn't work if nfliespred > 1
 
+    with torch.no_grad():
+        w = next(iter(model.parameters()))
+        device = w.device
+
+    is_causal = True
+
     masktype = None
 
     # start predicting motion from frame burnin-1 to burnin = t
@@ -467,125 +467,43 @@ def predict_iterative(data_examples, Xkp_fill, burnin, tpred, model, dataset, ma
                 agent_id = None,
                 label_bin_indices = label_bin_indices                
             )
-            data_example = data_examples[i].copy_subindex(ts=np.arange(t0, t+1),needinit=False)
-            # inputs will go from t0 through t
-            # labels (unused) will go from t0+example_pred.starttoff through t+example_pred.starttoff
-            test_example = data_example.get_train_example()
-            xcurr = test_example['input']
-            assert not torch.any(torch.isnan(xcurr))
-            xcurr, _, _ = dataset.mask_input(xcurr, masktype)
-            if nsamples == 0:
-                xcurr = xcurr[None, ...]
+            example = ndarray_to_tensor(example)
+            
 
-            if debug:
+            if debugcheat:
+                # TODO
+                raise NotImplementedError("Debugcheat not implemented yet")
                 label_pred = labels_true[i].copy_subindex(ts=np.arange(t0, t+1))
                 pred = label_pred.get_train_labels()
                 pred = {k: v.reshape((1,) + v.shape) if type(v) is torch.Tensor else v for k, v in pred.items()}
                 #zmovementout = np.tile(self.zscore_labels(movement_true[t - 1, :, i]).astype(dtype)[None],
                 #                       (nsamples1, 1))
             else:
-
-                if dataset.flatten:
-                    raise NotImplementedError("Flattening not yet implemented")
-                    # not implemented yet
-                    # to do: not sure if multiple samples here works
-
-                    zmovementout = np.zeros((nsamples1, dataset.d_output), dtype=dtype)
-                    zmovementout_flattened = np.zeros((dataset.noutput_tokens_per_timepoint, dataset.flatten_max_doutput),
-                                                        dtype=dtype)
-
-                    for token in range(dataset.noutput_tokens_per_timepoint):
-
-                        lastidx = xcurr.shape[0] - dataset.noutput_tokens_per_timepoint
-                        masksize = lastidx + token
-                        net_mask, is_causal = dataset.get_predict_mask(masksize=masksize, device=device)
-
-                        with torch.no_grad():
-                            predtoken = model(xcurr[None, :lastidx + token, ...].to(device), mask=net_mask,
-                                                is_causal=is_causal)
-                        # to-do: integrate with labels object
-                        if token < len(dataset.discreteidx):
-                            # sample
-                            sampleprob = torch.softmax(predtoken[0, -1, :dataset.discretize_nbins], dim=-1)
-                            binnum = int(weighted_sample(sampleprob, nsamples=nsamples1))
-
-                            # store in input
-                            xcurr[lastidx + token, binnum[0]] = 1.
-                            zmovementout_flattened[token, binnum[0]] = 1.
-
-                            # convert to continuous
-                            nsamples_per_bin = dataset.discretize_bin_samples.shape[0]
-                            sample = int(torch.randint(low=0, high=nsamples_per_bin, size=(nsamples,)))
-                            zmovementcurr = dataset.discretize_bin_samples[sample, token, binnum]
-
-                            # store in output
-                            zmovementout[:, dataset.discreteidx[token]] = zmovementcurr
-                        else:  # else token < len(self.discreteidx)
-                            # continuous
-                            zmovementout[:, dataset.continuous_idx] = predtoken[0, -1, :len(dataset.continuous_idx)].cpu()
-                            zmovementout_flattened[token, :len(dataset.continuous_idx)] = zmovementout[
-                                dataset.continuous_idx, 0]
-
-                else:  # else flatten
-
-                    masksize = t - t0
-                    if masksize != masksizeprev:
-                        net_mask, is_causal = dataset.get_predict_mask(masksize=masksize, device=device)
-                        masksizeprev = masksize
-
-                    if need_weights:
-                        with torch.no_grad():
-                            pred, attn_weights_curr = get_output_and_attention_weights(model,
-                                                                                        xcurr.to(device),
-                                                                                        net_mask)
-                        # dimensions correspond to layer, output frame, input frame
-                        attn_weights_curr = torch.cat(attn_weights_curr, dim=0).cpu().numpy()
-                        if i == 0:
-                            attn_weights[t] = np.tile(attn_weights_curr[..., None], (1, 1, 1, nagentspred))
-                            attn_weights[t][..., 1:] = np.nan
-                        else:
-                            attn_weights[t][..., i] = attn_weights_curr
-                    else:
-                        with torch.no_grad():
-                            # predict for all frames
-                            # masked: movement from 0->1, ..., t->t+1
-                            # causal: movement from 1->2, ..., t->t+1
-                            # last prediction: t->t+1
-                            pred = model.output(xcurr.to(device), mask=net_mask, is_causal=is_causal)
-                    # to-do: this is not incorportated into sampling, probably should be
-                    if model.model_type == 'TransformerBestState' or model.model_type == 'TransformerState':
-                        pred = model.randpred(pred)
-                    # z-scored movement from t to t+1
-
-                # end else flatten
-            # end else debug
+                pred = predict(example,model,config,device=device,is_causal=is_causal)
             
             if nsamples == 0:
-                pred = pred_apply_fun(pred, lambda x: x[0, [-1,], ...].cpu().numpy() if type(x) is torch.Tensor else x)
+                pred = pred_apply_fun(pred, lambda x: x[0, [-1,], ...].cpu() if type(x) is torch.Tensor else x)
             else:
-                pred = pred_apply_fun(pred, lambda x: x[:, [-1,], ...].cpu().numpy() if type(x) is torch.Tensor else x)
+                pred = pred_apply_fun(pred, lambda x: x[:, [-1,], ...].cpu() if type(x) is torch.Tensor else x)
                 
-            # set the label for frame t, but not the inputs yet
-            data_examples[i].labels.set_prediction(pred,ts=t)
+            # set the label for frame t
+            copy_pred_to_example(example, pred, t)
+            example = tensor_to_ndarray(example)
 
             if (posestats is not None) and ((dampenconstant > 0) or (prctilelim is not None)):
+                raise NotImplementedError("Regularization not implemented yet")
                 pose = data_examples[i].labels.get_next_pose(ts=[t,],init_pose=pose_prev[i], use_todiscretize=True)
                 # pose for frames [t-1,t]
                 pose[...,-1,:] = regularize_pose(pose[...,-1,:],posestats,dampenconstant,prctilelim=prctilelim)
                 data_examples[i].labels.set_next_pose(pose,ts=[t,])
 
-            # get pose/keypoints for predicted frame
-            Xkpcurr = data_examples[i].labels.get_next_keypoints(ts=[t,],init_pose=pose_prev[i])
-
+            # get keypoints for frame t
+            datadict_example = dataset.item_to_data(example)
+            # possibly a more efficient way to do this, since we only need the last frame
+            Xkpcurr = apf.dataset.invert_to_named(datadict_example['labels']['velocity'],'original')
 
             # store keypoints predicted for this frame            
-            Xkp_fill[...,:,:,t+1,agent] = Xkpcurr[...,-1,:,:]
-
-
-            #globapos_curr = examples_pred[i].labels.get_next_pose_global(ts=[t,],globalpos0=globalpos_prev[i])
-            pose_curr = data_examples[i].labels.get_next_pose(ts=[t,],init_pose=pose_prev[i])
-            pose_prev[i] = pose_curr[...,-1,:]
-            #globalpos_prev[i] = globapos_curr
+            Xkp_fill[...,agent,t+1,:,:] = Xkpcurr[...,-1,:,:]
                 
         # end loop over flies
         
@@ -611,7 +529,7 @@ def clear_predictions(example: dict, burnin: int):
         exampleout[key][...,burnin:,:] = np.nan
     return exampleout
 
-def predict_iterative_all(dataset, model, track, tpred, N=None, keepall=True, debugcheat=False, nsamples=0, labelidx=None, stride=None, **kwargs):
+def predict_iterative_all(dataset, model, config, track, tpred, N=None, keepall=True, debugcheat=False, nsamples=0, labelidx=None, stride=None, **kwargs):
 
     # total number of frames we will crop out for each example
     contextl = dataset.context_length
@@ -668,8 +586,8 @@ def predict_iterative_all(dataset, model, track, tpred, N=None, keepall=True, de
             if nsamples > 0:
                 Xkp_fill = np.tile(Xkp_fill[None],[nsamples,]+[1,]*(Xkp_fill.ndim))
 
-            exampleobjs_pred = predict_iterative([data_example,], Xkp_fill, burnin, tpred, model, dataset, maxcontextl=contextl,
-                                                debug=False, need_weights=False, nsamples=nsamples, **kwargs)
+            exampleobjs_pred = predict_iterative([data_example,], Xkp_fill, burnin, tpred, model, dataset, config, maxcontextl=contextl,
+                                                debugcheat=False, need_weights=False, nsamples=nsamples, **kwargs)
 
             exampleobj_pred = exampleobjs_pred[0]
         all_pred.append(exampleobj_pred)
