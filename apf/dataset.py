@@ -1177,8 +1177,9 @@ class LocalVelocity(Operation):
         # single x0 for all frames
         if (x0 is not None) or (pose is None):
             if x0 is None:
-                n_agents, _, n_features = velocity.shape
-                x0 = np.zeros((n_agents, n_features))
+                raise ValueError("x0 or pose must be provided to invert LocalVelocity")
+                # n_agents, _, n_features = velocity.shape
+                # x0 = np.zeros((n_agents, n_features))
             velocity = np.concatenate([x0[:, None, :], velocity], axis=1)[:, :-1, :]
             pose = np.cumsum(velocity, axis=1)
         else:
@@ -1298,8 +1299,9 @@ class GlobalVelocity(Operation):
         
         if (x0 is not None) or (pose is None):
             if x0 is None:
-                n_agents, _, n_dim = velocity.shape
-                x0 = np.zeros((n_agents, n_dim))
+                raise ValueError("x0 or pose must be provided to invert GlobalVelocity")
+                # n_agents, _, n_dim = velocity.shape
+                # x0 = np.zeros((n_agents, n_dim))
 
             d_theta = np.concatenate([x0[:, None, 2], velocity[:, :, 2]], axis=1)
             theta = np.cumsum(d_theta, axis=1)[:, :-1]

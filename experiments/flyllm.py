@@ -128,6 +128,8 @@ class Pose(Operation):
         Returns:
             Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array
         """
+        if flyid is None:
+            raise ValueError("flyid must be provided to invert Pose operation")
         return feat2kp(pose.T, scale_perfly=self.scale_perfly, flyid=flyid.T).T
     
     def __str__(self):
