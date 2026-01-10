@@ -1897,11 +1897,6 @@ class Dataset(torch.utils.data.Dataset):
         labels: A dictionary of data labels. Same format as inputs.
         isstart: Indicates whether a frame is the start of a sequence for an agent, (n_agents, n_frames) bool array
         context_length: Number of frames in a data chunk provided by __getitem__
-        invertdata: Data about the dataset that is needed for applying/inverting operations beyond what can
-            be captured by the operations. These are extra arguments to the operations' apply and invert function, and there
-            should be a value for each agent and frame. This is a dict with keys 'inputs' and 'labels', each containing a dict
-            mapping invertdata keys to (n_frames, n_agents) arrays. If any key is missing, invertdata for that key is assumed to
-            be empty. Default: None
         useoutputmask: (n_frames, n_agents) bool array indicating which frames/agents to use for output loss computation.
             If None, all frames/agents with valid data are used. Default: None
         stride: Interval between the start frames of consecutive chunks.
@@ -1916,7 +1911,6 @@ class Dataset(torch.utils.data.Dataset):
             labels: dict[str, Data],
             isstart: np.ndarray,
             context_length: int,
-            invertdata: dict | None = None,
             useoutputmask: np.ndarray | None = None,
             stride: int | None = None,
             start_offset: int = 0,
@@ -1925,7 +1919,6 @@ class Dataset(torch.utils.data.Dataset):
         self.labels = labels
         self.isstart = isstart
         self.context_length = context_length
-        self.invertdata = invertdata
         self.useoutputmask = useoutputmask
         if stride is None:
             stride = context_length
@@ -2042,11 +2035,8 @@ class Dataset(torch.utils.data.Dataset):
         """
         chunk = get_chunk({'labels': self.labels, 'inputs': self.inputs}, start_frame, duration, agent_id, 
                           label_bin_indices = self.label_bin_indices, 
-                          useoutputmask = self.useoutputmask, return_invertdata = self.invertdata is None)
+                          useoutputmask = self.useoutputmask)
         
-        if self.invertdata is not None:
-            chunk['metadata'].update(get_array_chunk(self.invertdata,start_frame,agent_id,duration))
-
         return chunk
 
     def set_context_length(self, context_length: int):
@@ -2313,6 +2303,41 @@ class Dataset(torch.utils.data.Dataset):
             operations['labels'][key] = data.operations
             invertdata['labels'][key] = data.invertdata
         return operations, invertdata
+    
+    def rawdata_to_datadict(self, inputs: dict, labels: dict) -> dict:
+        """
+        rawdata_to_datadict(inputs, labels)
+        Converts raw data to a datadict with Data objects for inputs and labels by applying 
+        all operations to raw data.
+        Args:
+            inputs (dict): Dictionary of raw input data arrays. Keys should correspond to self.inputs keys.
+                inputs[key] should be an ndarray or Tensor containing the data before the 
+                operations in self.inputs[key].operations are applied.
+            labels (dict): Dictionary of raw label data arrays. Keys should correspond to self.labels keys.
+                labels[key] should be an ndarray or Tensor containing the data before the 
+                operations in self.labels[key].operations are applied.
+        Returns:
+            datadict (dict): Dictionary containing Data objects for 'inputs' and 'labels'.    
+        """
+        datadict = {}
+        datadict['inputs'] = {}
+        for key, rawx in inputs.items():
+            assert key in self.inputs, f"Input key '{key}' not found in dataset inputs"
+            name = self.inputs[key].name.split('_')[0]
+            rawdata = Data(name=name,array=rawx)
+            datadict['inputs'][key] = apply_operations(rawdata, self.inputs[key].operations)
+        datadict['labels'] = {}
+        for key, rawx in labels.items():
+            assert key in self.labels, f"Label key '{key}' not found in dataset labels"
+            name = self.labels[key].name.split('_')[0]
+            rawdata = Data(name=name,array=rawx)
+            datadict['labels'][key] = apply_operations(rawdata, self.labels[key].operations)
+        return datadict
+    
+    def rawdata_to_item(self, inputs: dict, labels: dict, start_frame=None, agent_id=None, duration=None) -> dict:
+        datadict = self.rawdata_to_datadict(inputs, labels)
+        item = self.data_to_item(datadict, start_frame=start_frame, agent_id=agent_id, duration=duration)
+        return item
     
     def _subindex_to_full(self,x,subindex,nfeatdim=1):
         """

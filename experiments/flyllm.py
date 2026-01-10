@@ -271,16 +271,11 @@ def make_dataset(
     else:
         auxiliary = None
 
-    invertdata = {'labels': { 'velocity': {'pose': flyids.T, 'velocity': pose.array} },
-                'inputs': { 'pose': {'pose': flyids.T},
-                            'velocity': {'pose': flyids.T} }}
-
     LOG.info('Assembling dataset...')
 
     args = {
         'context_length': config['contextl'],
         'isstart': isstart,
-        'invertdata': invertdata,
         'useoutputmask': useoutputmask
     }
 

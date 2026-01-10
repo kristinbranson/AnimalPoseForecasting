@@ -390,8 +390,8 @@ def copy_pred_to_example(example, pred, ts=None):
             newshape[-2] = len(ts)
             example['labels_discrete'][...,ts,:] = pred['discrete'].reshape(newshape)
         
-def predict_iterative(data_examples, Xkp_fill, burnin, tpred, model, dataset, config, maxcontextl=np.inf, debugcheat=False,
-                      need_weights=False, nsamples=0, labels_true=None, posestats=None, dampenconstant=0, prctilelim=None):
+def predict_iterative(Xkp_fill, burnin, agentspred, model, dataset, config, maxcontextl=np.inf, debugcheat=False,
+                      nsamples=1,labels_true=None, posestats=None, dampenconstant=0, prctilelim=None):
 
     """
     predict_iterative(examples_pred,fliespred,scales,Xkp_fill,burnin,model,dataset,
@@ -426,13 +426,12 @@ def predict_iterative(data_examples, Xkp_fill, burnin, tpred, model, dataset, co
         dtype = w.cpu().numpy().dtype
         device = w.device
 
-    if nsamples > 0:
-        data_examples = [pretile_datadict(data_example, reps=nsamples) for data_example in data_examples]
+    Xkp_fill = np.tile(Xkp_fill[None], (nsamples,1,1,1,1))  # nsamples x nkpts x 2 x tpred x nflies
+    nagentstotal = Xkp_fill.shape[1]
+    ttotal = Xkp_fill.shape[2]
+    tpred = ttotal - burnin
 
-    nagentspred = len(data_examples)
-    agentspred = [data_example['metadata']['agent_id'] for data_example in data_examples]
-    if need_weights:
-        attn_weights = [None, ] * tpred # this probably doesn't work if nfliespred > 1
+    nagentspred = len(agentspred)
 
     with torch.no_grad():
         w = next(iter(model.parameters()))
@@ -460,6 +459,11 @@ def predict_iterative(data_examples, Xkp_fill, burnin, tpred, model, dataset, co
 
         for i,agent in enumerate(agentspred):
             # copy frames up to t
+            
+            Xkpcurr = Xkp_fill[...,agent,t0:t+1,:,:]  # nsamples x duration x nkpts x 2
+            
+            
+            
             example = apf.dataset.get_chunk(
                 data_examples[i],
                 start_frame = t0,
@@ -556,40 +560,20 @@ def predict_iterative_all(dataset, model, config, track, tpred, N=None, keepall=
             
     for i,examplei in tqdm.tqdm(enumerate(labelidx),total=N):
 
-        example = dataset[examplei]
-        example = clear_predictions(example, burnin)
-        data_example = dataset.item_to_data(example)
+        t0, agentnum = dataset.chunk_indices[examplei]
 
-        if debugcheat:
-            
-            # copy into data_example
-            pred = dataset.get_chunk(example['metadata']['start_frame']+contextl-1,tpred,example['metadata']['agent_id'])
-            data_pred = dataset.item_to_data(pred)
-            key1 = 'inputs'
-            for key2 in data_pred[key1].keys():
-                data_example[key1][key2].array[burnin+1:,:] = data_pred[key1][key2].array[1:,:]
-            key1 = 'labels'
-            for key2 in data_pred[key1].keys():
-                data_example[key1][key2].array[burnin:,:] = data_pred[key1][key2].array
+        # get positions of all agents
+        Xkp_true = track.array[:,t0:t0+contextl+tpred+1].copy() # added 1 because predicting velocity
 
-        else:
+        # erase the fly we are predicting
+        Xkp_fill = Xkp_true.copy()
+        Xkp_fill[agentnum,burnin+1:] = np.nan
+        if nsamples > 0:
+            Xkp_fill = np.tile(Xkp_fill[None],[nsamples,]+[1,]*(Xkp_fill.ndim))
 
-            agentnum = example['metadata']['agent_id']
-            t0 = example['metadata']['start_frame']
+        Xkp_fill = predict_iterative(Xkp_fill, burnin, [agentnum,], model, dataset, config, maxcontextl=contextl,
+                                    debugcheat=False, need_weights=False, nsamples=nsamples, **kwargs)
 
-            # get positions of all agents
-            Xkp_true = track.array[:,t0:t0+contextl+tpred+1].copy() # added 1 because predicting velocity
-
-            # erase the fly we are predicting
-            Xkp_fill = Xkp_true.copy()
-            Xkp_fill[agentnum,burnin+1:] = np.nan
-            if nsamples > 0:
-                Xkp_fill = np.tile(Xkp_fill[None],[nsamples,]+[1,]*(Xkp_fill.ndim))
-
-            exampleobjs_pred = predict_iterative([data_example,], Xkp_fill, burnin, tpred, model, dataset, config, maxcontextl=contextl,
-                                                debugcheat=False, need_weights=False, nsamples=nsamples, **kwargs)
-
-            exampleobj_pred = exampleobjs_pred[0]
         all_pred.append(exampleobj_pred)
         
     dataset.set_context_length(contextl)
