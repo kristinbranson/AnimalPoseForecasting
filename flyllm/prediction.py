@@ -572,7 +572,7 @@ def predict_iterative_all(dataset, model, config, track, tpred, N=None, keepall=
             Xkp_fill = np.tile(Xkp_fill[None],[nsamples,]+[1,]*(Xkp_fill.ndim))
 
         Xkp_fill = predict_iterative(Xkp_fill, burnin, [agentnum,], model, dataset, config, maxcontextl=contextl,
-                                    debugcheat=False, need_weights=False, nsamples=nsamples, **kwargs)
+                                    debugcheat=False, nsamples=nsamples, **kwargs)
 
         all_pred.append(exampleobj_pred)
         

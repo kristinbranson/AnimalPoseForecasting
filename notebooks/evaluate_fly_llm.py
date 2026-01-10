@@ -20,7 +20,7 @@
 
 # %%
 # %load_ext autoreload
-# %autoreload 2
+# %autoreload 3
 import linecache
 linecache.clearcache()
 
@@ -57,8 +57,8 @@ import logging
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
 
-utils.set_mpl_backend('tkAgg')
-ISNOTEBOOK = utils.is_notebook()
+apf.utils.set_mpl_backend('tkAgg')
+ISNOTEBOOK = apf.utils.is_notebook()
 if ISNOTEBOOK:
     from IPython.display import HTML, display, clear_output
 else:
@@ -95,7 +95,7 @@ except NameError:
 # %%
 # configuration parameters for this model
 
-rootdir = Path(utils.get_code_root())
+rootdir = Path(apf.utils.get_code_root())
 
 loadmodelfile = rootdir / 'notebooks/flyllm_models/flypredvel_20251007_20251114T194024_bestepoch200.pth'
 configfile = rootdir / 'flyllm/configs/config_fly_llm_predvel_optimalbinning_20251113.json'
@@ -209,7 +209,7 @@ model.zero_grad()
 torch.cuda.empty_cache()
 gc.collect()
 
-utils.torch_mem_report(model)
+apf.utils.torch_mem_report(model)
 
 model = model.to(device=device)
 
@@ -331,36 +331,69 @@ def check_inversion(datao,datar,isdata=None):
         if featname != name_r:
             print(f'Feature name mismatch at index {i}: original "{featname}", reconstructed "{name_r}"')
 
+print('val_data:')
 print(val_data.keys())
 print('track: ' + str(val_data['track'].feature_names))
 print('pose: ' + str(val_data['pose'].feature_names))
 print('velocity: ' + str(val_data['velocity'].feature_names))
 print('sensory: ' + str(val_data['sensory'].feature_names))
+print('labels_velocity: ' + str(val_dataset.labels['velocity'].feature_names))
+
+print('---------- check inversion ----------')
 
 track1 = invert_to_named(val_data['pose'],'original',return_data=True)
-print('Checking inversion from pose to track:')
+print('\nChecking inversion from pose to track:')
 check_inversion(val_data['track'],track1,val_data['isdata'].T)
     
 pose1 = invert_to_named(val_data['velocity'],'pose',return_data=True)
-print('Checking inversion from velocity to pose:')
+print('\nChecking inversion from velocity to pose:')
 check_inversion(val_data['pose'],pose1)
+
+velocity1 = invert_to_named(val_dataset.labels['velocity'],'velocity',return_data=True, fusion={'discretize': {'use_to_discretize': True, 'do_sampling': False}})
+print('\nChecking inversion from labels velocity to velocity using to_discretize:')
+check_inversion(val_data['velocity'],velocity1)
+
+velocity2 = invert_to_named(val_dataset.labels['velocity'],'velocity',return_data=True, fusion={'discretize': {'use_to_discretize': False, 'do_sampling': True}})
+print('\nChecking inversion from labels velocity to velocity using sampling:')
+check_inversion(val_data['velocity'],velocity2)
+
+velocity3 = invert_to_named(val_dataset.labels['velocity'],'velocity',return_data=True, fusion={'discretize': {'do_sampling': False, 'use_to_discretize': False}})
+print('\nChecking inversion from labels velocity to velocity using bin centers:')
+check_inversion(val_data['velocity'],velocity3)
 
 # subindex invertdata test
 
-idx = (slice(None), slice(1000,2000))
+print('\n---------- check subindex inversion ----------')
+
+#idx = (slice(None), slice(1000,2000))
+idx = ([0,2,3],slice(10000,30000))
+#idx = ([0,2,3],)
 isdata_sub = val_data['isdata'].T[*idx]
-track_sub = val_data['track'].copy_subindex(*idx)
-print('track_sub:')
-print(track_sub)
-pose_sub = val_data['pose'].copy_subindex(*idx)
-print('pose_sub:')
-print(pose_sub)
+track_sub = val_data['track'][*idx]
+pose_sub = val_data['pose'][*idx]
 track_subr = invert_to_named(pose_sub,'original',return_data=True)
-print('Checking inversion from pose_sub to track_sub:')
+print('\nChecking inversion from pose_sub to track_sub:')
 check_inversion(track_sub,track_subr,isdata_sub)
-velocity_sub = val_data['velocity'].copy_subindex(*idx)
-print('velocity_sub:')
-print(velocity_sub)
+velocity_sub = val_data['velocity'][*idx]
+pose_subr = invert_to_named(velocity_sub,'pose',return_data=True)
+print('\nChecking inversion from velocity_sub to pose_sub:')
+check_inversion(pose_sub,pose_subr)
+
+velocity_labels_sub = val_dataset.labels['velocity'][*idx]
+velocity_subr = invert_to_named(velocity_labels_sub,'velocity',return_data=True, fusion={'discretize': {'use_to_discretize': True, 'do_sampling': False}})
+print('\nChecking inversion from labels velocity_sub to velocity_sub with use_to_discretize=True, do_sampling=False:')
+check_inversion(velocity_sub,velocity_subr)
+velocity_subr2 = invert_to_named(velocity_labels_sub,'velocity',return_data=True)
+print('Checking inversion from labels velocity_sub to velocity_sub with use_to_discretize=False, do_sampling=True:')
+check_inversion(velocity_sub,velocity_subr2)
+
+# check creating datadict from keypoints
+
+contextl = val_dataset.context_length
+Xkp = val_data['track'].array[:,:contextl]
+inputs = {k: Xkp for k in val_dataset.inputs.keys()}
+labels = {k: Xkp for k in val_dataset.labels.keys()}
+datadict = val_dataset.rawdata_to_datadict(inputs,labels)
 
 
 # %%
@@ -431,127 +464,125 @@ for toplot in toplots:
     true_example = copy_data_subindex(val_data['velocity'], agentidx=[ididx,], frameidx=tidx)
     
     fig = plot_pred_vs_true(true_example,pred_example,ylim_nstd=ylim_nstd,nsamples=nsamples,plotbinedges=True)
+    fig.suptitle(f'Fly ID {id} Velocity Prediction vs True from t={tsplot[0]} to t={tsplot[-1]}')
 
     # save this figure as a pdf
     if savefig:
         fig.savefig(os.path.join(outfigdir,f'multi_pred_vs_true_{config["model_nickname"]}_fly{id}_{tsplot[0]}_to_{tsplot[-1]}.pdf'))
         plt.close(fig)
-    else:
-        break
+    # else:
+    #     break
 
 # %%
 # NOT DEBUGGED
 
-# choose data to initialive behavior modeling
+# # choose data to initialive behavior modeling
 
-animate_pose_params = {'figsizebase': 8,'ms': 4, 'focus_ms':8, 'lw': .75, 'focus_lw': 2}
+# animate_pose_params = {'figsizebase': 8,'ms': 4, 'focus_ms':8, 'lw': .75, 'focus_lw': 2}
 
-tpred = np.minimum(4000 + config['contextl'], valdata['isdata'].shape[0] // 2)
+# tpred = np.minimum(4000 + config['contextl'], valdata['isdata'].shape[0] // 2)
 
-# all frames must have real data
-burnin = config['contextl'] - 1
-contextlpad = burnin + val_dataset.ntspred_max
-allisdata = interval_all(valdata['isdata'], contextlpad)
-isnotsplit = interval_all(valdata['isstart'] == False, tpred)[1:, ...]
-canstart = np.logical_and(allisdata[:isnotsplit.shape[0], :], isnotsplit)
-flynum = 2  # 2
-t0 = np.nonzero(canstart[:, flynum])[0]
-idxstart = np.minimum(8700, len(t0) - 1)
-if len(t0) > idxstart:
-    t0 = t0[idxstart]
-else:
-    t0 = t0[0]
-fliespred = np.array([flynum, ])
+# # all frames must have real data
+# burnin = config['contextl'] - 1
+# contextlpad = burnin + val_dataset.ntspred_max
+# allisdata = interval_all(valdata['isdata'], contextlpad)
+# isnotsplit = interval_all(valdata['isstart'] == False, tpred)[1:, ...]
+# canstart = np.logical_and(allisdata[:isnotsplit.shape[0], :], isnotsplit)
+# flynum = 2  # 2
+# t0 = np.nonzero(canstart[:, flynum])[0]
+# idxstart = np.minimum(8700, len(t0) - 1)
+# if len(t0) > idxstart:
+#     t0 = t0[idxstart]
+# else:
+#     t0 = t0[0]
+# fliespred = np.array([flynum, ])
 
-nsamplesfuture = 0 # 32
+# nsamplesfuture = 0 # 32
 
-isreal = np.any(np.isnan(valdata['X'][...,t0:t0+tpred,:]),axis=(0,1,2)) == False
-Xkp_init = valdata['X'][...,t0:t0+tpred+val_dataset.ntspred_max,isreal]
-scales_pred = []
-for flypred in fliespred:
-  id = valdata['ids'][t0, flypred]
-  scales_pred.append(val_scale_perfly[:,id])
-metadata = {'t0': t0, 'ids': fliespred, 'videoidx': valdata['videoidx'][t0], 'frame0': valdata['frames'][t0]}
-print(metadata)
+# isreal = np.any(np.isnan(valdata['X'][...,t0:t0+tpred,:]),axis=(0,1,2)) == False
+# Xkp_init = valdata['X'][...,t0:t0+tpred+val_dataset.ntspred_max,isreal]
+# scales_pred = []
+# for flypred in fliespred:
+#   id = valdata['ids'][t0, flypred]
+#   scales_pred.append(val_scale_perfly[:,id])
+# metadata = {'t0': t0, 'ids': fliespred, 'videoidx': valdata['videoidx'][t0], 'frame0': valdata['frames'][t0]}
+# print(metadata)
 
-ani = animate_predict_open_loop(model, val_dataset, Xkp_init, fliespred, scales_pred, tpred, 
-                          debug=False, plotattnweights=False, plotfuture=val_dataset.ntspred_max > 1, 
-                          nsamplesfuture=nsamplesfuture, metadata=metadata,
-                          animate_pose_params=animate_pose_params)
-
-# %%
-# NOT DEBUGGED
-
-# show the animation
-HTML(ani.to_html5_video())
+# ani = animate_predict_open_loop(model, val_dataset, Xkp_init, fliespred, scales_pred, tpred, 
+#                           debug=False, plotattnweights=False, plotfuture=val_dataset.ntspred_max > 1, 
+#                           nsamplesfuture=nsamplesfuture, metadata=metadata,
+#                           animate_pose_params=animate_pose_params)
 
 # %%
 # NOT DEBUGGED
 
-# write the video to file 
-vidtime = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
-flynumstr = '_'.join([str(x) for x in fliespred])
-savevidfile = os.path.join(config['savedir'], f"samplevideo_{modeltype_str}_{savetime}_{vidtime}_t0_{metadata['t0']}_flies{flynumstr}.mp4")
-print('Saving animation to file %s...'%savevidfile)
-save_animation(ani, savevidfile)
-print('Finished writing.')
+# # show the animation
+# HTML(ani.to_html5_video())
 
 # %%
 # NOT DEBUGGED
 
-# simulate all flies
-
-animate_pose_params = {'figsizebase': 8,'ms': 4, 'focus_ms':8, 'lw': .75, 'focus_lw': 2}
-
-# choose data to initialive behavior modeling
-tpred = np.minimum(4000 + config['contextl'], valdata['isdata'].shape[0] // 2)
-
-# all frames must have real data
-burnin = config['contextl'] - 1
-contextlpad = burnin + val_dataset.ntspred_max
-allisdata = interval_all(valdata['isdata'], contextlpad)
-isnotsplit = interval_all(valdata['isstart'] == False, tpred)[1:, ...]
-canstart = np.logical_and(allisdata[:isnotsplit.shape[0], :], isnotsplit)
-flynum = 2  # 2
-t0 = np.nonzero(canstart[:, flynum])[0]
-idxstart = np.minimum(8700, len(t0) - 1)
-
-if len(t0) > idxstart:
-    t0 = t0[idxstart]
-else:
-    t0 = t0[0]
-isreal = np.any(np.isnan(valdata['X'][...,t0:t0+tpred,:]),axis=(0,1,2)) == False
-print(isreal)
-fliespred = np.nonzero(isreal)[0]
-
-nsamplesfuture = 0 # 32
-
-isreal = np.any(np.isnan(valdata['X'][...,t0:t0+tpred,:]),axis=(0,1,2)) == False
-Xkp_init = valdata['X'][...,t0:t0+tpred+val_dataset.ntspred_max,isreal]
-scales_pred = []
-for flypred in fliespred:
-  id = valdata['ids'][t0, flypred]
-  scales_pred.append(val_scale_perfly[:,id])
-metadata = {'t0': t0, 'ids': fliespred, 'videoidx': valdata['videoidx'][t0], 'frame0': valdata['frames'][t0]}
-print(metadata)
-
-ani = animate_predict_open_loop(model, val_dataset, Xkp_init, fliespred, scales_pred, tpred, 
-                          debug=False, plotattnweights=False, plotfuture=val_dataset.ntspred_max > 1, 
-                          nsamplesfuture=nsamplesfuture, metadata=metadata,
-                          animate_pose_params=animate_pose_params)
+# # write the video to file 
+# vidtime = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
+# flynumstr = '_'.join([str(x) for x in fliespred])
+# savevidfile = os.path.join(config['savedir'], f"samplevideo_{modeltype_str}_{savetime}_{vidtime}_t0_{metadata['t0']}_flies{flynumstr}.mp4")
+# print('Saving animation to file %s...'%savevidfile)
+# save_animation(ani, savevidfile)
+# print('Finished writing.')
 
 # %%
 # NOT DEBUGGED
 
-vidtime = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
-flynumstr = 'all'
-savevidfile = os.path.join(config['savedir'], f"samplevideo_{modeltype_str}_{savetime}_{vidtime}_t0_{metadata['t0']}_flies{flynumstr}.mp4")
-print('Saving animation to file %s...'%savevidfile)
-save_animation(ani, savevidfile)
-print('Finished writing.')
+# # simulate all flies
+
+# animate_pose_params = {'figsizebase': 8,'ms': 4, 'focus_ms':8, 'lw': .75, 'focus_lw': 2}
+
+# # choose data to initialive behavior modeling
+# tpred = np.minimum(4000 + config['contextl'], valdata['isdata'].shape[0] // 2)
+
+# # all frames must have real data
+# burnin = config['contextl'] - 1
+# contextlpad = burnin + val_dataset.ntspred_max
+# allisdata = interval_all(valdata['isdata'], contextlpad)
+# isnotsplit = interval_all(valdata['isstart'] == False, tpred)[1:, ...]
+# canstart = np.logical_and(allisdata[:isnotsplit.shape[0], :], isnotsplit)
+# flynum = 2  # 2
+# t0 = np.nonzero(canstart[:, flynum])[0]
+# idxstart = np.minimum(8700, len(t0) - 1)
+
+# if len(t0) > idxstart:
+#     t0 = t0[idxstart]
+# else:
+#     t0 = t0[0]
+# isreal = np.any(np.isnan(valdata['X'][...,t0:t0+tpred,:]),axis=(0,1,2)) == False
+# print(isreal)
+# fliespred = np.nonzero(isreal)[0]
+
+# nsamplesfuture = 0 # 32
+
+# isreal = np.any(np.isnan(valdata['X'][...,t0:t0+tpred,:]),axis=(0,1,2)) == False
+# Xkp_init = valdata['X'][...,t0:t0+tpred+val_dataset.ntspred_max,isreal]
+# scales_pred = []
+# for flypred in fliespred:
+#   id = valdata['ids'][t0, flypred]
+#   scales_pred.append(val_scale_perfly[:,id])
+# metadata = {'t0': t0, 'ids': fliespred, 'videoidx': valdata['videoidx'][t0], 'frame0': valdata['frames'][t0]}
+# print(metadata)
+
+# ani = animate_predict_open_loop(model, val_dataset, Xkp_init, fliespred, scales_pred, tpred, 
+#                           debug=False, plotattnweights=False, plotfuture=val_dataset.ntspred_max > 1, 
+#                           nsamplesfuture=nsamplesfuture, metadata=metadata,
+#                           animate_pose_params=animate_pose_params)
 
 # %%
-val_dataset.chunk_indices[0]
+# NOT DEBUGGED
+
+# vidtime = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
+# flynumstr = 'all'
+# savevidfile = os.path.join(config['savedir'], f"samplevideo_{modeltype_str}_{savetime}_{vidtime}_t0_{metadata['t0']}_flies{flynumstr}.mp4")
+# print('Saving animation to file %s...'%savevidfile)
+# save_animation(ani, savevidfile)
+# print('Finished writing.')
 
 # %%
 # OBSOLETE
@@ -567,16 +598,17 @@ val_dataset.chunk_indices[0]
 val_dataset.set_context_length(config['contextl'])
 val_dataset.set_stride()
 
+import apf.dataset
 import flyllm.prediction
 import importlib
+importlib.reload(apf.dataset)
 importlib.reload(flyllm.prediction)
-from flyllm.prediction import predict_iterative_all
 import linecache
 linecache.clearcache()
 max_tpred = 150
 stride = max_tpred # this doesn't have to be max_tpred
 val_dataset.set_stride(stride) 
-all_pred_iter, labelidx_iter = predict_iterative_all(val_dataset,model,val_data['track'],max_tpred,N=8,keepall=False,nsamples=10)
+all_pred_iter, labelidx_iter = flyllm.prediction.predict_iterative_all(val_dataset,model,config,val_data['track'],max_tpred,N=20,keepall=False,nsamples=8)
 
 # reset
 val_dataset.set_context_length(config['contextl'])
@@ -630,6 +662,11 @@ for i in range(len(all_pred_iter)):
         ax.plot([toff0+2,toff0+2],ylim_curr,'k--')
 
     fig.savefig(os.path.join(outfigdir,f'pose_pred_iter_vs_true_{config["model_nickname"]}_t0_{metadata["t0"]}_fly_{metadata["flynum"]}.pdf'))
+
+# %%
+import flyllm.config
+flyllm.config.PXPERMM
+
 
 # %%
 # compute error in various ways

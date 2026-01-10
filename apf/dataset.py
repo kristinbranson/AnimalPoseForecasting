@@ -1820,7 +1820,10 @@ def invert_to_named(data: Data, name: str | list | tuple, return_data: bool = Fa
     else:
         post_opers = get_post_operations(data.operations, name)
         idx = get_operation_index(data.operations, name)
-        post_invertdata = data.invertdata[idx+1:]
+        if data.invertdata is None:
+            post_invertdata = [None,]*len(post_opers)
+        else:
+            post_invertdata = data.invertdata[idx+1:]
         
     if post_opers is None:
         raise ValueError(f"Operation '{name}' not found in data operations")
@@ -1851,7 +1854,10 @@ def invert_to_named(data: Data, name: str | list | tuple, return_data: bool = Fa
         else:
             idx = get_operation_index(data.operations,name)
             operations = get_pre_operations(data.operations, name, inclusive=True)
-        post_invertdata = data.invertdata[:idx]
+        if data.invertdata is None:
+            post_invertdata = [None,]*len(operations)
+        else:
+            post_invertdata = data.invertdata[:idx]
         return Data(name=name, array=array, operations=operations, invertdata=post_invertdata, feature_names=feature_names)
 
     if return_feature_names:
