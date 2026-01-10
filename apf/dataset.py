@@ -54,7 +54,7 @@ class Operation(ABC):
             If input is np.ndarray, returns a np.ndarray processed by the operation,
             if input is Data, returns a new Data with processed array and this operation appended to operaitons.
         """
-        if hasattr(data, 'array') and hasattr(data, 'operations') and hasattr(data, 'invertdata') and hasattr(data, 'name'):
+        if isData(data):
             # instead of checking for Data object, check for attributes
             res = self.apply(data.array, **kwargs)
             if isinstance(res, tuple):
@@ -62,7 +62,10 @@ class Operation(ABC):
             else:
                 array = res
                 invert_data_curr = None
-            invert_data = {**(data.invertdata or {}), self.name: invert_data_curr} if invert_data_curr is not None else data.invertdata
+            # update invertdata
+            invertdata = data.invertdata.copy()
+            invertdata.append(invert_data_curr)
+            # invertdata = {**(data.invertdata or {}), self.name: invert_data_curr} if invert_data_curr is not None else data.invertdata
             feature_names = self.update_feature_names(data.feature_names)
             if feature_names is None or len(feature_names) != array.shape[-1]:
                 feature_names = [f'{data.name}_{self.name}_{i}' for i in range(array.shape[-1])]
@@ -70,7 +73,7 @@ class Operation(ABC):
                 name=f"{data.name}_{self.name}",
                 array=array,
                 operations=data.operations + [self],
-                invertdata=invert_data,
+                invertdata=invertdata,
                 feature_names=feature_names
             )
         elif isinstance(data, np.ndarray):
@@ -251,14 +254,15 @@ class Data(NamedTuple):
     array: np.ndarray
     # Operations that have been applied to the data (can be later applied in inverse to obtain original data).
     operations: list[Operation] = []
-    invertdata: Any = None # any additional data needed for inverting the operations, e.g. flyid for Pose operation
-    # invertdata is a dict with keys for operation name. Each value can be:
+    invertdata: list = [] # any additional data needed for inverting the operations, e.g. flyid for Pose operation
+    # invertdata is a list with one entry per operation in operations.
+    # Each entry in the list can be:
     #     - a dict with keys for each extra argument to invert for this operation. each 
-    #         invertdata[opname][key] must be an ndarray or torch.Tensor of size (n_agents, n_frames, ...),
+    #         entry[key] must be an ndarray or torch.Tensor of size (n_agents, n_frames, ...),
     #         matching data array in prefix shape
     #     - a list of invertdata corresponding to sub operations for fusion-like operations
     #     - None
-    #     - If invertdata[opname] is not one of these, then you must override this method in the operation class.
+    #     - If entry is not one of these, then you must override this method in the operation class.
     feature_names: list[str] | None = None
     
     def __str__(self):
@@ -291,12 +295,9 @@ class Data(NamedTuple):
     
     def invertdata_applyfcn(self,opfcn) -> dict:
         invertdata1 = None
-        if self.invertdata is not None:
-            invertdata1 = {}
-            for op in self.operations:
-                if op.name not in self.invertdata:
-                    continue
-                invertdata1[op.name] = opfcn(op,self.invertdata[op.name])
+        invertdata1 = []
+        for op,invertdatacurr in zip(self.operations,self.invertdata):
+            invertdata1.append(opfcn(op,invertdatacurr))
         return invertdata1
     
     def __getitem__(self, idx) -> 'Data':
@@ -365,6 +366,22 @@ class Data(NamedTuple):
         idx[timedim] = t
         array_new[tuple(idx)] = x
         return Data.copy_with(self, array=array_new)
+    
+def isData(obj: Any) -> bool:
+    """ Checks if the object is a Data object based on its attributes.
+    Robust to e.g. changing Data class in a notebook and reloading.
+    Args:
+        obj: Object to check.
+    Returns:
+        True if the object is a Data object, False otherwise.
+    """
+    return (
+        hasattr(obj, 'name') and
+        hasattr(obj, 'array') and
+        hasattr(obj, 'operations') and
+        hasattr(obj, 'invertdata') and
+        hasattr(obj, 'feature_names')
+    )
     
 @dataclass
 class Identity(Operation):
@@ -1627,6 +1644,20 @@ def get_operation(
         return None, None
     return None
 
+def get_operation_index(
+        operations: list[Operation], name: str, recursive: bool = False
+) -> int | None:
+    """ Find index of operation from a list of operation, given its name.
+
+    Args:
+        operations: List of operations to search from.
+        name: Name of operation to find.
+        recursive: Whether to search recursively within Fusion operations. Default is False.
+    Returns:
+        idx: Index of the operation within the list, None if not found.
+    """
+    _, idx = get_operation(operations, name, return_idx=True, recursive=recursive)
+    return idx
 
 def get_post_operations(operations: list[Operation], name: str | None = None, data: Data | None = None) -> list[Operation] | None:
     """ Get a list of operations that come after the operation with either:
@@ -1697,7 +1728,7 @@ def apply_operations(data: Data, operations: list[Operation]) -> Data:
 
 
 def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data, 
-                             operations: list | None = None, invertdata: dict | None = None,
+                             operations: list | None = None, invertdata: dict | list | None = None,
                              extraargs: dict = {}, return_feature_names: bool = False):
     """ Apply the inverse of operations to data, in reverse order.
     
@@ -1705,7 +1736,8 @@ def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data,
     data: Data to invert. Can be ndarray, Tensor, or Data object. If a Data object, operations and invertdata
         are extracted from it if not provided. 
     operations: List of operations to invert. If None, extracted from data. 
-    invertdata: Dictionary mapping operation names to arguments to provide to the invert method.
+    invertdata: If dict, dictionary mapping operation names to arguments to provide to the invert method.
+        If list, list of arguments to provide to the invert method, one per operation.
         If None, extracted from data.
     extraargs: Dict with extra arguments to provide to the invert methods of operations. Entries are operation name to
         dict of keyword arguments.
@@ -1718,8 +1750,11 @@ def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data,
     # allow data to be a Data object, in which case we extract operations and invertdata from it
     if operations is None and hasattr(data, 'operations'):
         operations = data.operations
-    if invertdata is None and hasattr(data, 'invertdata'):
-        invertdata = data.invertdata
+    if invertdata is None:
+        if hasattr(data, 'invertdata'):
+            invertdata = data.invertdata
+        else:
+            invertdata = [None] * len(operations)
     feature_names = None
     if hasattr(data,'feature_names'):
         feature_names = data.feature_names
@@ -1728,8 +1763,19 @@ def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data,
     if feature_names is None:
         feature_names = [f'feat_{i}' for i in range(data.shape[-1])]
     
-    for oper in reversed(operations):
-        invertdataargs = invertdata.get(oper.name, None) if invertdata else None
+    # convert dict invertdata into list, and fill in from data.invertdata if available
+    if isinstance(invertdata,dict):
+        invertdata1 = []
+        for i,oper in enumerate(operations):
+            if oper.name in invertdata:
+                invertdata1.append(invertdata[oper.name])
+            elif hasattr(data,'invertdata'):
+                invertdata1.append(data.invertdata[i])
+            else:
+                invertdata1.append(None)
+        invertdata = invertdata1
+                
+    for oper,invertdataargs in reversed(list(zip(operations, invertdata))):
         kwargs = extraargs.get(oper.name, {})
         args = []
         if isinstance(invertdataargs, dict):
@@ -1768,12 +1814,15 @@ def invert_to_named(data: Data, name: str | list | tuple, return_data: bool = Fa
     
     if name == 'original':
         post_opers = data.operations
+        post_invertdata = data.invertdata
     else:
         post_opers = get_post_operations(data.operations, name)
+        idx = get_operation_index(data.operations, name)
+        post_invertdata = data.invertdata[idx+1:]
         
     if post_opers is None:
         raise ValueError(f"Operation '{name}' not found in data operations")
-    array, feature_names = apply_inverse_operations(data, operations=post_opers, extraargs=kwargs, return_feature_names=True)
+    array, feature_names = apply_inverse_operations(data, operations=post_opers, invertdata=post_invertdata, extraargs=kwargs, return_feature_names=True)
 
     # unfuse etc
     while True:
@@ -1795,14 +1844,13 @@ def invert_to_named(data: Data, name: str | list | tuple, return_data: bool = Fa
     
     if return_data:
         if name == 'original':
+            idx = 0
             operations = []
         else:
+            idx = get_operation_index(data.operations,name)
             operations = get_pre_operations(data.operations, name, inclusive=True)
-        invertdata = {}
-        for op in operations:
-            if isinstance(data.invertdata,dict) and op.name in data.invertdata:
-                invertdata[op.name] = data.invertdata[op.name]
-        return Data(name=name, array=array, operations=operations, invertdata=invertdata, feature_names=feature_names)
+        post_invertdata = data.invertdata[:idx]
+        return Data(name=name, array=array, operations=operations, invertdata=post_invertdata, feature_names=feature_names)
 
     if return_feature_names:
         return array, feature_names
@@ -2235,7 +2283,7 @@ class Dataset(torch.utils.data.Dataset):
                 if 'metadata' in item and 'inputs' in item['metadata'] and k in item['metadata']['inputs']:
                     invertdatacurr = item['metadata']['inputs'][k]
                 else:
-                    invertdatacurr = None
+                    invertdatacurr = [None,]*len(self.inputs[k].operations)
                 datadict['inputs'][k] = Data.copy_with(self.inputs[k],array=v,invertdata=invertdatacurr)
         continuous_key = None
         discrete_key = None
@@ -2254,7 +2302,7 @@ class Dataset(torch.utils.data.Dataset):
                 if 'metadata' in item and 'labels' in item['metadata'] and k in item['metadata']['labels']:
                     invertdatacurr = item['metadata']['labels'][k]
                 else:
-                    invertdatacurr = None
+                    invertdatacurr = [None,]*len(self.labels[k].operations)
                 datadict['labels'][k] = Data.copy_with(self.labels[k],array=v,invertdata=invertdatacurr)
         datadict['metadata'] = {k: v for k,v in item.get('metadata',{}).items() if k not in ['inputs','labels']}        
         if 'useoutputmask' in item:
