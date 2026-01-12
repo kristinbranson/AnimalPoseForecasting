@@ -65,7 +65,6 @@ class Operation(ABC):
             # update invertdata
             invertdata = data.invertdata.copy()
             invertdata.append(invert_data_curr)
-            # invertdata = {**(data.invertdata or {}), self.name: invert_data_curr} if invert_data_curr is not None else data.invertdata
             feature_names = self.update_feature_names(data.feature_names)
             if feature_names is None or len(feature_names) != array.shape[-1]:
                 feature_names = [f'{data.name}_{self.name}_{i}' for i in range(array.shape[-1])]
@@ -867,7 +866,7 @@ class Fusion(Operation):
         if DOTIME:
             LOG.info(f"Fusion apply took {toc(start_time):.2f} seconds")
 
-        return fused, invertdata
+        return fused, {'kwargs_per_op': invertdata}
 
     def invert(self, data: np.ndarray, kwargs_per_op=None, **extraargs_per_op) -> np.ndarray:
         """ Inverts subsets of the processed data using the operation inverses.
@@ -1376,7 +1375,7 @@ class Velocity(Operation):
         res = self.fusion.apply(pose, kwargs_per_op={'isstart': isstart})
         return res
 
-    def invert(self, velocity: np.ndarray, invertdata: np.ndarray | list | None = None):
+    def invert(self, velocity: np.ndarray, kwargs_per_op: list | None = None):
         """ Compute pose from pose velocity and an initial pose.
 
         Args:
@@ -1386,17 +1385,7 @@ class Velocity(Operation):
         Returns:
             pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
-        kwargs_per_op = None
-        x0 = None
-        if isinstance(invertdata, list):
-            kwargs_per_op = invertdata
-        elif isinstance(invertdata, np.ndarray) | isinstance(invertdata, torch.Tensor):
-            x0 = invertdata
-            # if has a value for every frame, just take the first frame
-            if x0.ndim == velocity.ndim:
-                x0 = x0[...,0,:]
-            kwargs_per_op = [{'x0': x0[..., self.global_inds]}, {'x0': x0[..., self.local_inds]}]
-        return self.fusion.invert(velocity, kwargs_per_op)
+        return self.fusion.invert(velocity, kwargs_per_op=kwargs_per_op)
     
     def __str__(self):
         return f"Operation {self.name} of class Velocity => {str(self.fusion)}"
@@ -1779,14 +1768,14 @@ def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data,
                 
     for oper,invertdataargs in reversed(list(zip(operations, invertdata))):
         kwargs = extraargs.get(oper.name, {})
-        args = []
-        if isinstance(invertdataargs, dict):
+        if invertdataargs is not None:
             kwargs = kwargs | invertdataargs
+        # remove args from kwargs that are not in the invert method signature
+        sig = inspect.signature(oper.invert)
+        kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
         # elif isinstance(invertdataargs, (list, tuple)):
         #     args += list(invertdataargs)
-        elif invertdataargs is not None:
-            args.append(invertdataargs)
-        data = oper.invert(data, *args, **kwargs)
+        data = oper.invert(data, **kwargs)
         if return_feature_names:
             feature_names = oper.invert_feature_names(feature_names)
 

@@ -464,7 +464,9 @@ for toplot in toplots:
     true_example = copy_data_subindex(val_data['velocity'], agentidx=[ididx,], frameidx=tidx)
     
     fig = plot_pred_vs_true(true_example,pred_example,ylim_nstd=ylim_nstd,nsamples=nsamples,plotbinedges=True)
-    fig.suptitle(f'Fly ID {id} Velocity Prediction vs True from t={tsplot[0]} to t={tsplot[-1]}')
+    ax = fig.get_axes()[0]
+    ax.set_title(f'Fly ID {id} Velocity Prediction vs True from t={tsplot[0]} to t={tsplot[-1]}')
+    fig.tight_layout()
 
     # save this figure as a pdf
     if savefig:

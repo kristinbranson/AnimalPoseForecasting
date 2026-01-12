@@ -111,8 +111,7 @@ class Pose(Operation):
             
         array = kp2feat(Xkp=Xkp.T, scale_perfly=scale_perfly, flyid=flyid, isdata=isdata).T
         flyid = flyid.T if flyid is not None else None
-        invertdata = {'flyid': flyid}
-        #applydata = {'flyid': flyid, 'isdata': isdata}
+        invertdata = {'flyid': flyid, 'isdata': isdata}
         
         return array, invertdata
 
