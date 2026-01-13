@@ -392,11 +392,13 @@ print('\nChecking inversion from labels velocity_sub to velocity_sub with use_to
 check_inversion(velocity_sub,velocity_subr2)
 
 # check creating datadict from keypoints
+print('\nChecking rawdata_to_datadict:')
 
+start_frame = 10000
 contextl = val_dataset.context_length
+duration = contextl
 Xkp = val_data['track'].array.copy()
-idxkp = (slice(None), slice(contextl+1))
-idx = (slice(None), slice(contextl))
+idxkp = (slice(None), slice(start_frame,start_frame+contextl+1))
 extraargs = {'pose': {'flyid': val_data['flyids'][idxkp], 'isdata': val_data['isdata'][idxkp]},
              'sensory': {'isdata': val_data['isdata'][idxkp]},
              'velocity': {'isstart': val_data['isstart'][idxkp]}}
@@ -407,17 +409,27 @@ datadict = val_dataset.rawdata_to_datadict(inputs,labels, extraargs=extraargs,
                                            use_prev_invertdata=False,
                                            use_data_invertdata=False)
 
-print('\nChecking rawdata_to_datadict:')
 for k in datadict['inputs']:
     print(f'inputs.{k}:')
-    check_inversion(val_dataset.inputs[k][idx],datadict['inputs'][k][idx])
+    check_inversion(val_dataset.inputs[k][:,start_frame:start_frame+duration],datadict['inputs'][k][:,:duration])
 for k in datadict['labels']:
     print(f'labels.{k}:')
-    check_inversion(val_dataset.labels[k][idx],datadict['labels'][k][idx])
+    check_inversion(val_dataset.labels[k][:,start_frame:start_frame+duration],datadict['labels'][k][:,:duration])
 
-# %%
-print(val_data['pose'].shape)
-print(val_data['velocity'].shape)
+# check creating datadict from keypoints with start_frame and invertdata
+print('\nChecking rawdata_to_datadict with start_frame and invertdata:')
+start_frame = 10000
+duration = contextl
+Xkp = val_data['track'].array[:,start_frame:start_frame+duration+1]
+datadict = val_dataset.rawdata_to_datadict(inputs,labels, use_data_invertdata=True,
+                                           use_prev_invertdata=True,
+                                           start_frame=start_frame)
+for k in datadict['inputs']:
+    print(f'inputs.{k}:')
+    check_inversion(val_dataset.inputs[k][:,start_frame:start_frame+duration],datadict['inputs'][k][:,:duration])
+for k in datadict['labels']:
+    print(f'labels.{k}:')
+    check_inversion(val_dataset.labels[k][:,start_frame:start_frame+duration],datadict['labels'][k][:,:duration])
 
 # %%
 #print(np.nonzero(np.isnan(val_dataset.labels['velocity'][idx].array[7])))

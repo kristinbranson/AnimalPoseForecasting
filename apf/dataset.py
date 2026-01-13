@@ -79,6 +79,7 @@ class Operation(ABC):
         feature_names = self.update_feature_names(feature_names)
         if feature_names is None or len(feature_names) != array.shape[-1]:
             feature_names = [f'{name}_{i}' for i in range(array.shape[-1])]
+                    
         return Data(
             name=name,
             array=array,
@@ -295,6 +296,10 @@ class Data(NamedTuple):
     @property
     def shape(self):
         return self.array.shape
+    
+    @property
+    def ndim(self):
+        return self.array.ndim
     
     @staticmethod
     def copy_with(data: 'Data', **kwargs) -> 'Data':
@@ -1740,11 +1745,29 @@ def get_pre_operations(operations: list[Operation], name: str, inclusive: bool =
         idx += 1
     return operations[:idx]
 
+def guess_timedim(data: np.ndarray | torch.Tensor | Data) -> int:
+    """ Guess which dimension of data is the time dimension.
+
+    Args:
+        data: Data to guess time dimension from. Can be ndarray, Tensor, or Data object.    
+    Returns:
+        timedim: Index of time dimension.
+    """
+    if data.ndim >= 3:
+        # assume (n_agents, n_frames, n_features)
+        timedim = 1
+    else:
+        # assume (n_frames, n_features)
+        timedim = 0
+    return timedim
+
 def apply_operations(data: np.ndarray | torch.Tensor | Data, 
                      operations: list[Operation],
                      invertdata: list | None = None,
                      extraargs: dict = {},
-                     use_prev_invertdata: bool | None = None) -> Data:
+                     use_prev_invertdata: bool | None = None,
+                     start_frame=None,
+                     timedim=None) -> Data:
     """ Apply a list of operations to data.
     """
     
@@ -1762,7 +1785,13 @@ def apply_operations(data: np.ndarray | torch.Tensor | Data,
             
         kwargs = extraargs.get(oper.name, {})
         if invertdataargs is not None:
-            kwargs = {k: v for k, v in invertdataargs.items() if k in params} | kwargs
+            if start_frame is not None:
+                timedimcurr = timedim if timedim is not None else guess_timedim(data)
+                duration = data.shape[timedimcurr]
+                idx = (slice(None),)*timedimcurr + (slice(start_frame, start_frame + duration),)
+                kwargs = {k: oper.invertdata_subindex(v,idx) for k, v in invertdataargs.items() if k in params} | kwargs                
+            else: 
+                kwargs = {k: v for k, v in invertdataargs.items() if k in params} | kwargs
             
         # add previous invertdata to kwargs
         if use_prev_invertdata and isData(data) and (len(data.invertdata) > 0) and (data.invertdata[-1] is not None):
@@ -1911,7 +1940,7 @@ def invert_to_named(data: Data, name: str | list | tuple, return_data: bool = Fa
 
 def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict, extraargs: dict = {}, 
                           use_data_invertdata: bool | None = None, use_prev_invertdata: bool | None = None,
-                          separate_extraargs: bool = False) -> dict[str, Data]:
+                          separate_extraargs: bool = False, start_frame=None, timedim=None) -> dict[str, Data]:
     """ Applies post processing operations from reference datas to datas, for each key.
 
     Post-key-operations are all operations after the key of each data, for example for 'velocity' it doesn't
@@ -1951,7 +1980,8 @@ def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict, extraargs: di
         processed_data[key] = apply_operations(datas[key], opers, 
                                                invertdata=invertdata if use_data_invertdata else None, 
                                                extraargs=extraargscurr,
-                                               use_prev_invertdata=use_prev_invertdata)
+                                               use_prev_invertdata=use_prev_invertdata,
+                                               start_frame=start_frame,timedim=timedim)
     return processed_data
 
 
@@ -2440,7 +2470,8 @@ class Dataset(torch.utils.data.Dataset):
                             extraargs: dict | None = {}, extraargs_inputs: dict | None = None, 
                             extraargs_labels: dict | None = None, separate_extraargs: bool = False,
                             use_data_invertdata: bool | None = None,
-                            use_prev_invertdata: bool | None = None) -> dict:
+                            use_prev_invertdata: bool | None = None,
+                            start_frame=None) -> dict:
         """
         rawdata_to_datadict(inputs, labels)
         Converts raw data to a datadict with Data objects for inputs and labels by applying 
@@ -2467,16 +2498,18 @@ class Dataset(torch.utils.data.Dataset):
                                                    extraargs=extraargs if extraargs_inputs is None else extraargs_inputs,
                                                    use_data_invertdata=use_data_invertdata,
                                                    use_prev_invertdata=use_prev_invertdata,
-                                                   separate_extraargs=separate_extraargs)
+                                                   separate_extraargs=separate_extraargs,
+                                                   start_frame=start_frame)
         datadict['labels'] = apply_opers_from_data(labels_ref,labels,
                                                    extraargs=extraargs if extraargs_labels is None else extraargs_labels,
                                                    use_data_invertdata=use_data_invertdata,
                                                    use_prev_invertdata=use_prev_invertdata,
-                                                   separate_extraargs=separate_extraargs)
+                                                   separate_extraargs=separate_extraargs,
+                                                   start_frame=start_frame)
         return datadict
     
     def rawdata_to_item(self, inputs: dict, labels: dict, start_frame=None, agent_id=None, duration=None) -> dict:
-        datadict = self.rawdata_to_datadict(inputs, labels)
+        datadict = self.rawdata_to_datadict(inputs, labels, start_frame=start_frame)
         item = self.data_to_item(datadict, start_frame=start_frame, agent_id=agent_id, duration=duration)
         return item
     
