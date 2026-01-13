@@ -109,7 +109,9 @@ class Pose(Operation):
         if scale_perfly is not None:
             self.scale_perfly = scale_perfly
             
-        array = kp2feat(Xkp=Xkp.T, scale_perfly=self.scale_perfly, flyid=flyid.T, isdata=isdata.T).T
+        array = kp2feat(Xkp=Xkp.T, scale_perfly=self.scale_perfly, 
+                        flyid=flyid.T if flyid is not None else None, 
+                        isdata=isdata.T if isdata is not None else None).T
         invertdata = {'flyid': flyid, 'isdata': isdata}
         
         return array, invertdata

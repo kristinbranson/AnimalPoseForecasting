@@ -325,7 +325,7 @@ def check_inversion(datao,datar,isdata=None):
             print(f'Id {id}: meandiff = {meandiff}, maxdiff = {maxdiff}')
             isnanmismatch = np.isnan(arr_o) != np.isnan(arr_r)
             if np.any(isnanmismatch):
-                print(f'NaN mismatch for id {id} for {np.count_nonzero(isnanmismatch)} elements')
+                print(f'NaN mismatch for id {id} for {np.count_nonzero(isnanmismatch)} elements (original: {np.count_nonzero(np.isnan(arr_o))}, reconstructed: {np.count_nonzero(np.isnan(arr_r))})')
     if len(datar.feature_names) != len(datao.feature_names):
         print(f'Feature name length mismatch: original {len(datao.feature_names)}, reconstructed {len(datar.feature_names)}')
     for i,featname in enumerate(datao.feature_names):
@@ -395,19 +395,41 @@ check_inversion(velocity_sub,velocity_subr2)
 
 contextl = val_dataset.context_length
 Xkp = val_data['track'].array.copy()
-
-inputs = {k: Xkp for k in val_dataset.inputs.keys()}
-labels = {k: Xkp for k in val_dataset.labels.keys()}
-datadict = val_dataset.rawdata_to_datadict(inputs,labels)
+idxkp = (slice(None), slice(contextl+1))
+idx = (slice(None), slice(contextl))
+extraargs = {'pose': {'flyid': val_data['flyids'][idxkp], 'isdata': val_data['isdata'][idxkp]},
+             'sensory': {'isdata': val_data['isdata'][idxkp]},
+             'velocity': {'isstart': val_data['isstart'][idxkp]}}
+    
+inputs = {k: Xkp[idxkp] for k in val_dataset.inputs.keys()}
+labels = {k: Xkp[idxkp] for k in val_dataset.labels.keys()}
+datadict = val_dataset.rawdata_to_datadict(inputs,labels, extraargs=extraargs,
+                                           use_prev_invertdata=False,
+                                           use_data_invertdata=False)
 
 print('\nChecking rawdata_to_datadict:')
 for k in datadict['inputs']:
     print(f'inputs.{k}:')
-    check_inversion(val_dataset.inputs[k],datadict['inputs'][k])
+    check_inversion(val_dataset.inputs[k][idx],datadict['inputs'][k][idx])
 for k in datadict['labels']:
     print(f'labels.{k}:')
-    check_inversion(val_dataset.labels[k],datadict['labels'][k])
+    check_inversion(val_dataset.labels[k][idx],datadict['labels'][k][idx])
 
+# %%
+print(val_data['pose'].shape)
+print(val_data['velocity'].shape)
+
+# %%
+#print(np.nonzero(np.isnan(val_dataset.labels['velocity'][idx].array[7])))
+#print(np.nonzero(np.isnan(datadict['labels']['velocity'].array[7])))
+plt.figure()
+plt.imshow(datadict['labels']['velocity'].array[:,-10:,0],aspect='auto',interpolation='none')
+#show colobar
+plt.colorbar()
+datadict['labels']['velocity'].array[:,-1,0]
+plt.figure()
+plt.imshow(val_dataset.labels['velocity'].array[:,502:512,0],aspect='auto',interpolation='none')
+plt.colorbar()
 
 # %%
 # DEBUG: check inversion of global velocity

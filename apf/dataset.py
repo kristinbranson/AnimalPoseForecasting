@@ -909,7 +909,7 @@ class Fusion(Operation):
             n_dims = self.dims_per_op[i]
             kwargs_curr = extraargs_per_op.get(self.operations[i].name, {})
             if len(kwargs_per_op) > i:
-                kwargs_curr.update(kwargs_per_op[i])
+                kwargs_curr = kwargs_per_op[i] | kwargs_curr
             kwargs_curr = {k: v for k, v in kwargs_curr.items() if k in get_optional_params(self.operations[i].invert)}
             inverted[..., indices] = self.operations[i].invert(data[..., count:count + n_dims], **kwargs_curr)
             count += n_dims
@@ -1743,9 +1743,14 @@ def get_pre_operations(operations: list[Operation], name: str, inclusive: bool =
 def apply_operations(data: np.ndarray | torch.Tensor | Data, 
                      operations: list[Operation],
                      invertdata: list | None = None,
-                     extraargs: dict = {}) -> Data:
+                     extraargs: dict = {},
+                     use_prev_invertdata: bool | None = None) -> Data:
     """ Apply a list of operations to data.
     """
+    
+    if use_prev_invertdata is None:
+        use_prev_invertdata = (invertdata is None) and (len(extraargs) == 0)
+    
     if invertdata is None:
         invertdata = [None,] * len(operations)
         
@@ -1753,9 +1758,16 @@ def apply_operations(data: np.ndarray | torch.Tensor | Data,
         if isinstance(oper, dict):
             oper = Operation.from_dict(oper)
             
+        params = get_optional_params(oper.apply)
+            
         kwargs = extraargs.get(oper.name, {})
         if invertdataargs is not None:
-            kwargs = kwargs | {k: v for k, v in invertdataargs.items() if k in get_optional_params(oper.apply)}
+            kwargs = {k: v for k, v in invertdataargs.items() if k in params} | kwargs
+            
+        # add previous invertdata to kwargs
+        if use_prev_invertdata and isData(data) and (len(data.invertdata) > 0) and (data.invertdata[-1] is not None):
+            prevargs = data.invertdata[-1]
+            kwargs = {k: v for k, v in prevargs.items() if k in params} | kwargs
 
         data = oper(data, **kwargs)
 
@@ -1813,7 +1825,7 @@ def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data,
     for oper,invertdataargs in reversed(list(zip(operations, invertdata))):
         kwargs = extraargs.get(oper.name, {})
         if invertdataargs is not None:
-            kwargs = kwargs | invertdataargs
+            kwargs = invertdataargs | kwargs
         # remove args from kwargs that are not in the invert method signature
         kwargs = {k: v for k, v in kwargs.items() if k in get_optional_params(oper.invert)}
         # elif isinstance(invertdataargs, (list, tuple)):
@@ -1897,7 +1909,9 @@ def invert_to_named(data: Data, name: str | list | tuple, return_data: bool = Fa
 
     return array
 
-def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict) -> dict[str, Data]:
+def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict, extraargs: dict = {}, 
+                          use_data_invertdata: bool | None = None, use_prev_invertdata: bool | None = None,
+                          separate_extraargs: bool = False) -> dict[str, Data]:
     """ Applies post processing operations from reference datas to datas, for each key.
 
     Post-key-operations are all operations after the key of each data, for example for 'velocity' it doesn't
@@ -1918,6 +1932,8 @@ def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict) -> dict[str, 
         Post processed datas.
     """
     # assert len(datas_ref.keys()) == len(datas.keys()), "The two data collections must have the same keys"
+    if use_data_invertdata is None:
+        use_data_invertdata = len(extraargs) == 0
     processed_data = {k: v for k, v in datas.items()}
     for key in datas_ref.keys():
         assert key in datas, "Expect both data to have all of the same keys"
@@ -1928,11 +1944,21 @@ def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict) -> dict[str, 
             idx = get_operation_index(datas_ref[key].operations, datas[key].operations[-1].name)
             opers = datas_ref[key].operations[idx+1:]
             invertdata = datas_ref[key].invertdata[idx+1:]
-        processed_data[key] = apply_operations(datas[key], opers, invertdata=invertdata)
+        if separate_extraargs:
+            extraargscurr = extraargs.get(key, {})
+        else:
+            extraargscurr = extraargs
+        processed_data[key] = apply_operations(datas[key], opers, 
+                                               invertdata=invertdata if use_data_invertdata else None, 
+                                               extraargs=extraargscurr,
+                                               use_prev_invertdata=use_prev_invertdata)
     return processed_data
 
 
-def apply_opers_from_data_params(data_params: list[dict], datas: dict[str, Data], check_match: bool = False, invertdata=None) -> dict[str, Data]:
+def apply_opers_from_data_params(data_params: list[dict], datas: dict[str, Data], check_match: bool = False, 
+                                 invertdata=None, extraargs: dict = {}, 
+                                 use_prev_invertdata: bool | None = None,
+                                 separate_extraargs: bool = False) -> dict[str, Data]:
     """ Applies post processing operations from data_params (e.g. output of mydataset.get_params()['inputs'])
     to datas, for each key.
 
@@ -1958,20 +1984,24 @@ def apply_opers_from_data_params(data_params: list[dict], datas: dict[str, Data]
             else:
                 LOG.warning(f"Did not find '{key}' in datas, skipping")
                 continue 
-        invertdatacurr = None
+        if invertdata is not None:
+            invertdatacurr = invertdata[key]
+        else:
+            invertdatacurr = None
         # input datacurr may already have some operations applied, so we need to find the last operation that was applied
         if isinstance(datas[key], (np.ndarray, torch.Tensor)):
             opers = data_params[key]
-            if invertdata is not None:
-                invertdatacurr = invertdata[key]
         else:
             idx = get_operation_index(data_params[key], data=datas[key])
             opers = data_params[key][idx+1:]
-            if invertdata is not None:
-                invertdatacurr = invertdata[key]
-                if invertdatacurr is not None:
-                    invertdatacurr = invertdatacurr[idx+1:]
-        processed_data[key] = apply_operations(datas[key], opers, invertdata=invertdatacurr)
+            if invertdatacurr is not None:
+                invertdatacurr = invertdatacurr[idx+1:]
+        if separate_extraargs:
+            extraargscurr = extraargs.get(key, {})
+        else:
+            extraargscurr = extraargs
+        processed_data[key] = apply_operations(datas[key], opers, invertdata=invertdatacurr, extraargs=extraargscurr,
+                                               use_prev_invertdata=use_prev_invertdata)
     return processed_data
 
 
@@ -2406,7 +2436,11 @@ class Dataset(torch.utils.data.Dataset):
             invertdata['labels'][key] = data.invertdata
         return operations, invertdata
     
-    def rawdata_to_datadict(self, inputs: dict, labels: dict, idx: list | tuple | None = None) -> dict:
+    def rawdata_to_datadict(self, inputs: dict, labels: dict, idx: list | tuple | None = None,
+                            extraargs: dict | None = {}, extraargs_inputs: dict | None = None, 
+                            extraargs_labels: dict | None = None, separate_extraargs: bool = False,
+                            use_data_invertdata: bool | None = None,
+                            use_prev_invertdata: bool | None = None) -> dict:
         """
         rawdata_to_datadict(inputs, labels)
         Converts raw data to a datadict with Data objects for inputs and labels by applying 
@@ -2428,8 +2462,17 @@ class Dataset(torch.utils.data.Dataset):
         else:
             inputs_ref = self.inputs
             labels_ref = self.labels
-        datadict['inputs'] = apply_opers_from_data(inputs_ref,inputs)
-        datadict['labels'] = apply_opers_from_data(labels_ref,labels)
+        
+        datadict['inputs'] = apply_opers_from_data(inputs_ref,inputs,
+                                                   extraargs=extraargs if extraargs_inputs is None else extraargs_inputs,
+                                                   use_data_invertdata=use_data_invertdata,
+                                                   use_prev_invertdata=use_prev_invertdata,
+                                                   separate_extraargs=separate_extraargs)
+        datadict['labels'] = apply_opers_from_data(labels_ref,labels,
+                                                   extraargs=extraargs if extraargs_labels is None else extraargs_labels,
+                                                   use_data_invertdata=use_data_invertdata,
+                                                   use_prev_invertdata=use_prev_invertdata,
+                                                   separate_extraargs=separate_extraargs)
         return datadict
     
     def rawdata_to_item(self, inputs: dict, labels: dict, start_frame=None, agent_id=None, duration=None) -> dict:
