@@ -55,7 +55,7 @@ class Sensory(Operation):
             if DOTIME:
                 start_time = utils.tic()
             if isdata is not None:
-                isdatacurr = isdata[:,flyid]
+                isdatacurr = isdata[flyid]
             else:
                 isdatacurr = None
             feat, idxinfo, feature_names = compute_sensory_wrapper(Xkp.T, flyid, returnidx=True, isdata=isdatacurr, returnnames=True)
@@ -64,7 +64,7 @@ class Sensory(Operation):
                 LOG.info(f"Sensory computation for fly {flyid} took {utils.toc(start_time):.2f} seconds")
         self.idxinfo = idxinfo
         self.feature_names = feature_names
-        return np.array(feats)
+        return np.array(feats), {'isdata': isdata}
 
     def invert(self, sensory: np.ndarray) -> None:
         LOG.error(f"Operation {self} is not invertible")
@@ -109,8 +109,7 @@ class Pose(Operation):
         if scale_perfly is not None:
             self.scale_perfly = scale_perfly
             
-        array = kp2feat(Xkp=Xkp.T, scale_perfly=scale_perfly, flyid=flyid, isdata=isdata).T
-        flyid = flyid.T if flyid is not None else None
+        array = kp2feat(Xkp=Xkp.T, scale_perfly=self.scale_perfly, flyid=flyid.T, isdata=isdata.T).T
         invertdata = {'flyid': flyid, 'isdata': isdata}
         
         return array, invertdata
@@ -229,13 +228,18 @@ def make_dataset(
         scale_perfly = indata['scale_perfly']
     if DOTIME:
         LOG.info(f"Data loading took {utils.toc(start_time):.2f} seconds")
+        
+    # transpose everything to be (n_agents, n_frames, ...)
     isstart = isstart.T
+    isdata = isdata.T
+    flyids = flyids.T
+    Xkp = Xkp.T
 
     # Compute features
     LOG.info('Computing input and label features for dataset...')
     if DOTIME:
         start_time = utils.tic()
-    track = Data('keypoints', Xkp.T, [], feature_names=[kp for kp in keypointnames])
+    track = Data('keypoints', Xkp, [], feature_names=[kp for kp in keypointnames])
     if DOTIME:
         LOG.info(f"Track creation took {utils.toc(start_time):.2f} seconds")
 
@@ -249,9 +253,10 @@ def make_dataset(
     LOG.info('Computing pose features...')
     if DOTIME:
         start_time = utils.tic()
-    pose = Pose()(track, scale_perfly=scale_perfly, flyid=flyids, isdata=isdata)    
-    assert not np.any(np.isnan(sensory.array[isdata.T])) and np.all(np.isnan(sensory.array[~isdata.T])), "Sensory features should be nan iff isdata == False"
-    assert not np.any(np.isnan(pose.array[isdata.T])) and np.all(np.isnan(pose.array[~isdata.T])), "Pose features should be nan iff isdata == False"
+    pose = Pose()(track, scale_perfly=scale_perfly, flyid=flyids, isdata=isdata)
+    
+    assert not np.any(np.isnan(sensory.array[isdata])) and np.all(np.isnan(sensory.array[~isdata])), "Sensory features should be nan iff isdata == False"
+    assert not np.any(np.isnan(pose.array[isdata])) and np.all(np.isnan(pose.array[~isdata])), "Pose features should be nan iff isdata == False"
     if DOTIME:
         LOG.info(f"Pose computation took {utils.toc(start_time):.2f} seconds")
     

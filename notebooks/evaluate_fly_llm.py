@@ -125,6 +125,7 @@ train_data = res['train_data']
 val_data = res['val_data']
 train_dataset = res['train_dataset']
 train_dataloader = res['train_dataloader']
+
 val_dataset = res['val_dataset']
 val_dataloader = res['val_dataloader']
 dataset_params = res['dataset_params']
@@ -302,6 +303,9 @@ from apf.dataset import LocalVelocity
 from apf.dataset import invert_to_named, apply_inverse_operations
 
 def check_inversion(datao,datar,isdata=None):
+    if datao.array.shape != datar.array.shape:
+        print(f'Array shape mismatch: original {datao.array.shape}, reconstructed {datar.array.shape}')
+        return
     for id in range(datao.array.shape[0]):
         arr_o = datao.array[id]
         arr_r = datar.array[id]
@@ -343,7 +347,7 @@ print('---------- check inversion ----------')
 
 track1 = invert_to_named(val_data['pose'],'original',return_data=True)
 print('\nChecking inversion from pose to track:')
-check_inversion(val_data['track'],track1,val_data['isdata'].T)
+check_inversion(val_data['track'],track1,val_data['isdata'])
     
 pose1 = invert_to_named(val_data['velocity'],'pose',return_data=True)
 print('\nChecking inversion from velocity to pose:')
@@ -384,16 +388,25 @@ velocity_subr = invert_to_named(velocity_labels_sub,'velocity',return_data=True,
 print('\nChecking inversion from labels velocity_sub to velocity_sub with use_to_discretize=True, do_sampling=False:')
 check_inversion(velocity_sub,velocity_subr)
 velocity_subr2 = invert_to_named(velocity_labels_sub,'velocity',return_data=True)
-print('Checking inversion from labels velocity_sub to velocity_sub with use_to_discretize=False, do_sampling=True:')
+print('\nChecking inversion from labels velocity_sub to velocity_sub with use_to_discretize=False, do_sampling=True:')
 check_inversion(velocity_sub,velocity_subr2)
 
 # check creating datadict from keypoints
 
 contextl = val_dataset.context_length
-Xkp = val_data['track'].array[:,:contextl]
+Xkp = val_data['track'].array.copy()
+
 inputs = {k: Xkp for k in val_dataset.inputs.keys()}
 labels = {k: Xkp for k in val_dataset.labels.keys()}
 datadict = val_dataset.rawdata_to_datadict(inputs,labels)
+
+print('\nChecking rawdata_to_datadict:')
+for k in datadict['inputs']:
+    print(f'inputs.{k}:')
+    check_inversion(val_dataset.inputs[k],datadict['inputs'][k])
+for k in datadict['labels']:
+    print(f'labels.{k}:')
+    check_inversion(val_dataset.labels[k],datadict['labels'][k])
 
 
 # %%
@@ -452,7 +465,7 @@ for toplot in toplots:
     id = toplot['id']
     tsplot = toplot['tsplot']
     
-    tidx,ididx = np.nonzero((val_data['flyids'] == id) & val_data['isdata'])
+    ididx,tidx = np.nonzero((val_data['flyids'] == id) & val_data['isdata'])
     assert len(ididx) > 0, f'Fly id {id} not in validation data flyids'
     assert np.all(ididx==ididx[0]), 'Multiple indices for fly id'
     ididx = ididx[0]

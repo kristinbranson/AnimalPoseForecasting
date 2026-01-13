@@ -788,3 +788,19 @@ def tensor_to_ndarray(xtorch: dict | list | tuple | torch.Tensor | None) -> dict
         else:
             xnp[k] = v
     return xnp
+
+def get_optional_params(fcn: Callable) -> set:
+    """" Returns the names of optional parameters of a function.
+    Args:
+        fcn: input function
+    Returns:
+        optional_params: set of names of optional parameters
+    """
+    sig = inspect.signature(fcn)
+    # Get parameters that have defaults (optional) or are keyword-only
+    optional_params = {
+        name for name, param in sig.parameters.items()
+        if param.default is not inspect.Parameter.empty
+        or param.kind == inspect.Parameter.KEYWORD_ONLY
+    }
+    return optional_params

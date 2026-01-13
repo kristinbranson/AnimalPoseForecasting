@@ -11,7 +11,7 @@ import copy
 from typing import Any
 
 from apf.data import fit_discretize_data, discretize_labels, weighted_sample
-from apf.utils import connected_components, modrange, rotate_2d_points, set_invalid_ends, tic, toc, reshape_prefix, tile_prefix
+from apf.utils import connected_components, modrange, rotate_2d_points, set_invalid_ends, tic, toc, reshape_prefix, tile_prefix, get_optional_params
 
 from apf.features import compute_global_velocity, compute_relpose_velocity
 
@@ -42,7 +42,7 @@ class Operation(ABC):
     def __post_init__(self):
         if self.name is None:
             self.name = self.__class__.__name__.lower()
-
+            
     def __call__(self, data, **kwargs):
         """
 
@@ -54,31 +54,38 @@ class Operation(ABC):
             If input is np.ndarray, returns a np.ndarray processed by the operation,
             if input is Data, returns a new Data with processed array and this operation appended to operaitons.
         """
-        if isData(data):
+        isdata = isData(data)
+        if isdata:
             # instead of checking for Data object, check for attributes
-            res = self.apply(data.array, **kwargs)
-            if isinstance(res, tuple):
-                array, invert_data_curr = res
-            else:
-                array = res
-                invert_data_curr = None
-            # update invertdata
+            dataarray = data.array
             invertdata = data.invertdata.copy()
-            invertdata.append(invert_data_curr)
-            feature_names = self.update_feature_names(data.feature_names)
-            if feature_names is None or len(feature_names) != array.shape[-1]:
-                feature_names = [f'{data.name}_{self.name}_{i}' for i in range(array.shape[-1])]
-            return Data(
-                name=f"{data.name}_{self.name}",
-                array=array,
-                operations=data.operations + [self],
-                invertdata=invertdata,
-                feature_names=feature_names
-            )
-        elif isinstance(data, np.ndarray):
-            return self.apply(data, **kwargs)
+            feature_names = data.feature_names
+            name = data.name + '_' + self.name
+            operations = data.operations
         else:
-            raise ValueError(f"Data must be either np.ndarray or Data, not {type(data)}")
+            dataarray = data
+            invertdata = []
+            feature_names = None
+            name = self.name
+            operations = []
+        res = self.apply(dataarray, **kwargs)
+        if isinstance(res, tuple):
+            array, invert_data_curr = res
+        else:
+            array = res
+            invert_data_curr = None
+        # update invertdata
+        invertdata.append(invert_data_curr)
+        feature_names = self.update_feature_names(feature_names)
+        if feature_names is None or len(feature_names) != array.shape[-1]:
+            feature_names = [f'{name}_{i}' for i in range(array.shape[-1])]
+        return Data(
+            name=name,
+            array=array,
+            operations=operations + [self],
+            invertdata=invertdata,
+            feature_names=feature_names
+        )
 
     def to_dict(self) -> dict:
         """ Returns operation class and its parameters as a dictionary.
@@ -157,17 +164,17 @@ class Operation(ABC):
         Args:
             invertdata: Invertdata for the operation. 
             invertdata can be:
-                - a dict with keys for each extra argument to invert for this operation. each 
-                    invertdata[key] must be an ndarray or torch.Tensor of size (n_agents, n_frames, ...),
-                    matching data array in prefix shape
-                - a list of invertdata corresponding to sub operations for fusion-like operations
-                - None
+                - a dict: called recursively on each entry
+                - a list: called recursively on each entry
+                - an ndarray or torch.Tensor for this operation: extract indices idx
                 - If invertdata is not one of these, then you must override this method in the operation class.
             idx: List of indices to subindex the invertdata.
         Returns:
             Subindexed invertdata.
         """
         
+        if invertdata is None:
+            return None
         if isinstance(invertdata, np.ndarray) or isinstance(invertdata, torch.Tensor):
             return invertdata[*idx]
         opfcn = lambda op, invertdatacurr: op.invertdata_subindex(invertdatacurr, idx)
@@ -179,7 +186,7 @@ class Operation(ABC):
         Apply function opfcn to invertdata for the operation. Assumes that 
         invertdata is assumed to be either:
             - None
-            - a np.ndarray or torch.Tensor
+            - a np.ndarray or torch.Tensor (base case)
             - a list of invertdata corresponding to sub operations for fusion-like operations
             - a dict of invertdata for different keys, corresponding to different extra arguments needed for inverting the operation
         Other types of invertdata must be handled by overriding this method in the operation class.
@@ -255,13 +262,14 @@ class Data(NamedTuple):
     operations: list[Operation] = []
     invertdata: list = [] # any additional data needed for inverting the operations, e.g. flyid for Pose operation
     # invertdata is a list with one entry per operation in operations.
-    # Each entry in the list can be:
-    #     - a dict with keys for each extra argument to invert for this operation. each 
-    #         entry[key] must be an ndarray or torch.Tensor of size (n_agents, n_frames, ...),
-    #         matching data array in prefix shape
-    #     - a list of invertdata corresponding to sub operations for fusion-like operations
-    #     - None
-    #     - If entry is not one of these, then you must override this method in the operation class.
+    # Each entry in the list must be a dict with keys for each extra argument to invert or apply this operation
+    # Each entry[key] must can be a dict, list, ndarray, Tensor, or None. 
+    # We need to be able to do ndarray-like operations on entry[key] to match ndarray-like operations done on array,
+    # e.g. subindexing, reshaping, tiling. By default, if entry[key] is a dict or list, the ndarray-like operation 
+    # is called on each sub-entry recursively. The base case must either be None or an ndarray or Tensor with
+    # a prefix shape (e.g. (n_agents, n_frames)) matching the data array in prefix shape.
+    # If not, you must override the invertdata_{subindex,reshape,tile} methods in the operation class.
+    
     feature_names: list[str] | None = None
     
     def __str__(self):
@@ -845,11 +853,12 @@ class Fusion(Operation):
 
         if kwargs_per_op is None:
             kwargs_per_op = [{} for _ in self.operations]
-        elif ~isinstance(kwargs_per_op, list):
+        elif not isinstance(kwargs_per_op, list):
             kwargs_per_op = [kwargs_per_op for _ in self.operations]
         processed = []
         invertdata = []
         for op, indices, kwargs in zip(self.operations, self.indices_per_op, kwargs_per_op):
+            kwargs = {k: v for k, v in kwargs.items() if k in get_optional_params(op.apply)}
             res = op.apply(data[..., indices], **kwargs)
             if isinstance(res, tuple):
                 processed.append(res[0])
@@ -901,6 +910,7 @@ class Fusion(Operation):
             kwargs_curr = extraargs_per_op.get(self.operations[i].name, {})
             if len(kwargs_per_op) > i:
                 kwargs_curr.update(kwargs_per_op[i])
+            kwargs_curr = {k: v for k, v in kwargs_curr.items() if k in get_optional_params(self.operations[i].invert)}
             inverted[..., indices] = self.operations[i].invert(data[..., count:count + n_dims], **kwargs_curr)
             count += n_dims
             
@@ -1361,7 +1371,7 @@ class Velocity(Operation):
         )
         super().__post_init__()
 
-    def apply(self, pose: np.ndarray, isstart: np.ndarray | None = None):
+    def apply(self, pose: np.ndarray, isstart: np.ndarray | None = None, kwargs_per_op: list | None = None):
         """ Compute global and local velocity from pose.
 
         Args:
@@ -1372,7 +1382,9 @@ class Velocity(Operation):
         Returns:
             velocity: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
-        res = self.fusion.apply(pose, kwargs_per_op={'isstart': isstart})
+        if kwargs_per_op is None:
+            kwargs_per_op = [{'isstart': isstart}, {'isstart': isstart}]
+        res = self.fusion.apply(pose, kwargs_per_op=kwargs_per_op)
         return res
 
     def invert(self, velocity: np.ndarray, kwargs_per_op: list | None = None):
@@ -1636,8 +1648,7 @@ def get_operation(
     return None
 
 def get_operation_index(
-        operations: list[Operation], name: str, recursive: bool = False
-) -> int | None:
+        operations: list[Operation], name: str | None = None, recursive: bool = False, data: Data | None = None) -> int | None:
     """ Find index of operation from a list of operation, given its name.
 
     Args:
@@ -1647,7 +1658,28 @@ def get_operation_index(
     Returns:
         idx: Index of the operation within the list, None if not found.
     """
-    _, idx = get_operation(operations, name, return_idx=True, recursive=recursive)
+    if name is not None:
+        _, idx = get_operation(operations, name, return_idx=True, recursive=recursive)
+    elif data is not None:
+        if not isinstance(data, Data):
+            idx = 0
+        else:
+            # check that data.operations is a prefix of operations
+            if len(data.operations) > len(operations):
+                raise ValueError("data.operations is not a prefix of operations")
+            for i in range(len(data.operations)):
+                if isinstance(operations[i], Operation):
+                    match = data.operations[i] == operations[i]
+                elif isinstance(operations[i], dict):
+                    match = (data.operations[i].name == operations[i]['attributes']['name']) and \
+                        (data.operations[i].__module__ == operations[i]['module'])
+                else:
+                    raise ValueError("operations must be a list of Operation or dict")
+                if not match:
+                    raise ValueError("data.operations is not a prefix of operations")
+            idx = len(data.operations) - 1        
+    else:
+        raise ValueError("Either name or data must be provided")
     return idx
 
 def get_post_operations(operations: list[Operation], name: str | None = None, data: Data | None = None) -> list[Operation] | None:
@@ -1708,13 +1740,25 @@ def get_pre_operations(operations: list[Operation], name: str, inclusive: bool =
         idx += 1
     return operations[:idx]
 
-def apply_operations(data: Data, operations: list[Operation]) -> Data:
+def apply_operations(data: np.ndarray | torch.Tensor | Data, 
+                     operations: list[Operation],
+                     invertdata: list | None = None,
+                     extraargs: dict = {}) -> Data:
     """ Apply a list of operations to data.
     """
-    for oper in operations:
+    if invertdata is None:
+        invertdata = [None,] * len(operations)
+        
+    for oper,invertdataargs in zip(operations, invertdata):
         if isinstance(oper, dict):
             oper = Operation.from_dict(oper)
-        data = oper(data)
+            
+        kwargs = extraargs.get(oper.name, {})
+        if invertdataargs is not None:
+            kwargs = kwargs | {k: v for k, v in invertdataargs.items() if k in get_optional_params(oper.apply)}
+
+        data = oper(data, **kwargs)
+
     return data
 
 
@@ -1771,8 +1815,7 @@ def apply_inverse_operations(data: np.ndarray | torch.Tensor | Data,
         if invertdataargs is not None:
             kwargs = kwargs | invertdataargs
         # remove args from kwargs that are not in the invert method signature
-        sig = inspect.signature(oper.invert)
-        kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+        kwargs = {k: v for k, v in kwargs.items() if k in get_optional_params(oper.invert)}
         # elif isinstance(invertdataargs, (list, tuple)):
         #     args += list(invertdataargs)
         data = oper.invert(data, **kwargs)
@@ -1807,8 +1850,8 @@ def invert_to_named(data: Data, name: str | list | tuple, return_data: bool = Fa
         post_opers = data.operations
         post_invertdata = data.invertdata
     else:
-        post_opers = get_post_operations(data.operations, name)
         idx = get_operation_index(data.operations, name)
+        post_opers = data.operations[idx+1:]
         if data.invertdata is None:
             post_invertdata = [None,]*len(post_opers)
         else:
@@ -1842,7 +1885,7 @@ def invert_to_named(data: Data, name: str | list | tuple, return_data: bool = Fa
             operations = []
         else:
             idx = get_operation_index(data.operations,name)
-            operations = get_pre_operations(data.operations, name, inclusive=True)
+            operations = data.operations[:idx+1]
         if data.invertdata is None:
             post_invertdata = [None,]*len(operations)
         else:
@@ -1854,7 +1897,7 @@ def invert_to_named(data: Data, name: str | list | tuple, return_data: bool = Fa
 
     return array
 
-def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict[str, Data]) -> dict[str, Data]:
+def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict) -> dict[str, Data]:
     """ Applies post processing operations from reference datas to datas, for each key.
 
     Post-key-operations are all operations after the key of each data, for example for 'velocity' it doesn't
@@ -1875,18 +1918,21 @@ def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict[str, Data]) ->
         Post processed datas.
     """
     # assert len(datas_ref.keys()) == len(datas.keys()), "The two data collections must have the same keys"
-    processed_data = {}
+    processed_data = {k: v for k, v in datas.items()}
     for key in datas_ref.keys():
         assert key in datas, "Expect both data to have all of the same keys"
-        opers = get_post_operations(datas_ref[key].operations, key)
-        if opers is None:
-            LOG.warning(f"Did not find an operation '{key}', applying all operations")
+        if isinstance(datas[key], (np.ndarray, torch.Tensor)):
             opers = datas_ref[key].operations
-        processed_data[key] = apply_operations(datas[key], opers)
+            invertdata = datas_ref[key].invertdata
+        else:
+            idx = get_operation_index(datas_ref[key].operations, datas[key].operations[-1].name)
+            opers = datas_ref[key].operations[idx+1:]
+            invertdata = datas_ref[key].invertdata[idx+1:]
+        processed_data[key] = apply_operations(datas[key], opers, invertdata=invertdata)
     return processed_data
 
 
-def apply_opers_from_data_params(data_params: list[dict], datas: dict[str, Data], check_match: bool = False) -> dict[str, Data]:
+def apply_opers_from_data_params(data_params: list[dict], datas: dict[str, Data], check_match: bool = False, invertdata=None) -> dict[str, Data]:
     """ Applies post processing operations from data_params (e.g. output of mydataset.get_params()['inputs'])
     to datas, for each key.
 
@@ -1904,7 +1950,7 @@ def apply_opers_from_data_params(data_params: list[dict], datas: dict[str, Data]
         Post processed datas.
     """
     # assert len(datas_ref.keys()) == len(datas.keys()), "The two data collections must have the same keys"
-    processed_data = {}
+    processed_data = {k: v for k, v in datas.items()}
     for key in data_params.keys():
         if key not in datas:
             if check_match:
@@ -1912,9 +1958,20 @@ def apply_opers_from_data_params(data_params: list[dict], datas: dict[str, Data]
             else:
                 LOG.warning(f"Did not find '{key}' in datas, skipping")
                 continue 
+        invertdatacurr = None
         # input datacurr may already have some operations applied, so we need to find the last operation that was applied
-        opers = get_post_operations(data_params[key], data=datas[key])
-        processed_data[key] = apply_operations(datas[key], opers)
+        if isinstance(datas[key], (np.ndarray, torch.Tensor)):
+            opers = data_params[key]
+            if invertdata is not None:
+                invertdatacurr = invertdata[key]
+        else:
+            idx = get_operation_index(data_params[key], data=datas[key])
+            opers = data_params[key][idx+1:]
+            if invertdata is not None:
+                invertdatacurr = invertdata[key]
+                if invertdatacurr is not None:
+                    invertdatacurr = invertdatacurr[idx+1:]
+        processed_data[key] = apply_operations(datas[key], opers, invertdata=invertdatacurr)
     return processed_data
 
 
@@ -2349,7 +2406,7 @@ class Dataset(torch.utils.data.Dataset):
             invertdata['labels'][key] = data.invertdata
         return operations, invertdata
     
-    def rawdata_to_datadict(self, inputs: dict, labels: dict) -> dict:
+    def rawdata_to_datadict(self, inputs: dict, labels: dict, idx: list | tuple | None = None) -> dict:
         """
         rawdata_to_datadict(inputs, labels)
         Converts raw data to a datadict with Data objects for inputs and labels by applying 
@@ -2365,18 +2422,14 @@ class Dataset(torch.utils.data.Dataset):
             datadict (dict): Dictionary containing Data objects for 'inputs' and 'labels'.    
         """
         datadict = {}
-        datadict['inputs'] = {}
-        for key, rawx in inputs.items():
-            assert key in self.inputs, f"Input key '{key}' not found in dataset inputs"
-            name = self.inputs[key].name.split('_')[0]
-            rawdata = Data(name=name,array=rawx)
-            datadict['inputs'][key] = apply_operations(rawdata, self.inputs[key].operations)
-        datadict['labels'] = {}
-        for key, rawx in labels.items():
-            assert key in self.labels, f"Label key '{key}' not found in dataset labels"
-            name = self.labels[key].name.split('_')[0]
-            rawdata = Data(name=name,array=rawx)
-            datadict['labels'][key] = apply_operations(rawdata, self.labels[key].operations)
+        if idx is not None:
+            inputs_ref = {k: v[*idx] for k, v in self.inputs.items()}
+            labels_ref = {k: v[*idx] for k, v in self.labels.items()}
+        else:
+            inputs_ref = self.inputs
+            labels_ref = self.labels
+        datadict['inputs'] = apply_opers_from_data(inputs_ref,inputs)
+        datadict['labels'] = apply_opers_from_data(labels_ref,labels)
         return datadict
     
     def rawdata_to_item(self, inputs: dict, labels: dict, start_frame=None, agent_id=None, duration=None) -> dict:
