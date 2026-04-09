@@ -561,7 +561,8 @@ class TransformerModel(torch.nn.Module):
     Args:
       src: Tensor, shape [seq_len,batch_size,dinput]
       src_mask: Tensor, shape [seq_len,seq_len]
-      return_hidden: Whether to include hidden states in the output. Hidden states are stored as a list of numpy arrays.
+      return_hidden: Whether to include hidden states in the output. Hidden states are stored as a list of float arrays
+        of shape (batch_size, seq_len, d_model).
     Returns:
       output Tensor of shape [seq_len, batch_size, ntoken]
     """
