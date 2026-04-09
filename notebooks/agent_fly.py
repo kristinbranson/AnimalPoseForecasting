@@ -36,6 +36,27 @@
 #     Try swapping out pose for body centric keypoints
 
 # %%
+# Look at results from lastest trained models
+# - diffusion linear
+# - continous linear
+
+# If it looks good, run the simulation on those (this will take forEVER with the diffusion model)
+# - can I speed up the simulation? It is quite slow
+# - maybe find a way to distribute the task... though that sounds daunting... maybe just parallelize over frame bits? Would a parfor work?
+
+# Run the analysis on that simulation
+
+# Lets say I have results for model with bins, no bins, diffusion (linear layer), ...
+# - Now we want to write something about this
+# - Bins vs diffusion, sampling jointly vs not
+# - 
+
+
+
+
+
+
+# %%
 # %load_ext autoreload
 # %autoreload 2
 # %matplotlib inline
@@ -75,13 +96,36 @@ LOG = logging.getLogger(__name__)
 
 # %%
 # configfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/config_fly_llm_predvel_20251007.json"
+# configfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/config_fly_llm_predvel_simpler_nobins_diffusion.json"
+# configfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/config_fly_llm_predvel_simpler_nobins.json"
 configfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/config_fly_llm_predvel_simpler_20251104.json"
 
 mode = 'train' # can toggle to 'train'/'test'
-pretrained_modelfile = os.path.join('/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/llmnets',
-                                    'predvel_20251007_20251002T000000_epoch200.pth')
-restartmodelfile = None
-debug_uselessdata=False
+# pretrained_modelfile = os.path.join('/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/llmnets',
+#                                     'predvel_20251007_20251002T000000_epoch200.pth')
+# pretrained_modelfile = os.path.join('/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/notebooks/flyllm_models/flypredvel_20251007_simple_20251121T075929_nobins_nobins_epoch200.pth')
+# pretrained_modelfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/notebooks/flyllm_models/flypredvel_20251007_simple_20251121T075929_nobins_nobins_epoch200.pth"
+# pretrained_modelfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/notebooks/flyllm_models/flypredvel_20251007_simple_20260122T055942_nobins_cont4real_epoch200.pth"
+# pretrained_modelfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/notebooks/flyllm_models/flypredvel_20251007_simple_20260122T045445_trial_linear_cont4real_epoch200.pth"
+pretrained_modelfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/notebooks/flyllm_models/flypredvel_20251007_simple_20251119T080019_epoch200.pth"
+
+restartmodelfile = pretrained_modelfile
+debug_uselessdata = False
+
+# %%
+# Get movie from data
+
+# infile = config['intrainfile']
+
+# data = {}
+# with np.load(infile) as data1:
+#     for key in data1:
+#         LOG.info(f'loading {key}')
+#         data[key] = data1[key]
+# LOG.info('data loaded')
+
+# data['frames'][0]
+# moviepath = os.path.join(data['expdirs'][0], 'movie.ufmf')
 
 # %%
 # # modernize model file
@@ -99,7 +143,7 @@ debug_uselessdata=False
 import time
 t0 = time.time()
 
-if mode == 'train':
+if mode == 'train' and False:
     loadmodelfile = None
 else:
     loadmodelfile = pretrained_modelfile
@@ -250,23 +294,51 @@ train_args['end_epoch_hook'] = end_epoch_hook
 train_args['end_iter_hook'] = end_iter_hook
 
 # %%
-# train_args['num_train_epochs'] = 10
-train_args['optimizer_args']['lr'] = 0.0005
 train_args['optimizer_args']['lr']
 
 # %%
-train_args['savefilestr'] += '_10x_rate'
+# train_args['num_train_epochs'] = 10
+train_args['optimizer_args']['lr'] = 0.0001 # 0.0001
+train_args['optimizer_args']['lr']
+
+# %%
+train_args['savefilestr'] += '_nobins_cont4real'
 train_args['savefilestr']
 
 # %%
-# from apf.models import initialize_model
+example = train_dataset[0]
+example['labels'].shape
+
+# %%
+# # from apf.models import initialize_model
 # model, criterion = initialize_model(config, train_dataset, device)
 # train_args['model'] = model
 
 # %%
-# model_file = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/notebooks/flyllm_models/flypredvel_20251007_simple_2025111"
-# checkpoint = torch.load(model_file, map_location='cuda', weights_only=False)
+
+# %%
+# # model_file = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/notebooks/flyllm_models/flypredvel_20251007_simple_20251210T061706_diffusion_trial_epoch50.pth"
+# model_file = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/notebooks/flyllm_models/flypredvel_20251007_simple_20251119T080019_epoch200.pth"
+
+
+model_file = pretrained_modelfile
+checkpoint = torch.load(model_file, map_location='cuda', weights_only=False)
 # model.load_state_dict(checkpoint['model'])
+
+# %%
+train_args['savefilestr'] += '_trial'
+
+# %%
+train_args['model'].decoder.t_embeddings.embeddings = train_args['model'].decoder.t_embeddings.embeddings.to('cuda:0')
+
+# %%
+model.decoder.t_embeddings.embeddings = model.decoder.t_embeddings.embeddings.to('cuda:0')
+
+# %%
+train_args.keys()
+# train_args['start_epoch']
+train_args['num_train_epochs'] = 200
+train_args['start_epoch'] = 0
 
 # %%
 import time
@@ -276,6 +348,7 @@ out = train(**train_args)
 time.time() - t0
 
 # %%
+tmp = 0
 
 # %%
 204 / 60 * 20 # one hour on this smaller data
@@ -336,13 +409,30 @@ plt.legend()
 plt.title('Discrete loss')
 plt.show()
 # %%
+tmp = 0
 
 # %%
+pretrained_modelfile
 
 # %%
-model_file = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/notebooks/flyllm_models/flypredvel_20251007_simple_20251119T080019_epoch20.pth"
+# model_file = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/notebooks/flyllm_models/flypredvel_20251007_simple_20251210T061706_diffusion_trial_linear_cont_epoch200.pth"
+# model_file = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/notebooks/flyllm_models/flypredvel_20251007_simple_20251210T061706_diffusion_trial_linear_cont_epoch200.pth"
+model_file = pretrained_modelfile
+modelfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/notebooks/flyllm_models/flypredvel_20251007_simple_20251119T080019_epoch200.pth"
 checkpoint = torch.load(model_file, map_location='cuda', weights_only=False)
 model.load_state_dict(checkpoint['model'])
+
+plt.figure()
+plt.plot(checkpoint['loss']['train'].detach().cpu().numpy())
+plt.plot(checkpoint['loss']['val'].detach().cpu().numpy())
+plt.show()
+
+# %%
+plt.figure()
+plt.plot(checkpoint['loss']['train'].detach().cpu().numpy())
+plt.plot(checkpoint['loss']['val'].detach().cpu().numpy())
+plt.show()
+loadmodelfile = model_file
 
 # %%
 
@@ -362,7 +452,6 @@ agent_ids = [0, 1, 4, 6]
 
 # %%
 # simulate
-
 t0 = time.time()
 gt_track, pred_track = simulate(
     dataset=train_dataset,
@@ -378,13 +467,22 @@ gt_track, pred_track = simulate(
 )
 time.time() - t0
 # %%
+example = train_dataset[0]
+example['metadata']
+
+# %%
+# TODO: plot several future trajectories overlaid on an image
+# TODO: make a movie with the predicted trajectories
+# TODO: make a movie from the real data and the syntehtic data (using the diffusion model)
+
+# %%
 plt.figure(figsize=(10, 5))
 for i in range(2):
     plt.subplot(1, 2, i+1)
     plot_arena()
 
 first_frame = config['contextl']
-last_frame = None
+last_frame = 100#None
 for agent_id in agent_ids:
     plt.subplot(1, 2, 1)
     x, y = gt_track[agent_id, first_frame:last_frame, :, 0].T
@@ -397,7 +495,6 @@ for agent_id in agent_ids:
 plt.show()
 
 # %%
-
 savedir = "flyllm_animations"
 if not os.path.exists(savedir):
     os.makedirs(savedir)
@@ -407,16 +504,15 @@ else:
     model_path = savefilestr
 modelname = os.path.split(model_path)[-1].replace('.pth', '')
 savevidfile = os.path.join(savedir, f"animation_{modelname}.gif")
+savevidfile
 
+# %%
 ani = animate_pose(
-    {'Pred': pred_track.T.copy(), 'True': gt_track.T.copy()}, 
+    {'Pred': pred_track[:, first_frame:].T.copy(), 'True': gt_track[:, first_frame:].T.copy()}, 
     focusflies=agent_ids, 
     savevidfile=savevidfile,
     contextl=config['contextl']
 )
-
-# %%
-1+2
 
 # %%
 n_flies -1
@@ -429,5 +525,195 @@ track = res['train_data']['track'].array.shape
 
 # %%
 # # animate_pose??
+
+# %%
+
+# %%
+
+# %%
+
+# %%
+
+# %%
+
+# %%
+# simulate
+t0 = time.time()
+gt_track, pred_track = simulate(
+    dataset=train_dataset,
+    model=model,
+    track=track,
+    pose=pose,
+    identities=flyids,
+    track_len=3000 + config['contextl'] + 1,
+    burn_in=config['contextl'],
+    max_contextl=config['contextl'],
+    agent_ids=agent_ids,
+    start_frame=start_frame,
+)
+time.time() - t0
+
+# %%
+gt_track.shape
+
+# %%
+pred_track.shape
+
+# %%
+# TODO:
+#
+# Simulate one fly at a time for the classification
+# Only simulate flies corresponding to training flies (male, courtship...)
+# Save track snippets for gt and pred
+
+# %%
+
+# %%
+session_agents = np.array([session.agent_id for session in train_dataset.sessions])
+
+# %%
+session_id = 0
+session = train_dataset.sessions[session_id]
+chunk = train_dataset.get_chunk(session
+
+# %%
+track.array.shape
+# gt_track = track.array[:, start_frame:start_frame + track_len]
+
+# %%
+config['contextl'] * 50
+
+# %%
+len(train_dataset.sessions)
+config['contextl'] * 51
+
+# %%
+# session = train_dataset.sessions[7]
+# np.arange(session.start_frame, session.start_frame + session.duration, config['contextl'] * 51)
+# type(pred_track)
+# np.save?
+
+# %%
+save_dir = 'train_data/synthetic'
+import os
+if not os.path.exists(save_dir):
+    os.makedirs(save_dir)
+
+# %%
+# simulate
+from tqdm.notebook import tqdm
+import pickle
+
+track_len = config['contextl'] * 51
+
+for i, session in enumerate(train_dataset.sessions):
+    if session.duration < track_len + 1:
+        continue
+
+    start_frames = np.arange(session.start_frame, session.start_frame + session.duration - track_len, track_len)
+    print(f"Session {i} / {len(train_dataset.sessions)} with {len(start_frames)} chunks...")
+    
+    for start_frame in start_frames:
+        save_str = f"session_{i}_startframe_{start_frame}_agent_id={session.agent_id}.npy"
+        
+        if os.path.exists(save_str):
+            continue
+        
+        gt_track, pred_track = simulate(
+            dataset=train_dataset,
+            model=model,
+            track=track,
+            pose=pose,
+            identities=flyids,
+            track_len=track_len,
+            burn_in=config['contextl'],
+            max_contextl=config['contextl'],
+            agent_ids=[session.agent_id],
+            start_frame=start_frame,
+        )
+        
+        np.save(os.path.join(save_dir, save_str), pred_track[session.agent_id])
+
+# %%
+# How about, I run the model on ground truth data and save the hidden state
+# Then I run a simulation and I save the hidden states of those as well
+#
+#
+#
+# Write a new simulation funciton that saves these different outputs
+# I need to modify the model to optionally output its hidden states. 
+# Then I train a binary classifier on these hidden states
+
+# %%
+len(start_frames), len(np.arange(session.start_frame, session.start_frame + session.duration - track_len, track_len))
+
+# %%
+
+# %%
+RL HF stuff instead of GANs
+
+Look at the paper by Kristin and Daniel
+
+When I make another training set, save the activity (hidden states) from the model
+
+Apply a grooming classifier to the data (and others)
+(Maybe train classifiers)
+
+Put a warning about overriding config parameters
+
+Push code (in different PRs)
+
+# %%
+Discuss with Kristin
+
+DIFFUSION
+
+Diffusion model finished training and loss looks good, but the simulation is still only good for about 200 frames 
+My models trained not with binning all froze and then started spiraling after 200-500 frames 
+    - linear
+    - MLP
+    - MLP diffusion
+    - linear diffusion (still training)
+- I'm thinking of letting a few of these models train even longer to see if that improves it, since validation loss is still decreasing
+- I looked a bit at what is happening with the diffusion model, visualizing some weights
+
+
+DISCRIMINATOR
+
+Data:
+- Training data, simulating 3000 frames from fixed interval prompt sequences in training data
+- Storing where in training data it is prompted from
+- For training, split it into smaller chunks and keep track of distance to prompt
+   - that way we can see if classifiction accuracy increases with distance to prompt, which I would expect
+Features: 
+- will extract same features as used by the model (sensory, posevel, globalvel, ...)
+Modeling over time:
+- could try convolution, fully connected, transformer, ... (can even use the same transformer as we have for next step prediction)
+
+                                                            
+                                                                                        
+                                                                                                              
+                                                                                                              
+                                                                                                              
+Training data:
+    short sequences of gt and pred trajectories
+    features: same as used for the model, could even use the hidden states of running the model as features
+
+Model: 
+    - Train a transformer from scratch
+    - Use current transformer and classify hidden state of last frame
+    - Combo: could use the pretrained transformer from the model and then do the classification
+
+GAN approach:
+    - Every so many iterations during training, simulate N frames into the future, then train the discriminator to tell them apart, 
+    propagate errors to the network (we penalize good predictions because we want the network to not be able to discriminate)
+    - For this to work, how we generate trk from the predicted velocities needs to be differentiable
+        Would need to implement it so that it is (or maybe it already is?)
+        Would be easier if the output was the track itself
+    - The entire sequence of simulation needs to be differentiable so we can propagate gradients back through the weights (this includes
+        computing features)
+
+# %%
+2000 * 50
 
 # %%

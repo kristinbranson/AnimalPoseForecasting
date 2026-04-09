@@ -79,11 +79,12 @@ def simulate(
 
     # print(pred_pose[agent_ids, curr_frame-1, :])
 
-    new_experiment = not hasattr(model, 'output')
+    # new_experiment = not hasattr(model, 'output')
+    new_experiment = False
 
     masksizeprev = 0
     model.eval()
-    while curr_frame < track_len:
+    for curr_frame in tqdm.trange(curr_frame, track_len, desc='Simulating'):
         # Make a motion prediction
         frame0 = 0
         if max_contextl is not None:
@@ -167,8 +168,6 @@ def simulate(
         inputs_proc = apply_opers_from_data(dataset.inputs, inputs)
         curr_in = np.concatenate(list(inputs_proc.values()), axis=-1)
         model_input[:, curr_frame, :] = torch.from_numpy(curr_in[:, 0, :].astype(np.float32)).to(device)
-
-        curr_frame += 1
 
     return gt_track, pred_track
 

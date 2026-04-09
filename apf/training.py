@@ -102,7 +102,8 @@ def train(
     # Initialize structure to keep track of loss
     if loss_epoch is None:
         loss_epoch = {}
-    for key in ['train', 'val', 'train_continuous', 'train_discrete', 'val_continuous', 'val_discrete']:
+    for key in ['train', 'val', 'train_continuous', 'train_discrete', 'val_continuous', 'val_discrete',
+                'train_dropout', 'train_continuous_dropout', 'train_discrete_dropout']:
         if key not in loss_epoch:
             loss_epoch[key] = torch.zeros(num_train_epochs)
             loss_epoch[key][:] = torch.nan
@@ -111,6 +112,8 @@ def train(
             loss_epoch[key][start_epoch:] = torch.nan
             
     last_val_loss = None
+    last_train_loss = None
+
 
     # Create attention mask
     example = next(iter(train_dataloader))
@@ -175,21 +178,25 @@ def train(
                                 predfn=lambda input: model.output(input, mask=train_src_mask, is_causal=is_causal))
 
             # update progress bar
-            stat = {'train loss': tr_loss.item() / nmask_train, 'last val loss': last_val_loss, 'epoch': epoch}
+            stat = {'train loss': tr_loss.item() / nmask_train,
+                    'last_train_loss': last_train_loss,
+                    'last val loss': last_val_loss,
+                    'epoch': epoch}
             stat['train loss discrete'] = tr_loss_discrete.item() / nmask_train
             stat['train loss continuous'] = tr_loss_continuous.item() / nmask_train
             progress_bar.set_postfix(stat)
                 # progress_bar.update(1)
             progress_bar.update(len(train_dataloader))
 
-            # # training epoch complete
-            # loss_epoch['train'][epoch] = tr_loss.item() / nmask_train
-            # loss_epoch['train_discrete'][epoch] = tr_loss_discrete.item() / nmask_train
-            # loss_epoch['train_continuous'][epoch] = tr_loss_continuous.item() / nmask_train
+            # training epoch complete
+            loss_epoch['train_dropout'][epoch] = tr_loss.item() / nmask_train
+            loss_epoch['train_discrete_dropout'][epoch] = tr_loss_discrete.item() / nmask_train
+            loss_epoch['train_continuous_dropout'][epoch] = tr_loss_continuous.item() / nmask_train
 
             # compute training loss after this epoch
             loss_epoch['train'][epoch], loss_epoch['train_discrete'][epoch], loss_epoch['train_continuous'][epoch] = \
                 compute_loss_mixed(model, train_dataloader, device, train_src_mask, weight_discrete=weight_discrete)
+            last_train_loss = loss_epoch['train'][epoch].item()
 
             # compute validation loss after this epoch
             loss_epoch['val'][epoch], loss_epoch['val_discrete'][epoch], loss_epoch['val_continuous'][epoch] = \

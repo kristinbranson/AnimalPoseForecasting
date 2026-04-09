@@ -112,6 +112,7 @@ def init_state(config=None,seedrandom=True,res={}):
     
     return res
 
+
 def init_raw_data(config=None,quickdebugdatafile=None,needtraindata=True,needvaldata=True,res={}):
     """
     res = init_raw_data(config=None,quickdebugdatafile=None,needtraindata=True,needvaldata=True,res={})

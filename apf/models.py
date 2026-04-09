@@ -504,7 +504,7 @@ class TransformerModel(torch.nn.Module):
                  ntokens_per_timepoint: int = 1,
                  input_idx=None, input_szs=None, embedding_types=None, embedding_params=None,
                  d_output_discrete=None, nbins=None,
-                 dataset_params=None, config=None):
+                 dataset_params=None, config=None, use_mlp=False):
         super().__init__()
         self.model_type = 'Transformer'
 
@@ -538,8 +538,11 @@ class TransformerModel(torch.nn.Module):
         else:
             self.encoder = torch.nn.Linear(d_input, d_model)
 
-        # fully-connected layer from d_model to input size
-        self.decoder = torch.nn.Linear(d_model, d_output)
+        if use_mlp:
+            self.decoder = MLP(d_model, d_output, channels=(512, 256, 128, 64))
+        else:
+            # fully-connected layer from d_model to input size
+            self.decoder = torch.nn.Linear(d_model, d_output)
 
         # store hyperparameters
         self.d_model = d_model
@@ -555,7 +558,9 @@ class TransformerModel(torch.nn.Module):
     def init_weights(self) -> None:
         pass
 
-    def forward(self, src: torch.Tensor, mask: torch.Tensor = None, is_causal: bool = False) -> torch.Tensor:
+    def forward(self, src: torch.Tensor, mask: torch.Tensor = None,
+                is_causal: bool = False, return_hidden: bool = False
+                ) -> dict[str, torch.Tensor]:
         """
     Args:
       src: Tensor, shape [seq_len,batch_size,dinput]
@@ -573,10 +578,10 @@ class TransformerModel(torch.nn.Module):
         src = self.pos_encoder(src)
 
         # main transformer layers
-        output = self.transformer_encoder(src, mask=mask, is_causal=is_causal)
+        hidden = self.transformer_encoder(src, mask=mask, is_causal=is_causal)
 
         # project back to d_input space
-        output = self.decoder(output)
+        output = self.decoder(hidden)
 
         if self.is_mixed:
             output_continuous = output[..., :self.d_output_continuous]
@@ -598,6 +603,9 @@ class TransformerModel(torch.nn.Module):
                     print(f'- bin dimension {d} has nans:')
                     print(torch.isnan(output_dim).sum(0))
                     print(torch.isnan(output_dim).sum(1))
+
+        if return_hidden:
+            output['hidden'] = hidden
 
         return output
 
@@ -1124,8 +1132,12 @@ def initialize_model(config, train_dataset, device):
         criterion = min_causal_criterion
     else:
         if config.get('diffusion', False):
+            MODEL_ARGS.pop('config')
+            MODEL_ARGS.pop('dataset_params')
             model = TransformerDiffusionModel(d_input, d_output, **MODEL_ARGS).to(device)
         else:
+            use_mlp = config.get('use_mlp', False)
+            MODEL_ARGS['use_mlp'] = use_mlp
             model = TransformerModel(d_input, d_output, **MODEL_ARGS).to(device)
 
         if train_dataset.discretize:
@@ -1320,7 +1332,7 @@ class MLP(torch.nn.Module):
         layers.append(torch.nn.Linear(channels[-1], d_output))
         self.layers = torch.nn.ModuleList(layers)
 
-    def forward(self, x, t):
+    def forward(self, x):
         for layer in self.layers[:-1]:
             x = torch.nn.functional.tanh(layer(x))
         output = self.layers[-1](x)
@@ -1328,28 +1340,41 @@ class MLP(torch.nn.Module):
 
 
 class TimeEmbeddedMLP(torch.nn.Module):
-    def __init__(self, d_input, d_output, channels, n_timesteps, embed_weight=0.01):
+    def __init__(self, d_input, d_output, channels, n_timesteps, embed_dim=256):
         super(TimeEmbeddedMLP, self).__init__()
 
-        self.embed_weight = embed_weight
-        self.t_embeddings = SinusoidalEmbeddings(n_timesteps=n_timesteps, embed_dim=max(channels))
+        # self.embed_weight = embed_weight
+        self.t_embeddings = SinusoidalEmbeddings(n_timesteps=n_timesteps, embed_dim=embed_dim)
+        embed_layers = [torch.nn.Linear(embed_dim, d_input)] + [torch.nn.Linear(embed_dim, channel)
+                                                                     for channel in channels]
+        self.embed_layers = torch.nn.ModuleList(embed_layers)
 
-        layers = [torch.nn.Linear(d_input, channels[0])]
-        for i in range(1, len(channels)):
-            layers.append(torch.nn.Linear(channels[i - 1], channels[i]))
-        layers.append(torch.nn.Linear(channels[-1], d_output))
+        if len(channels) == 0:
+            layers = [torch.nn.Linear(d_input, d_output)]
+        else:
+            layers = [torch.nn.Linear(d_input, channels[0])]
+            for i in range(1, len(channels)):
+                layers.append(torch.nn.Linear(channels[i - 1], channels[i]))
+            layers.append(torch.nn.Linear(channels[-1], d_output))
         self.layers = torch.nn.ModuleList(layers)
+
+        print((len(layers), len(embed_layers)))
 
     def forward(self, x, t):
         # Embed t into the same dimension as each layer vector, so that it can be added to each layer
         # x can be of shape (n_seq_len, batch_size, d_input)
         # t should be a scalar or a vector
 
-        for layer in self.layers[:-1]:
+        embed = self.t_embeddings(t)
+
+        for i, layer in enumerate(self.layers[:-1]):
+            x = x + self.embed_layers[i](embed)
             # TODO: Try swapping out for relu
             x = torch.nn.functional.tanh(layer(x))
-            embed = self.t_embeddings(t)[..., :x.shape[-1]]
-            x = x + embed * self.embed_weight
+
+            # embed = self.t_embeddings(t)[..., :x.shape[-1]]
+            # x = x + embed * self.embed_weight
+        x = x + self.embed_layers[-1](embed)
         output = self.layers[-1](x)
         return output
 
@@ -1366,7 +1391,10 @@ class TransformerDiffusionModel(torch.nn.Module):
                  nlayers: int = 12, dropout: float = 0.1,
                  ntokens_per_timepoint: int = 1,
                  input_idx=None, input_szs=None, embedding_types=None, embedding_params=None,
-                 n_timesteps=100, decoder_channels=(512, 256, 128, 64),
+                 n_timesteps=100,
+                 # decoder_channels=(512, 256, 128, 64),
+                 decoder_channels=(),
+                 time_embed_dim=256,
                  ):
         # TODO: try running pose diffusion with these default channels (these are reversed from what I did before)
         super().__init__()
@@ -1403,7 +1431,8 @@ class TransformerDiffusionModel(torch.nn.Module):
             d_input=d_model+d_output,
             d_output=d_output,
             channels=decoder_channels,
-            n_timesteps=n_timesteps
+            n_timesteps=n_timesteps,
+            embed_dim=time_embed_dim,
         )
 
         # store hyperparameters
