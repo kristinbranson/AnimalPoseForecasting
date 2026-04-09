@@ -29,7 +29,7 @@ def test_kp2feat2kp():
 
     # Convert them to feat and back to keypoints
     Xfeat, scale_perfly, flyid = kp2feat(Xkp, return_scale=True)
-    Xkp_new = feat2kp(Xfeat, scale_perfly, flyid)
+    Xkp_new = feat2kp(Xfeat, scale_perfly, flyid)[..., 0, 0]
 
     # Verify that they are the same as original keypoints
     dists = np.linalg.norm(Xkp - Xkp_new, axis=1)
