@@ -238,28 +238,32 @@ def fit_discretize_labels(data, featidx, nbins=50, bin_epsilon=None, outlierprct
     )
 
 
-def fit_discretize_data(data, nbins=50, bin_epsilon=None, outlierprct=.001, fracsample=None, nsamples=None):
+def fit_discretize_data(data, nbins=50, bin_epsilon=None, outlierprct=.001, fracsample=None, nsamples=None,
+                        bin_edges=None):
     """
     Args:
         data: n_frames x n_feat, float
         ...
     """
-    # compute percentiles
+    
     nfeat = data.shape[1]
-    prctiles_compute = np.linspace(0, 100, nbins + 1)
-    prctiles_compute[0] = outlierprct
-    prctiles_compute[-1] = 100 - outlierprct
-    dtype = data.dtype
+    if bin_edges is None:
+        LOG.info(f'Selecting discretization bin edges from data, shape = {data.shape}, bin_epsilon = {bin_epsilon}')
+        # compute percentiles
+        prctiles_compute = np.linspace(0, 100, nbins + 1)
+        prctiles_compute[0] = outlierprct
+        prctiles_compute[-1] = 100 - outlierprct
+        dtype = data.dtype
 
-    # bin_edges is nfeat x nbins+1
-    if bin_epsilon is not None:
-        bin_edges = np.zeros((nfeat, nbins + 1), dtype=dtype)
-        for feati in range(nfeat):
-            bin_edges[feati, :] = select_bin_edges(data[:, feati], nbins, bin_epsilon[feati],
-                                                   outlierprct=outlierprct, feati=feati)
-    else:
-        bin_edges = np.percentile(data, prctiles_compute, axis=0)
-        bin_edges = bin_edges.astype(dtype).T
+        # bin_edges is nfeat x nbins+1
+        if bin_epsilon is not None:
+            bin_edges = np.zeros((nfeat, nbins + 1), dtype=dtype)
+            for feati in range(nfeat):
+                bin_edges[feati, :] = select_bin_edges(data[:, feati], nbins, bin_epsilon[feati],
+                                                    outlierprct=outlierprct, feati=feati)
+        else:
+            bin_edges = np.percentile(data, prctiles_compute, axis=0)
+            bin_edges = bin_edges.astype(dtype).T
 
     binnum = np.zeros(data.shape, dtype=int)
     for i in range(nfeat):
@@ -385,14 +389,32 @@ def get_flip_idx(keypointnames):
     return flipidx
 
 
-def flip_agents(X, keypointnames, arena_center=[0, 0], flipdim=0):
-    flipX = X.copy()
-    flipidx = get_flip_idx(keypointnames)
-    for i in range(len(flipidx)):
-        flipX[i, flipdim, ...] = arena_center[flipdim] - X[flipidx[i], flipdim, ...]
-        flipX[i, 1 - flipdim, ...] = X[flipidx[i], 1 - flipdim, ...]
+def flip_agents(X, keypointnames, arena_center=[0, 0], flipdim=0, inplace=False, t0=None):
+    """ flip keypoints over the flipdim axis
 
-    return flipX
+    Args:
+        X: nkeypts x 2 x T (x n_agents) array of keypoint positions
+        keypointnames: list of keypoint names
+        arena_center: center of arena to flip around
+        flipdim: dimension to flip over, 0 for x-axis, 1 for y-axis
+        inplace: if True, flip in place starting from time t0. 
+        t0: time index to start flipping from if inplace is True
+    """
+ 
+    if inplace: 
+        assert t0 is not None, 't0 must be specified for inplace flipping'
+        flipX = X[:,:,t0:]
+        sourceX = X[:,:, :t0]
+        flipX[:] = sourceX[:]
+    else:
+        flipX = X.copy()
+        sourceX = X
+    flipidx = get_flip_idx(keypointnames)
+    flipX[:len(flipidx), flipdim] = arena_center[flipdim] - sourceX[flipidx, flipdim]
+    flipX[:len(flipidx), 1-flipdim] = sourceX[flipidx, 1-flipdim]
+
+    if not inplace:
+        return flipX
 
 
 def split_data_by_id(data):

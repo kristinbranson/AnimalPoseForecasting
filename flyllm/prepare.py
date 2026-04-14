@@ -392,7 +392,7 @@ def init_model(config=None,somedataset=None,somedataloader=None,device=None,load
             epoch = config['num_train_epochs']
             LOG.info(f'Loaded model has no train loss history, setting epoch to {epoch} from config')
     else:
-        modeltype_str = get_modeltype_str(config, somedataset)
+        modeltype_str = get_modeltype_str(config)
         if ('model_nickname' in config) and (config['model_nickname'] is not None):
             modeltype_str = config['model_nickname']
         if mode in ['train',]:

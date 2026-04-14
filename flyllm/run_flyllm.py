@@ -582,7 +582,7 @@ def main(configfile, loadmodelfile=None, restartmodelfile=None):
     # sanity check on temporal dependences
     sanity_check_temporal_dep(train_dataloader, device, train_src_mask, is_causal, model, tmess=300)
 
-    modeltype_str = get_modeltype_str(config, train_dataset)
+    modeltype_str = get_modeltype_str(config)
     if ('model_nickname' in config) and (config['model_nickname'] is not None):
         modeltype_str = config['model_nickname']
 

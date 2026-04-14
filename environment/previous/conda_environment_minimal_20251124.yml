@@ -1,0 +1,23 @@
+name: transformer
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pip
+  - numpy
+  - scipy
+  - matplotlib
+  - tqdm
+  - ffmpeg
+  - ipykernel
+  - jupytext
+  - ipywidgets
+  - h5py
+  - hdf5storage
+  - opencv
+  - pycocotools
+  - pip:
+      - torch=2.9.1
+      - torchvision
+variables:
+  PYTHONPATH: '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPose
