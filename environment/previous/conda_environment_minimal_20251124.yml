@@ -19,3 +19,5 @@ dependencies:
   - pip:
       - torch=2.9.1
       - torchvision
+variables:
+  PYTHONPATH: '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPose

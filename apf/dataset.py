@@ -10,8 +10,9 @@ import inspect
 import copy
 from typing import Any
 
+from apf import utils
 from apf.data import fit_discretize_data, discretize_labels, weighted_sample
-from apf.utils import connected_components, modrange, rotate_2d_points, set_invalid_ends
+from apf.utils import connected_components, modrange, rotate_2d_points, set_invalid_ends, tic, toc
 
 from apf.features import compute_global_velocity, compute_relpose_velocity
 
@@ -346,13 +347,17 @@ class Discretize(Operation):
     def __init__(self, bin_edges: np.ndarray | None = None, bin_centers: np.ndarray | None = None, 
                  bin_samples: np.ndarray | None = None, fit_discretize_data_args: dict | None = None,
                  **kwargs):
+
         # extra kwargs are put in fit_discretize_data_args
         self.bin_edges = bin_edges
         self.bin_centers = bin_centers
         self.bin_samples = bin_samples
-        
+
+        # If bin_centers is None, then when we call apply bin_edges and bin_centers are recomputed, so this
+        # cannot be removed. (Alternatively we could enforce bin_centers be provided when bin_edges are)
         if self.bin_edges is not None and self.bin_centers is None:
             self.bin_centers = (self.bin_edges[:, 1:] + self.bin_edges[:, :-1]) / 2
+
         if fit_discretize_data_args is None:
             self.fit_discretize_data_args = kwargs
         else:
@@ -360,7 +365,7 @@ class Discretize(Operation):
             
         super().__post_init__()
 
-    def compute(self, data: np.ndarray):
+    def compute(self, data: np.ndarray, valid: np.ndarray | None = None):
         """ Computes the bin edges for the data.
 
         Args:
@@ -369,15 +374,19 @@ class Discretize(Operation):
         """
         n_feat = data.shape[-1]
         data_flat = data.reshape((-1, n_feat))
-        valid = ~np.isnan(data_flat.sum(-1))
+        if valid is None:
+            valid = ~np.isnan(data_flat.sum(-1))
+        else:
+            valid = valid.flatten()
         data_valid = data_flat[valid, :]
-        bin_edges, samples, bin_means, bin_medians = fit_discretize_data(data_valid, **self.fit_discretize_data_args)
+        bin_edges, samples, bin_means, bin_medians = fit_discretize_data(data_valid, bin_edges=self.bin_edges,
+                                                                         **self.fit_discretize_data_args)
         self.bin_edges = bin_edges
         # self.bin_centers = (bin_edges[:, 1:] + bin_edges[:, :-1]) / 2
         self.bin_centers = bin_medians
         self.bin_samples = samples
 
-    def apply(self, data: np.ndarray) -> np.ndarray:
+    def apply(self, data: np.ndarray, compute_args: dict = {}) -> np.ndarray:
         """ Bins the data.
 
         Args:
@@ -388,13 +397,15 @@ class Discretize(Operation):
             binned: Binned data, (n_agents,  n_frames, n_features * n_bins) float array
             or (n_frames, n_features * n_bins) float array
         """
-        if self.bin_edges is None:
-            self.compute(data)
+        
+        if self.bin_edges is None or self.bin_centers is None or self.bin_samples is None:
+            self.compute(data,**compute_args)
         sz_rest = data.shape[:-1]
         n_feat = data.shape[-1]
         data_flat = data.reshape((-1, n_feat))
 
         data_flat_discrete = discretize_labels(data_flat, self.bin_edges, soften_to_ends=True)
+            
         return data_flat_discrete.reshape(sz_rest + (-1,))
 
     def invert(self, data: np.ndarray, do_sampling: bool = True) -> np.ndarray:
@@ -425,6 +436,7 @@ class Discretize(Operation):
             continuous = labels_discrete_to_continuous(data.reshape((n_agents, n_frames, n_feat, n_bins)), self.bin_centers)
         if not ismultiagent:
             continuous = continuous[0]
+
         return continuous
     
     @property

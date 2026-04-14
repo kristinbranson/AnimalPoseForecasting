@@ -31,30 +31,21 @@ import os
 
 import apf
 from apf.training import train
-from apf.utils import function_args_from_config, set_mpl_backend, is_notebook
-from apf.simulation import simulate
-from apf.models import initialize_model
 import apf.utils as utils
 import matplotlib.pyplot as plt
 
 import flyllm
-from flyllm.config import read_config
-from flyllm.features import featglobal, get_sensory_feature_idx
-from flyllm.simulation import animate_pose
-
 from flyllm.prepare import init_flyllm
 from flyllm.plotting import initialize_debug_plots, initialize_loss_plots
 
 import logging
-import tqdm
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
 
-set_mpl_backend('tkAgg')
-ISNOTEBOOK = is_notebook()
+utils.set_mpl_backend('tkAgg')
+ISNOTEBOOK = utils.is_notebook()
 if ISNOTEBOOK:
     from IPython.display import HTML, display, clear_output
-    plt.ioff()
 else:
     plt.ion()
 
@@ -69,7 +60,7 @@ print('Timestamp: ' + timestamp)
 # ### Set parameters
 
 # %%
-configfile = 'configs/config_fly_llm_predvel_goodtracking_20251110.json'
+configfile = 'configs/config_fly_llm_predvel_optimalbinning_20251113.json'
 restartmodelfile = None
 outfigdir = 'figs'
 debug_uselessdata = False
@@ -116,7 +107,6 @@ lr_scheduler = res['lr_scheduler']
 modeltype_str = res['modeltype_str']
 loss_epoch = res['loss_epoch']
 epoch = res['epoch']
-modeltype_str = res['modeltype_str']
 savetime = res['model_savetime']
 
 train_dataset_params = {
@@ -131,6 +121,30 @@ last_val_loss = loss_epoch['val'][epoch].item()
 if np.isnan(last_val_loss):
     last_val_loss = None
 
+
+# %%
+# check flipping
+
+# print(train_data['track'].array.shape)
+# T = train_data['track'].array.shape[1]
+# t = 123
+# print(f'{t} -> {t+T//2}')
+# plt.plot(train_data['track'].array[:,t,0,:].T, train_data['track'].array[:,t,1,:].T,'r.-')
+# plt.plot(train_data['track'].array[:,t+T//2,0,:].T, train_data['track'].array[:,t+T//2,1,:].T,'b.-')
+# plt.axis('equal')
+
+# %%
+# # profile data loading
+# import cProfile
+# import pstats
+
+# def profile_test():
+#     res1 = init_flyllm(configfile=configfile,mode='train',restartmodelfile=restartmodelfile,
+#                 debug_uselessdata=False)
+    
+# cProfile.run('profile_test()', 'init_flyllm_profile.stats')
+# p = pstats.Stats('init_flyllm_profile.stats')
+# p.sort_stats('cumtime').print_stats(100)
 
 # %% [markdown]
 # ### some helper functions for profiling memory usage
@@ -284,7 +298,7 @@ def end_epoch_hook(loss_epoch=None, epoch=None, **kwargs):
     return
 
 # test the hooks
-if False:
+if True:
     for i,trainexample in enumerate(train_dataloader):
         if i >= 1:
             break
@@ -319,7 +333,7 @@ print(f'Cuda memory reserved for model: {memreserved:.3f} GB')
 # %%
 savefilestr = os.path.join(config['savedir'], f"fly{modeltype_str}_{savetime}")
 
-train_args = function_args_from_config(config,train)
+train_args = utils.function_args_from_config(config,train)
 train_args['train_dataloader'] = train_dataloader
 train_args['val_dataloader'] = val_dataloader
 train_args['model'] = model
