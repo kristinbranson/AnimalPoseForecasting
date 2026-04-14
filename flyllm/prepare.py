@@ -114,7 +114,6 @@ def init_state(config=None,seedrandom=True,res={}):
 
 def init_raw_data(config=None,quickdebugdatafile=None,needtraindata=True,needvaldata=True,res={}):
     """
-    OBSOLETE -- used with FlyMLMDataset
     res = init_raw_data(config=None,quickdebugdatafile=None,needtraindata=True,needvaldata=True,res={})
     Load raw data from files specified in config, and filter according to configuration parameters.
     Inputs:
@@ -130,7 +129,6 @@ def init_raw_data(config=None,quickdebugdatafile=None,needtraindata=True,needval
         'val_scale_perfly': ndarray of shape nscale x nflies with scale data for each fly
     """
 
-    LOG.warning('Obsolete -- meant to be used with FlyMLMDataset, which is being phased out')
     assert config is not None, "No configuration provided"
     
     res['data'] = None
@@ -171,7 +169,6 @@ def init_process_data(config=None,data=None,scale_perfly=None,
                       valdata=None,val_scale_perfly=None,
                       traindataprocess='chunk',valdataprocess='test',res={}):
     """
-    OBSOLETE -- used with FlyMLMDataset
     res = init_process_data(config=None,data=None,scale_perfly=None,
                             valdata=None,val_scale_perfly=None,
                             traindataprocess='chunk',valdataprocess='test',res={})
@@ -197,7 +194,6 @@ def init_process_data(config=None,data=None,scale_perfly=None,
         'idct_m': ndarray or None, inverse DCT matrix
     """
     
-    LOG.warning('Obsolete -- meant to be used with FlyMLMDataset, which is being phased out')
     assert config is not None
     
     # if using discrete cosine transform, create dct matrix
