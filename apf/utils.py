@@ -747,21 +747,20 @@ def ndarray_to_tensor(xnp: dict | list | tuple | np.ndarray | None) -> dict:
     Returns:
         xtorch: output dict with torch tensors
     """
-    xtorch = {}
-    for k, v in xnp.items():
-        if isinstance(v, torch.Tensor):
-            xtorch[k] = v
-        elif v is None:
-            xtorch[k] = None
-        if isinstance(v, np.ndarray):
-            xtorch[k] = torch.tensor(v)
-        elif isinstance(v, dict):
-            xtorch[k] = ndarray_to_tensor(v)
-        elif isinstance(v, list) or isinstance(v, tuple):
-            xtorch[k] = [ndarray_to_tensor(item) for item in v]
-        else:
-            xtorch[k] = v
-    return xtorch
+    if isinstance(xnp, torch.Tensor):
+        return xnp
+    elif xnp is None:
+        return None
+    if isinstance(xnp, np.ndarray):
+        return torch.tensor(xnp)
+    elif isinstance(xnp, dict):
+        return {k: ndarray_to_tensor(v) for k, v in xnp.items()}
+    elif isinstance(xnp, list): 
+        return [ndarray_to_tensor(item) for item in xnp]
+    elif isinstance(xnp, tuple):
+        return tuple(ndarray_to_tensor(item) for item in xnp)
+    else:
+        return xnp
 
 def tensor_to_ndarray(xtorch: dict | list | tuple | torch.Tensor | None) -> dict:
     """ Converts all torch tensors in the input to numpy arrays.
@@ -773,21 +772,20 @@ def tensor_to_ndarray(xtorch: dict | list | tuple | torch.Tensor | None) -> dict
     Returns:
         xnp: output dict with numpy arrays
     """
-    xnp = {}
-    for k, v in xtorch.items():
-        if isinstance(v, np.ndarray):
-            xnp[k] = v
-        elif v is None:
-            xnp[k] = None
-        if isinstance(v, torch.Tensor):
-            xnp[k] = v.cpu().numpy()
-        elif isinstance(v, dict):
-            xnp[k] = tensor_to_ndarray(v)
-        elif isinstance(v, list) or isinstance(v, tuple):
-            xnp[k] = [tensor_to_ndarray(item) for item in v]
-        else:
-            xnp[k] = v
-    return xnp
+    if isinstance(xtorch, np.ndarray):
+        return xtorch
+    elif xtorch is None:
+        return None
+    if isinstance(xtorch, torch.Tensor):
+        return xtorch.cpu().numpy()
+    elif isinstance(xtorch, dict):
+        return {k: tensor_to_ndarray(v) for k, v in xtorch.items()}
+    elif isinstance(xtorch, list):
+        return [tensor_to_ndarray(item) for item in xtorch]
+    elif isinstance(xtorch, tuple):
+        return tuple(tensor_to_ndarray(item) for item in xtorch)
+    else:
+        return xtorch
 
 def get_optional_params(fcn: Callable) -> set:
     """" Returns the names of optional parameters of a function.
@@ -804,3 +802,58 @@ def get_optional_params(fcn: Callable) -> set:
         or param.kind == inspect.Parameter.KEYWORD_ONLY
     }
     return optional_params
+
+def recursive_subindex(x, idx: tuple):
+    """
+    Subindex x recursively according to idx.
+    Args:
+        x: Input data for the operation. Can be a np.ndarray, torch.Tensor, list, or dict.
+        idx: Tuple of indices to subindex x.
+    Returns:
+        Subindexed data.
+    """
+    return recursive_applyfcn(x, lambda xcurr: xcurr[idx])
+
+def recursive_pretile(x, nrepsin: int):
+    """
+    Pre-extend x by one dimension and tile by nrepsin along that dimension.
+    Args:
+        x: Input data for the operation. Can be a np.ndarray, torch.Tensor, list, or dict.
+        nrepsin: Number of repetitions to tile x along the new dimension.
+    Returns:
+        Tiled data.
+    """
+    def pretile_helper(xcurr):
+        nreps = (nrepsin,) + (1,)*xcurr.ndim
+        tilefun = np.tile if isinstance(xcurr, np.ndarray) else torch.tile
+        return tilefun(xcurr[None],nreps)
+    
+    return recursive_applyfcn(x, pretile_helper)
+
+def recursive_applyfcn(x, fcn):
+    """
+    Apply function fcn to invertdata for the operation. Assumes that 
+    x is assumed to be either:
+        - None
+        - a np.ndarray or torch.Tensor (base case)
+        - a list of x
+        - a dict of x for different keys
+    If x is None, None is returned.
+    If x is a np.ndarray or torch.Tensor, fcn is called on it directly. fcn must handle this base case. 
+    If x is a list corresponding to a fusion-like operation, the sub-operation's fcn is called on each list instance. 
+    If x is a dict, the fcn is called on each dict value.
+    Args:
+        x: Input data for the operation.
+        fcn: Function to apply to the input data. Must take two arguments: the operation and the input data.
+    """
+        
+    if x is None:
+        return None
+    elif isinstance(x, np.ndarray) or isinstance(x, torch.Tensor):
+        return fcn(x)
+    elif isinstance(x, list):
+        return [recursive_applyfcn(xcurr,fcn) for xcurr in x]
+    elif isinstance(x, dict):
+        return {k: recursive_applyfcn(v,fcn) for k,v in x.items()}
+    else:
+        return x

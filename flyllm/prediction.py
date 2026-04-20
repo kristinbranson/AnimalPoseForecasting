@@ -390,8 +390,8 @@ def copy_pred_to_example(example, pred, ts=None):
             newshape[-2] = len(ts)
             example['labels_discrete'][...,ts,:] = pred['discrete'].reshape(newshape)
         
-def predict_iterative(Xkp_fill, burnin, agentspred, model, dataset, config, maxcontextl=np.inf, debugcheat=False,
-                      nsamples=1,labels_true=None, posestats=None, dampenconstant=0, prctilelim=None):
+def predict_iterative(Xkp_true, burnin, agentspred, model, dataset, config, maxcontextl=np.inf, debugcheat=False,
+                      labels_true=None, posestats=None, dampenconstant=0, prctilelim=None, dt=1, nsamples=1, extraargs={}):
 
     """
     predict_iterative(examples_pred,fliespred,scales,Xkp_fill,burnin,model,dataset,
@@ -426,12 +426,18 @@ def predict_iterative(Xkp_fill, burnin, agentspred, model, dataset, config, maxc
         dtype = w.cpu().numpy().dtype
         device = w.device
 
-    Xkp_fill = np.tile(Xkp_fill[None], (nsamples,1,1,1,1))  # nsamples x nkpts x 2 x tpred x nflies
-    nagentstotal = Xkp_fill.shape[1]
-    ttotal = Xkp_fill.shape[2]
-    tpred = ttotal - burnin
+    # erase the fly we are predicting. Keep dt ground-truth frames past burnin
+    # because label computation uses windows of dt frames into the past.
+    Xkp_fill = Xkp_true.copy()
+    Xkp_fill[agentspred,burnin+dt+1:] = np.nan
+    
+    # tile for multiple samples
+    Xkp_fill = np.tile(Xkp_fill[None],[nsamples,]+[1,]*(Xkp_fill.ndim))
+    extraargs = apf.utils.recursive_pretile(extraargs, nsamples)    
 
-    nagentspred = len(agentspred)
+    nsamples = Xkp_fill.shape[0]
+    ttotal = Xkp_fill.shape[2]
+    tpred = ttotal - burnin - dt
 
     with torch.no_grad():
         w = next(iter(model.parameters()))
@@ -439,11 +445,6 @@ def predict_iterative(Xkp_fill, burnin, agentspred, model, dataset, config, maxc
 
     is_causal = True
 
-    masktype = None
-
-    # start predicting motion from frame burnin-1 to burnin = t
-    masksizeprev = None
-    
     # global position of each fly in the previous frame, so that we don't have to integrate to compute position
     # TODO
     # pose_prev = []
@@ -451,48 +452,46 @@ def predict_iterative(Xkp_fill, burnin, agentspred, model, dataset, config, maxc
     #     pose_curr = data_examples[i].labels.get_next_pose(ts=np.arange(burnin),use_todiscretize=True)[...,-1,:]
     #     pose_prev.append(pose_curr)
     
-    label_bin_indices = dataset.label_bin_indices
-    
-    for t in tqdm.trange(burnin, burnin+tpred): 
-        t0 = int(np.maximum(t - maxcontextl, 0))
-        duration = t - t0 + 1  # inclusive of t
+    # t is the last pose frame fed to the model; we predict frame t+1.
+    # The Xkp window is dt frames longer than the model context because label
+    # computation uses windows of dt frames into the past.
+    for t in tqdm.trange(burnin+dt, burnin+tpred+dt-1):
+        t0 = int(np.maximum(t - maxcontextl - dt, 0))
+        duration = t - t0 + 1 - dt
 
         for i,agent in enumerate(agentspred):
             # copy frames up to t
             
-            Xkpcurr = Xkp_fill[...,agent,t0:t+1,:,:]  # nsamples x duration x nkpts x 2
-            
-            
-            
-            example = apf.dataset.get_chunk(
-                data_examples[i],
-                start_frame = t0,
-                duration = duration,
-                agent_id = None,
-                label_bin_indices = label_bin_indices                
-            )
+            Xkp_curr = Xkp_fill[...,agent,t0:t+1,:,:]  # nsamples x duration x nkpts x 2
+            extraargs_curr = apf.utils.recursive_subindex(extraargs, (slice(None), agent, slice(t0,t+1)))
+
+            # start_frame=dt: the first dt frames of Xkp_curr supply the lookback
+            # window for label computation, not the model context.
+            example = dataset.rawdata_to_item(
+                inputs={k: Xkp_curr for k in dataset.inputs.keys()},
+                labels={k: Xkp_curr for k in dataset.labels.keys()},
+                extraargs=extraargs_curr,
+                start_frame=dt,
+                duration=duration)
             example = ndarray_to_tensor(example)
-            
+            # dt+1 frames: computing the label at frame t+1 requires pose at t+1-dt.
+            tsnext = slice(t+1-dt,t+2)
+            extraargs_next = apf.utils.recursive_subindex(extraargs, (slice(None), agent, tsnext))
 
             if debugcheat:
-                # TODO
-                raise NotImplementedError("Debugcheat not implemented yet")
-                label_pred = labels_true[i].copy_subindex(ts=np.arange(t0, t+1))
-                pred = label_pred.get_train_labels()
-                pred = {k: v.reshape((1,) + v.shape) if type(v) is torch.Tensor else v for k, v in pred.items()}
-                #zmovementout = np.tile(self.zscore_labels(movement_true[t - 1, :, i]).astype(dtype)[None],
-                #                       (nsamples1, 1))
+                Xkp_next = np.tile(Xkp_true[None,agent,tsnext], [nsamples,1,1,1])
+
+                pred = dataset.rawdata_to_item(labels={k: Xkp_next for k in dataset.labels.keys()},
+                                               extraargs=extraargs_next)
+                
             else:
                 pred = predict(example,model,config,device=device,is_causal=is_causal)
             
-            if nsamples == 0:
-                pred = pred_apply_fun(pred, lambda x: x[0, [-1,], ...].cpu() if type(x) is torch.Tensor else x)
-            else:
-                pred = pred_apply_fun(pred, lambda x: x[:, [-1,], ...].cpu() if type(x) is torch.Tensor else x)
-                
-            # set the label for frame t
-            copy_pred_to_example(example, pred, t)
-            example = tensor_to_ndarray(example)
+            pred = pred_apply_fun(pred, lambda x: x[:, [-1,], ...].cpu() if type(x) is torch.Tensor else x)
+
+            Xkp_next = Xkp_fill[...,agent,tsnext,:,:]
+            example_next = dataset.rawdata_to_item(labels={k: Xkp_next for k in dataset.labels.keys()},
+                                                    extraargs=extraargs_next)
 
             if (posestats is not None) and ((dampenconstant > 0) or (prctilelim is not None)):
                 raise NotImplementedError("Regularization not implemented yet")
@@ -501,26 +500,17 @@ def predict_iterative(Xkp_fill, burnin, agentspred, model, dataset, config, maxc
                 pose[...,-1,:] = regularize_pose(pose[...,-1,:],posestats,dampenconstant,prctilelim=prctilelim)
                 data_examples[i].labels.set_next_pose(pose,ts=[t,])
 
-            # get keypoints for frame t
-            datadict_example = dataset.item_to_data(example)
-            # possibly a more efficient way to do this, since we only need the last frame
-            Xkpcurr = apf.dataset.invert_to_named(datadict_example['labels']['velocity'],'original')
+            # set the label for frame t
+            copy_pred_to_example(example_next, pred, -1)
+            example_next_datadict = dataset.item_to_data(example_next)
+            Xkp_next = apf.dataset.invert_to_named(example_next_datadict['labels']['velocity'],'original')
+            Xkp_fill[...,agent,t+1,:,:] = Xkp_next[...,-1,:,:]
 
-            # store keypoints predicted for this frame            
-            Xkp_fill[...,agent,t+1,:,:] = Xkpcurr[...,-1,:,:]
-                
         # end loop over flies
-        
-        if t < tpred-1:
-            # update observations for the next frame
-            for i,agent in enumerate(agentspred):
-                # this is just one frame of inputs, so don't crop the end
-                data_examples[i].inputs.set_inputs_from_keypoints(Xkp_fill[...,:,:,[t+1,],:],agent,scale=scales[i],ts=[t+1,],npad=0)
 
-    if need_weights:
-        return data_examples, attn_weights
-    else:
-        return data_examples
+    # end loop over time
+
+    return Xkp_fill
 
 def clear_predictions(example: dict, burnin: int):
     """Clear predictions in example dict after burnin frame by setting to nan."""
@@ -533,8 +523,11 @@ def clear_predictions(example: dict, burnin: int):
         exampleout[key][...,burnin:,:] = np.nan
     return exampleout
 
-def predict_iterative_all(dataset, model, config, track, tpred, N=None, keepall=True, debugcheat=False, nsamples=0, labelidx=None, stride=None, **kwargs):
+def predict_iterative_all(dataset, model, config, tpred, track=None, extraargs=None, N=None, keepall=True, debugcheat=False, nsamples=0, labelidx=None, stride=None, **kwargs):
 
+    if apf.dataset.isData(track):
+        track = track.array
+        
     # total number of frames we will crop out for each example
     contextl = dataset.context_length
     burnin = contextl - 1
@@ -556,30 +549,48 @@ def predict_iterative_all(dataset, model, config, track, tpred, N=None, keepall=
         labelidx = np.array(range(len(dataset)))
         N = len(dataset)
 
-    all_pred = []
-            
+    Xkp_pred_all = []
+    
+    dt = 1
+    
     for i,examplei in tqdm.tqdm(enumerate(labelidx),total=N):
 
         t0, agentnum = dataset.chunk_indices[examplei]
+        # predict_iterative writes predicted frames [burnin+dt+1, burnin+tpred+dt-1]
+        # into Xkp_fill, so we slice t0 through t0+burnin+tpred+dt from the track.
+        tslice = slice(t0,t0+burnin+tpred+dt)
 
-        # get positions of all agents
-        Xkp_true = track.array[:,t0:t0+contextl+tpred+1].copy() # added 1 because predicting velocity
+        if extraargs is not None:
+            extraargscurr = apf.utils.recursive_subindex(extraargs, (slice(None),tslice))
+        else:
+            extraargscurr = None
+            
+        if track is None:
+            example = dataset.get_example_datadict(examplei)
+            track = apf.dataset.invert_to_named(example['labels']['velocity'], 'original')
+            invertdata = track.get_invertdata_dict()
+            if extraargs is None:
+                extraargscurr = invertdata
+            else:
+                # user-supplied extraargs override auto-derived invertdata per op-name key.
+                extraargscurr = {k: invertdata.get(k,{}) | extraargscurr.get(k,{}) for k in set(invertdata.keys()).union(set(extraargscurr.keys()))}
+            track = track.array
+        else:
+            # get positions of all agents    
+            Xkp_true = track[:,tslice].copy() 
+            
+        # flyidscurr = flyids[:,t0:t0+contextl+tpred+dt]
+        # assert np.all(flyidscurr[agentnum,0] == flyidscurr[agentnum,:])
 
-        # erase the fly we are predicting
-        Xkp_fill = Xkp_true.copy()
-        Xkp_fill[agentnum,burnin+1:] = np.nan
-        if nsamples > 0:
-            Xkp_fill = np.tile(Xkp_fill[None],[nsamples,]+[1,]*(Xkp_fill.ndim))
+        Xkp_pred = predict_iterative(Xkp_true, burnin, [agentnum,], model, dataset, config, maxcontextl=contextl,
+                                    debugcheat=False, dt=dt, nsamples=nsamples, extraargs=extraargscurr, **kwargs)
 
-        Xkp_fill = predict_iterative(Xkp_fill, burnin, [agentnum,], model, dataset, config, maxcontextl=contextl,
-                                    debugcheat=False, nsamples=nsamples, **kwargs)
-
-        all_pred.append(exampleobj_pred)
+        Xkp_pred_all.append(Xkp_pred)
         
     dataset.set_context_length(contextl)
     dataset.set_stride()
 
-    return all_pred, labelidx  # ,all_mask,all_pred_discrete,all_labels_discrete
+    return Xkp_pred_all, labelidx  # ,all_mask,all_pred_discrete,all_labels_discrete
 
 # def get_global_predictions(all_pred,labelidx,dataset):
 

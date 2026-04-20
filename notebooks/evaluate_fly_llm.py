@@ -26,6 +26,8 @@ linecache.clearcache()
 
 import numpy as np
 
+# %matplotlib widget
+
 import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader
@@ -418,9 +420,12 @@ for k in datadict['labels']:
 
 # check creating datadict from keypoints with start_frame and invertdata
 print('\nChecking rawdata_to_datadict with start_frame and invertdata:')
-start_frame = 10000
+start_frame = 20000
+
 duration = contextl
 Xkp = val_data['track'].array[:,start_frame:start_frame+duration+1]
+inputs = {k: Xkp for k in val_dataset.inputs.keys()}
+labels = {k: Xkp for k in val_dataset.labels.keys()}
 datadict = val_dataset.rawdata_to_datadict(inputs,labels, use_data_invertdata=True,
                                            use_prev_invertdata=True,
                                            start_frame=start_frame)
@@ -430,18 +435,6 @@ for k in datadict['inputs']:
 for k in datadict['labels']:
     print(f'labels.{k}:')
     check_inversion(val_dataset.labels[k][:,start_frame:start_frame+duration],datadict['labels'][k][:,:duration])
-
-# %%
-#print(np.nonzero(np.isnan(val_dataset.labels['velocity'][idx].array[7])))
-#print(np.nonzero(np.isnan(datadict['labels']['velocity'].array[7])))
-plt.figure()
-plt.imshow(datadict['labels']['velocity'].array[:,-10:,0],aspect='auto',interpolation='none')
-#show colobar
-plt.colorbar()
-datadict['labels']['velocity'].array[:,-1,0]
-plt.figure()
-plt.imshow(val_dataset.labels['velocity'].array[:,502:512,0],aspect='auto',interpolation='none')
-plt.colorbar()
 
 # %%
 # DEBUG: check inversion of global velocity
@@ -485,13 +478,52 @@ plt.colorbar()
 # # [-7.53946829         nan         nan]
 
 # %%
+# %matplotlib inline
+
+# %%
+# plot forward velocity (index 0) for all flies to find frames with movement
+plt.close('all')
+velocity_array = val_data['velocity'].array  # (nagents, ntimepoints, nfeatures)
+forward_vel = velocity_array[:, :, 0]
+flyids = val_data['flyids']
+
+# flies with isdata True for at least some frames
+valid_flyids = []
+for flyid in np.unique(val_data['flyids']):
+    if np.any((val_data['flyids'] == flyid) & val_data['isdata']):
+        valid_flyids.append(flyid)
+nunique_flies = len(valid_flyids)
+ncols = 1
+nrows = int(np.ceil(nunique_flies / ncols))
+fig, axes = plt.subplots(nrows, ncols, figsize=(10 * ncols, 3 * nrows), sharey=True)
+axes = axes.flatten()
+
+minv = np.nanpercentile(forward_vel[val_data['isdata']], 1)
+maxv = np.nanpercentile(forward_vel[val_data['isdata']], 99)
+for i, flyid in enumerate(valid_flyids):
+    ididx,tidx = np.nonzero((val_data['flyids'] == flyid) & val_data['isdata'])
+    fv = forward_vel[ididx,tidx]
+    isgap = np.diff(tidx) > 1
+    # prepend True to isgap for the first frame to keep the array lengths consistent
+    isgap = np.insert(isgap, 0, True)
+    ax = axes[i]
+    ax.plot(fv)
+    ax.plot(np.where(isgap)[0], fv[isgap], 'r.')
+    ax.set_ylabel(f'id={flyid}')
+    ax.set_ylim(minv, maxv)
+
+#fig.suptitle('Forward velocity (feature 0) per fly')
+fig.tight_layout()
+#plt.close(fig)
+
+# %%
 # plot true vs prediction
 
 savefig = False
 featsplot = None
 featsplot=[0,1,2,14, 16, 20, 22, 24, 26]
 #toplots = [{'id': 3, 'tsplot': np.arange(8500,8800)}, {'id': 435, 'tsplot': np.arange(32400,32700)}, ]
-toplots = [{'id': 11, 'tsplot': np.arange(8500,8800)}, {'id': 13, 'tsplot': np.arange(6200,6500)}, ]
+toplots = [{'id': 11, 'tsplot': np.arange(8500,8800)}, {'id': 13, 'tsplot': np.arange(6200,6500)}, {'id': 19, 'tsplot': np.arange(7200,7500)}]
 nsamples = 10
 ylim_nstd = 5
 
@@ -503,6 +535,7 @@ for toplot in toplots:
     assert len(ididx) > 0, f'Fly id {id} not in validation data flyids'
     assert np.all(ididx==ididx[0]), 'Multiple indices for fly id'
     ididx = ididx[0]
+    print(f'Fly {id}: len(tidx)={len(tidx)}, max(tsplot)={np.max(tsplot)}')
     assert len(tidx) > np.max(tsplot), f'Not enough timepoints for fly id {id} to cover tsplot'
     tidx = tidx[tsplot]
     
@@ -657,7 +690,11 @@ linecache.clearcache()
 max_tpred = 150
 stride = max_tpred # this doesn't have to be max_tpred
 val_dataset.set_stride(stride) 
-all_pred_iter, labelidx_iter = flyllm.prediction.predict_iterative_all(val_dataset,model,config,val_data['track'],max_tpred,N=20,keepall=False,nsamples=8)
+extraargs = {'pose': {'flyid': val_data['flyids']}}
+
+all_pred_iter, labelidx_iter = \
+    flyllm.prediction.predict_iterative_all(val_dataset,model,config,max_tpred,track=val_data['track'],
+                                            N=2,keepall=False,nsamples=8,extraargs=extraargs)
 
 # reset
 val_dataset.set_context_length(config['contextl'])

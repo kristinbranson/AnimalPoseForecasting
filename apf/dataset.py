@@ -379,6 +379,19 @@ class Data(NamedTuple):
         array_new[tuple(idx)] = x
         return Data.copy_with(self, array=array_new)
     
+    def get_invertdata_dict(self) -> dict:
+        """ Groups invertdata by operation name.
+
+        Returns:
+            invertdata_dict: Dict mapping operation name to a list of invertdata
+                dicts, one per occurrence of that operation in self.operations.
+        """
+        invertdata_dict = {}
+        for oper, invdata in zip(self.operations, self.invertdata):
+            invertdata_dict.setdefault(oper.name, []).append(invdata)
+        return invertdata_dict
+
+    
 def isData(obj: Any) -> bool:
     """ Checks if the object is a Data object based on its attributes.
     Robust to e.g. changing Data class in a notebook and reloading.
@@ -1766,8 +1779,8 @@ def apply_operations(data: np.ndarray | torch.Tensor | Data,
                      invertdata: list | None = None,
                      extraargs: dict = {},
                      use_prev_invertdata: bool | None = None,
-                     start_frame=None,
-                     timedim=None) -> Data:
+                     start_frame: int | None = None,
+                     timedim: int | None = None) -> Data:
     """ Apply a list of operations to data.
     """
     
@@ -1940,7 +1953,7 @@ def invert_to_named(data: Data, name: str | list | tuple, return_data: bool = Fa
 
 def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict, extraargs: dict = {}, 
                           use_data_invertdata: bool | None = None, use_prev_invertdata: bool | None = None,
-                          separate_extraargs: bool = False, start_frame=None, timedim=None) -> dict[str, Data]:
+                          separate_extraargs: bool = False, start_frame: int | None = None, timedim: int | None = None) -> dict[str, Data]:
     """ Applies post processing operations from reference datas to datas, for each key.
 
     Post-key-operations are all operations after the key of each data, for example for 'velocity' it doesn't
@@ -1965,7 +1978,8 @@ def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict, extraargs: di
         use_data_invertdata = len(extraargs) == 0
     processed_data = {k: v for k, v in datas.items()}
     for key in datas_ref.keys():
-        assert key in datas, "Expect both data to have all of the same keys"
+        if key not in datas:
+            continue
         if isinstance(datas[key], (np.ndarray, torch.Tensor)):
             opers = datas_ref[key].operations
             invertdata = datas_ref[key].invertdata
@@ -2179,6 +2193,60 @@ class Dataset(torch.utils.data.Dataset):
         chunk = self.get_chunk(start_frame, self.context_length, agent_id)
         chunk['metadata']['idx'] = idx
         return chunk
+    
+    def get_subindex(self, idx: int | None = None, start_frame: int | None = None,
+                     agent_id: int | None = None,
+                     duration: int | None = None,
+                     return_info: bool = False) -> list[slice]:
+        """ Returns the index into data array prefixes corresponding to chunk idx.
+
+        Args:
+            idx: Index of the chunk, referring to the chunk_indices table.
+            start_frame: Start frame of the chunk. If provided, overrides idx.
+            agent_id: Agent id of the chunk. If provided, overrides idx.
+            duration: Length of the chunk. If None, defaults to context_length.
+        Returns:
+            subindex: A tuple of slices to index into data arrays.
+        """
+        if start_frame is None or agent_id is None:
+            start_frame, agent_id = self.chunk_indices[idx]
+        if duration is None:
+            duration = self.context_length
+        subindex = [slice(None), slice(None)]
+        if agent_id is not None:
+            subindex[0] = agent_id
+        if start_frame is not None and duration is not None:
+            subindex[1] = slice(start_frame, start_frame + duration)
+        subindex = tuple(subindex)
+        if return_info:
+            return subindex, {'start_frame': start_frame, 'agent_id': agent_id}
+        else:
+            return subindex
+    
+    def get_example_datadict(self,idx: int | None = None, start_frame: int | None = None,
+                             agent_id: int | None = None,
+                             duration: int | None = None) -> dict:
+        """ Returns a data chunk from the dataset as a datadict with 'inputs' and 'labels' keys.
+
+        Args:
+            idx: Index of the chunk, referring to the chunk_indices table.
+            start_frame: Start frame of the chunk. If provided, overrides idx.
+            agent_id: Agent id of the chunk. If provided, overrides idx.
+            duration: Length of the chunk. If None, defaults to context_length.
+
+        Returns:
+            chunk: A dictionary containing chunk data. Keys are
+                'inputs': Concatenated input chunk, (context_length, d_input) float
+                'labels': Concatenated label chunk, (context_length, d_output) float
+                'metadata': Metadata about the chunk, extracted from each key in self.metadata
+        """
+        subindex, info = self.get_subindex(idx=idx, start_frame=start_frame, agent_id=agent_id, duration=duration, return_info=True)
+
+        return {
+            'inputs': {k: v[subindex] for k, v in self.inputs.items()},
+            'labels': {k: v[subindex] for k, v in self.labels.items()},
+            'metadata': info
+        }
 
     def get_chunk(self, start_frame: int, duration: int, agent_id: int) -> dict[str, np.ndarray | torch.Tensor]:
         """ Returns a data chunk from the dataset.
@@ -2443,12 +2511,8 @@ class Dataset(torch.utils.data.Dataset):
         
         item = get_chunk(datadict,start_frame, duration, agent_id, 
                         label_bin_indices = self.label_bin_indices, 
-                        useoutputmask = datadict['useoutputmask'], 
-                        return_invertdata = self.invertdata is None)
+                        useoutputmask = datadict.get('useoutputmask',None))
         
-        if self.invertdata is not None:
-            item['metadata'].update(get_array_chunk(self.invertdata,start_frame,agent_id,duration))
-
         return item
     
     def get_operations(self) -> tuple[dict, dict]:
@@ -2466,12 +2530,12 @@ class Dataset(torch.utils.data.Dataset):
             invertdata['labels'][key] = data.invertdata
         return operations, invertdata
     
-    def rawdata_to_datadict(self, inputs: dict, labels: dict, idx: list | tuple | None = None,
+    def rawdata_to_datadict(self, inputs: dict | None = None, labels: dict | None = None, idx: list | tuple | None = None,
                             extraargs: dict | None = {}, extraargs_inputs: dict | None = None, 
                             extraargs_labels: dict | None = None, separate_extraargs: bool = False,
                             use_data_invertdata: bool | None = None,
                             use_prev_invertdata: bool | None = None,
-                            start_frame=None) -> dict:
+                            start_frame: int | None = None,timedim: int | None = None) -> dict:
         """
         rawdata_to_datadict(inputs, labels)
         Converts raw data to a datadict with Data objects for inputs and labels by applying 
@@ -2487,29 +2551,34 @@ class Dataset(torch.utils.data.Dataset):
             datadict (dict): Dictionary containing Data objects for 'inputs' and 'labels'.    
         """
         datadict = {}
-        if idx is not None:
-            inputs_ref = {k: v[*idx] for k, v in self.inputs.items()}
-            labels_ref = {k: v[*idx] for k, v in self.labels.items()}
-        else:
-            inputs_ref = self.inputs
-            labels_ref = self.labels
-        
-        datadict['inputs'] = apply_opers_from_data(inputs_ref,inputs,
-                                                   extraargs=extraargs if extraargs_inputs is None else extraargs_inputs,
-                                                   use_data_invertdata=use_data_invertdata,
-                                                   use_prev_invertdata=use_prev_invertdata,
-                                                   separate_extraargs=separate_extraargs,
-                                                   start_frame=start_frame)
-        datadict['labels'] = apply_opers_from_data(labels_ref,labels,
-                                                   extraargs=extraargs if extraargs_labels is None else extraargs_labels,
-                                                   use_data_invertdata=use_data_invertdata,
-                                                   use_prev_invertdata=use_prev_invertdata,
-                                                   separate_extraargs=separate_extraargs,
-                                                   start_frame=start_frame)
+        if inputs is not None:
+            if idx is not None:
+                inputs_ref = {k: v[*idx] for k, v in self.inputs.items()}
+            else:
+                inputs_ref = self.inputs
+            
+            datadict['inputs'] = apply_opers_from_data(inputs_ref,inputs,
+                                                        extraargs=extraargs if extraargs_inputs is None else extraargs_inputs,
+                                                        use_data_invertdata=use_data_invertdata,
+                                                        use_prev_invertdata=use_prev_invertdata,
+                                                        separate_extraargs=separate_extraargs,
+                                                        start_frame=start_frame, timedim=timedim)
+        if labels is not None:
+            if idx is not None:
+                labels_ref = {k: v[*idx] for k, v in self.labels.items()}
+            else:
+                labels_ref = self.labels
+            datadict['labels'] = apply_opers_from_data(labels_ref,labels,
+                                                        extraargs=extraargs if extraargs_labels is None else extraargs_labels,
+                                                        use_data_invertdata=use_data_invertdata,
+                                                        use_prev_invertdata=use_prev_invertdata,
+                                                        separate_extraargs=separate_extraargs,
+                                                        start_frame=start_frame, timedim=timedim)
         return datadict
     
-    def rawdata_to_item(self, inputs: dict, labels: dict, start_frame=None, agent_id=None, duration=None) -> dict:
-        datadict = self.rawdata_to_datadict(inputs, labels, start_frame=start_frame)
+    def rawdata_to_item(self, inputs: dict | None = None, labels: dict | None = None, start_frame: int | None = None, 
+                        agent_id: int | None = None, duration: int | None = None, **kwargs) -> dict:
+        datadict = self.rawdata_to_datadict(inputs, labels, start_frame=start_frame, **kwargs)
         item = self.data_to_item(datadict, start_frame=start_frame, agent_id=agent_id, duration=duration)
         return item
     
@@ -2606,26 +2675,35 @@ def get_chunk(datadict: dict,
             'metadata': Metadata about the chunk, extracted from each key in self.metadata
 
     """
-    labels = get_data_chunk(datadict['labels'], start_frame, agent_id, duration)
-    if label_bin_indices is None:
-        label_bin_indices, label_n_bins = get_bin_indices(datadict['labels'])
-    labels_discrete, labels_continuous = split_discr_cont(labels, label_bin_indices)
-    input = get_data_chunk(datadict['inputs'], start_frame, agent_id, duration).astype(np.float32)
-    chunk = {
-        'input': input,
-    }
-    if labels_continuous.shape[-1] > 0:
-        chunk['labels'] = labels_continuous.astype(np.float32)
-    if labels_discrete.shape[-1] > 0:
-        chunk['labels_discrete'] = labels_discrete.astype(np.float32)
+    chunk = {}
+    if 'inputs' in datadict:
+        input = get_data_chunk(datadict['inputs'], start_frame, agent_id, duration).astype(np.float32)
+        chunk['input'] = input
+
+    if 'labels' in datadict:
+        labels = get_data_chunk(datadict['labels'], start_frame, agent_id, duration)
+        if label_bin_indices is None:
+            label_bin_indices, label_n_bins = get_bin_indices(datadict['labels'])
+        labels_discrete, labels_continuous = split_discr_cont(labels, label_bin_indices)
+        if labels_continuous.shape[-1] > 0:
+            chunk['labels'] = labels_continuous.astype(np.float32)
+        if labels_discrete.shape[-1] > 0:
+            chunk['labels_discrete'] = labels_discrete.astype(np.float32)
     
     if useoutputmask is None and 'useoutputmask' in datadict:
         useoutputmask = datadict['useoutputmask']
+
+    if start_frame is None:
+        start_frame = 0
+    if duration is None and (len(chunk) > 0):
+        key = list(chunk.keys())[0]
+        duration = chunk[key].shape[-1]
     
     if useoutputmask is None:
         chunk['useoutputmask'] = np.ones((duration,), dtype=bool)
     else:
-        chunk['useoutputmask'] = useoutputmask[start_frame:(start_frame + duration), agent_id]
+        chunk['useoutputmask'] = useoutputmask[start_frame:start_frame+duration,
+                                               agent_id if agent_id is not None else slice(None)]
             
     chunk['metadata'] = {
         'start_frame': start_frame,
@@ -2644,6 +2722,8 @@ def get_chunk(datadict: dict,
                 subindex[1] = slice(start_frame, start_frame + duration)
 
         for key in ['inputs','labels']:
+            if key not in datadict:
+                continue
             chunk['metadata'][key] = {}
             for k,data in datadict[key].items():
                 chunk['metadata'][key][k] = data[*subindex].invertdata if do_subindex else data.invertdata

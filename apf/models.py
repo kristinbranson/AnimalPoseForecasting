@@ -19,8 +19,8 @@ def unpack_input(input, featidx, sz, dim=-1):
         dim = input.ndim + dim
     for k, v in featidx.items():
         idx[dim] = slice(v[0], v[1])
-        newsz = sz0[:dim] + sz[k] + sz0[dim + 1:]
-        res[k] = input[idx].reshape(newsz)
+        newsz = tuple(sz0[:dim] + sz[k] + sz0[dim + 1:])
+        res[k] = input[*idx].reshape(newsz)
 
     return res
 
