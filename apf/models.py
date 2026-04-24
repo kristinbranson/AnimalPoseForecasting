@@ -554,11 +554,15 @@ class TransformerModel(torch.nn.Module):
     def init_weights(self) -> None:
         pass
 
-    def forward(self, src: torch.Tensor, mask: torch.Tensor = None, is_causal: bool = False) -> torch.Tensor:
+    def forward(
+            self, src: torch.Tensor, mask: torch.Tensor = None, is_causal: bool = False, return_hidden: bool = False
+    ) -> torch.Tensor:
         """
     Args:
       src: Tensor, shape [seq_len,batch_size,dinput]
       src_mask: Tensor, shape [seq_len,seq_len]
+      return_hidden: Whether to include hidden states in the output. Hidden states are stored as a list of float arrays
+        of shape (batch_size, seq_len, d_model).
     Returns:
       output Tensor of shape [seq_len, batch_size, ntoken]
     """
@@ -572,7 +576,18 @@ class TransformerModel(torch.nn.Module):
         src = self.pos_encoder(src)
 
         # main transformer layers
-        output = self.transformer_encoder(src, mask=mask, is_causal=is_causal)
+        if return_hidden:
+            hidden_states = []
+            output = src
+            for layer in self.transformer_encoder.layers:
+                output = layer(
+                    output,
+                    src_mask=mask,
+                    is_causal=is_causal,
+                )
+                hidden_states.append(output.detach().cpu().numpy())
+        else:
+            output = self.transformer_encoder(src, mask=mask, is_causal=is_causal)
 
         # project back to d_input space
         output = self.decoder(output)
@@ -584,6 +599,9 @@ class TransformerModel(torch.nn.Module):
             output = {'continuous': output_continuous, 'discrete': output_discrete}
         else:
             output = {'continuous': output}
+
+        if return_hidden:
+            output['hidden'] = hidden_states
 
         return output
 

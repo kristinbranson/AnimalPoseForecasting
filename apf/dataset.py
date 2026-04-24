@@ -17,8 +17,6 @@ from apf.features import compute_global_velocity, compute_relpose_velocity
 
 LOG = logging.getLogger(__name__)
 
-DOTIME = False
-
 
 @dataclass
 class Operation(ABC):
@@ -675,23 +673,23 @@ class Discretize(Operation):
     def __init__(self, bin_edges: np.ndarray | None = None, bin_centers: np.ndarray | None = None, 
                  bin_samples: np.ndarray | None = None, fit_discretize_data_args: dict | None = None,
                  **kwargs):
-        if DOTIME:
-            start_time = tic()
-        
+
         # extra kwargs are put in fit_discretize_data_args
         self.bin_edges = bin_edges
         self.bin_centers = bin_centers
         self.bin_samples = bin_samples
-        
+
+        # If bin_centers is None, then when we call apply bin_edges and bin_centers are recomputed, so this
+        # cannot be removed. (Alternatively we could enforce bin_centers be provided when bin_edges are)
+        if self.bin_edges is not None and self.bin_centers is None:
+            self.bin_centers = (self.bin_edges[:, 1:] + self.bin_edges[:, :-1]) / 2
+
         if fit_discretize_data_args is None:
             self.fit_discretize_data_args = kwargs
         else:
             self.fit_discretize_data_args = fit_discretize_data_args | kwargs
             
         super().__post_init__()
-        
-        if DOTIME:
-            LOG.info(f"Discretize __init__ took {toc(start_time):.2f} seconds")
 
     def compute(self, data: np.ndarray, valid: np.ndarray | None = None):
         """ Computes the bin edges for the data.
@@ -700,9 +698,6 @@ class Discretize(Operation):
             data: (n_agents,  n_frames, n_features) float array
             or (n_frames, n_features) float array
         """
-        
-        if DOTIME:
-            start_time = tic()
         n_feat = data.shape[-1]
         data_flat = data.reshape((-1, n_feat))
         if valid is None:
@@ -716,9 +711,6 @@ class Discretize(Operation):
         # self.bin_centers = (bin_edges[:, 1:] + bin_edges[:, :-1]) / 2
         self.bin_centers = bin_medians
         self.bin_samples = samples
-        
-        if DOTIME:
-            LOG.info(f"Discretize fitting bin edges took {toc(start_time):.2f} seconds")
 
     def apply(self, data: np.ndarray, compute_args: dict = {}) -> np.ndarray:
         """ Bins the data.
@@ -732,9 +724,6 @@ class Discretize(Operation):
             or (n_frames, n_features * n_bins) float array
         """
         
-        if DOTIME:
-            start_time = tic()
-        
         if self.bin_edges is None or self.bin_centers is None or self.bin_samples is None:
             self.compute(data,**compute_args)
         sz_rest = data.shape[:-1]
@@ -746,9 +735,9 @@ class Discretize(Operation):
 
         if DOTIME:
             LOG.info(f"Discretize apply took {toc(start_time):.2f} seconds")
-        
+
         invertdata = {'to_discretize': data}
-        
+
         return data_flat_discrete.reshape(sz_rest + (-1,)), invertdata
 
     def invert(self, data: np.ndarray, do_sampling: bool = True, to_discretize: np.ndarray | None = None, use_to_discretize: bool = False) -> np.ndarray:
@@ -767,8 +756,6 @@ class Discretize(Operation):
             continuous: Continuous data, (n_agents,  n_frames, n_features) float array
             or (n_frames, n_features) float array
         """
-        if DOTIME:
-            start_time = tic()
         ismultiagent = data.ndim == 3
         if not ismultiagent:
             data = data[None, ...]
@@ -784,9 +771,6 @@ class Discretize(Operation):
             continuous = labels_discrete_to_continuous(data.reshape((n_agents, n_frames, n_feat, n_bins)), self.bin_centers)
         if not ismultiagent:
             continuous = continuous[0]
-            
-        if DOTIME:
-            LOG.info(f"Discretize invert took {toc(start_time):.2f} seconds")
 
         return continuous
     
@@ -861,10 +845,6 @@ class Fusion(Operation):
             fused: (n_agents,  n_frames, n_fused_features) float array or 
             (n_frames, n_fused_features) float array
         """
-        
-        if DOTIME:
-            start_time = tic()
-        
         ismultiagent = data.ndim == 3
         if not ismultiagent:
             data = data[None, ...]
@@ -906,9 +886,6 @@ class Fusion(Operation):
             unfused: (n_agents,  n_frames, n_features) float array
             or (n_frames, n_features) float array
         """
-        if DOTIME:  
-            start_time = tic()
-        
         ismultiagent = data.ndim == 3
         if not ismultiagent:
             data = data[None, ...]
@@ -934,9 +911,6 @@ class Fusion(Operation):
             
         if not ismultiagent:
             inverted = inverted[0]
-
-        if DOTIME:
-            LOG.info(f"Fusion invert took {toc(start_time):.2f} seconds")
 
         return inverted
     
@@ -1049,21 +1023,12 @@ class Roll(Operation):
         Returns:
             rolled_data: (n_agents,  n_frames, n_features) float array or (n_frames, n_features) float array
         """
-
-        if DOTIME:
-            start_time = tic()
-
         ismultiagent = data.ndim == 3
         if not ismultiagent:
             data = data[None, ...]
         rolled = np.roll(data, shift=self.dt, axis=1)
         if not ismultiagent:
             rolled = rolled[0]
-            
-            
-        if DOTIME:
-            LOG.info(f"Roll apply took {toc(start_time):.2f} seconds")
-            
         return rolled
 
     def invert(self, data: np.ndarray) -> np.ndarray:
@@ -1075,20 +1040,12 @@ class Roll(Operation):
         Returns:
             unrolled_data: (n_agents,  n_frames, n_features) float array
         """
-
-        if DOTIME:
-            start_time = tic()
-
         ismultiagent = data.ndim == 3
         if not ismultiagent:
             data = data[None, ...]
         unrolled_data = np.roll(data, shift=-self.dt, axis=1)
         if not ismultiagent:
             unrolled_data = unrolled_data[0]
-            
-        if DOTIME:
-            LOG.info(f"Roll invert took {toc(start_time):.2f} seconds")
-
         return unrolled_data
 
     def __str__(self):

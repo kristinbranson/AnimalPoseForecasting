@@ -29,6 +29,7 @@ import apf.utils as utils
 
 import flyllm
 from flyllm import optimal_binning
+from tests.flyllm import debug_optimal_binning
 
 from flyllm.prepare import init_config
 from experiments.flyllm import make_dataset
@@ -77,7 +78,7 @@ if False:
     import pstats
 
     def profile_test():
-        optimal_binning.main(['optimal_binning.py','test'])
+        debug_optimal_binning.main(['optimal_binning.py','test'])
         
     cProfile.run("profile_test()",'optimal_binning_profile.out')
 
@@ -100,8 +101,8 @@ savefilestr = f"flyllm_binning_{modeltype_str}_{timestamp}"
 print(f'Save file string: {savefilestr}')
 
 # %%
-optimal_binning.debug_synthetic()
-#optimal_binning.debug_zscored_velocity()
+debug_optimal_binning.debug_synthetic()
+#debug_optimal_binning.debug_zscored_velocity()
 
 # %%
 # plot percentiles of the data to be discretized
@@ -252,4 +253,4 @@ np.savez_compressed(savefile,bininfo=allbininfo)
 # print bin edges so that they can be copy-pasted into config files
 for i,featidx in enumerate(config['discreteidx']):
     edges = allbininfo[i]['edges']
-    print(f'{featidx}: {np.array2string(edges,separator=', ')}')
+    print(f"{featidx}: {np.array2string(edges,separator=', ')}")

@@ -181,7 +181,6 @@ def init_process_data(config=None,data=None,scale_perfly=None,
                       traindataprocess='chunk',valdataprocess='test',
                       train_chunk_indices=None,val_chunk_indices=None,res={}):
     """
-    OBSOLETE -- used with FlyMLMDataset
     res = init_process_data(config=None,data=None,scale_perfly=None,
                             valdata=None,val_scale_perfly=None,
                             traindataprocess='chunk',valdataprocess='test',res={})
