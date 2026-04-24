@@ -51,9 +51,9 @@ from flyllm.plotting import (
     initialize_debug_plots, update_debug_plots,
     initialize_loss_plots, update_loss_plots,
 )
-from flyllm.dataset import FlyMLMDataset, FlyTestDataset
+from flyllm.legacy.flyllm_dataset_v2 import FlyMLMDataset, FlyTestDataset
 from flyllm.simulation import animate_predict_open_loop
-from flyllm.pose import FlyExample
+from flyllm.legacy.flyllm_pose_v2 import FlyExample
 from apf.io import (
     read_config, load_config_from_model_file, get_modeltype_str,
     load_model, save_model, parse_modelfile,
@@ -276,7 +276,7 @@ def debug_fly_example(configfile=None, loadmodelfile=None, restartmodelfile=None
     debug_plot_pose(flyexample, pred=flyexample, tsplot=tsplot)
 
     if config['compute_pose_vel']:
-        import old_fly_llm
+        import flyllm.legacy.fly_llm_v1 as old_fly_llm
 
         old_dataset_params = dataset_params.copy()
         old_dataset_params.pop('compute_pose_vel')

@@ -374,7 +374,9 @@ def kp2feat(
 
 
 def compute_pose_features(X, scale):
-    posefeat = kp2feat(X, scale)
+    if scale.ndim == 1:
+        scale = scale[:, None]
+    posefeat = kp2feat(X, scale, flyid=np.zeros(1, dtype=int))
     relpose = posefeat[featrelative, ...]
     globalpos = posefeat[featglobal, ...]
 

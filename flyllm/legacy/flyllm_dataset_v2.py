@@ -1,3 +1,33 @@
+""" Legacy fly-specific MLM dataset classes.
+
+Contains FlyMLMDataset and FlyTestDataset, formerly at flyllm/dataset.py. Moved
+here as part of the modernize_evaluate refactor, which replaces their role with
+the generic apf.dataset.Dataset (species-specific pieces now live in
+experiments.flyllm as Operations on Data objects).
+
+Still used by:
+    - flyllm.run_flyllm.main and its unit test (tests/flyllm/test_run_flyllm.py), 
+      needs to be updated
+    - notebooks/demo.py, debug_fly_llm.py, train_fly_llm.py, this is OBSOLETE 
+    - and needs to be updated
+      choose_discretize_bins.py, explore_temporal_masking.py, needs to be updated
+    - notebooks/debug_fly_example.py as a regression reference against
+      apf.dataset.Dataset
+
+There may also still be functions in flyllm.prediction and flyllm.plotting that
+depend on FlyMLMDataset-only APIs (e.g. get_bin_edges, get_example, discretize
+attrs); known cases include prediction.hist_predictions,
+plotting.debug_plot_global_histograms, plotting.debug_plot_histogram_edges, and
+anything gated by plotting.isflymlm_dataset. Those are likewise obsolete and
+will be moved to legacy when their callers are migrated.
+
+Sibling legacy file:
+    fly_llm_v1.py is a much older snapshot of this class tree (pre-AgentExample
+    split), kept as a deeper regression reference via flyllm.legacy.fly_llm_v1.
+
+Do not add new functionality here. New code should target apf.dataset.Dataset.
+"""
+
 import numpy as np
 import copy
 import tqdm
@@ -11,7 +41,7 @@ from apf.models import (  # TODO: dataset should not depend on models
     get_output_and_attention_weights,
     pred_apply_fun
 )
-from flyllm.pose import FlyExample
+from flyllm.legacy.flyllm_pose_v2 import FlyExample
 import logging
 LOG = logging.getLogger(__name__)
 

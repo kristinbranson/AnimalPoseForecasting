@@ -6,16 +6,20 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.11.2
+#       jupytext_version: 1.18.1
 #   kernelspec:
-#     display_name: transformer
+#     display_name: transformer312
 #     language: python
 #     name: python3
 # ---
 
-# %%
-## Imports
+# %% [markdown]
+# # Test dataset code against old FlyMLMDataset versions
 
+# %% [markdown]
+# ### Imports
+
+# %%
 # %load_ext autoreload
 # %autoreload 2
 
@@ -25,81 +29,94 @@ import torch
 import matplotlib.pyplot as plt
 import os
 import pickle
+import copy
+
+import flyllm
+import flyllm.prepare
+import apf.dataset
+from flyllm.plotting import initialize_debug_plots, initialize_loss_plots
+import flyllm.legacy.fly_llm_v1 as old_fly_llm
+
 from apf.io import read_config, load_and_filter_data
 from apf.utils import get_dct_matrix, compute_npad, compare_dicts
 from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames, featrelative
 from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx
 from apf.data import chunk_data, debug_less_data, process_test_data
-from flyllm.dataset import FlyMLMDataset, FlyTestDataset
-from flyllm.pose import FlyPoseLabels, FlyExample, FlyObservationInputs
+from flyllm.legacy.flyllm_dataset_v2 import FlyMLMDataset, FlyTestDataset
+from flyllm.legacy.flyllm_pose_v2 import FlyPoseLabels, FlyExample, FlyObservationInputs
 from flyllm.features import kp2feat
 from flyllm.plotting import debug_plot_pose, debug_plot_sample, debug_plot_batch_traj
 
+# %% [markdown]
+# ###  Set parameters, read in data, config
+
 # %%
-## Set parameters, read in data, config
-tmpsavefile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/tmp_small_usertrainval.pkl'
-#configfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/config_fly_llm_debug_20240416.json'
-configfile = '/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/config_fly_llm_predvel_20241022.json'
+flyllmdir = flyllm.__path__[0]
+#configfile = os.path.join(flyllmdir, 'configs/config_fly_llm_debug_20240416.json')
+configfile = os.path.join(flyllmdir, 'configs/config_fly_llm_predvel_20241022.json')
+assert os.path.exists(configfile), f"Config file {configfile} does not exist"
+
+debug_uselessdata = True
+
 # configuration parameters for this model
-config = read_config(configfile,
-                     default_configfile=DEFAULTCONFIGFILE,
-                     get_sensory_feature_idx=get_sensory_feature_idx,
-                     featglobal=featglobal,
-                     posenames=posenames)
+res = flyllm.prepare.init_flyllm(configfile=configfile,mode='train',debug_uselessdata=debug_uselessdata)
 
-# override parameters in config file for testing
-# debug velocity representation
-#config['compute_pose_vel'] = True
-# debug dct
-#config['dct_tau'] = 4
-# debug no multi time-scale predictions
-#config['tspred_global'] = [1,]
-#config['discrete_tspred'] = [1,]
+for key in res:
+    s = f'{key}: {type(res[key])}'
+    if hasattr(res[key], 'shape'):
+        s += f', shape: {res[key].shape}'
+    elif hasattr(res[key], '__len__') and not isinstance(res[key], str):
+        s += f', len: {len(res[key])}'
+    print(s)
+    
+assert res['success'], 'init_flyllm failed!'
 
-# read in data, select a subset and save if we don't have the small dataset computed already
-if os.path.exists(tmpsavefile):
-  with open(tmpsavefile,'rb') as f:
-    tmp = pickle.load(f)
-    data = tmp['data']
-    scale_perfly = tmp['scale_perfly']
-else:
-  data,scale_perfly = load_and_filter_data(config['intrainfile'],config)
-  valdata,val_scale_perfly = load_and_filter_data(config['invalfile'],config)
-  T = 10000
-  debug_less_data(data,T)
-  debug_less_data(valdata,T)
-  
-  with open(tmpsavefile,'wb') as f:
-    pickle.dump({'data': data, 'scale_perfly': scale_perfly, 'valdata': valdata, 'val_scale_perfly': val_scale_perfly},f)
+# unpack outputs
+config = res['config']
+device = res['device']
+train_data = res['train_data']
+val_data = res['val_data']
+train_dataset = res['train_dataset']
+train_dataloader = res['train_dataloader']
+val_dataset = res['val_dataset']
+val_dataloader = res['val_dataloader']
+model = res['model']
+criterion = res['criterion']
+optimizer = res['optimizer']
+lr_scheduler = res['lr_scheduler']
+modeltype_str = res['modeltype_str']
+loss_epoch = res['loss_epoch']
+epoch = res['epoch']
+savetime = res['model_savetime']
 
-# compute DCT matrix if needed
-if config['dct_tau'] is not None and config['dct_tau'] > 0:
-  dct_m,idct_m = get_dct_matrix(config['dct_tau'])
-else:
-  dct_m = None
-  idct_m = None
-  
-# how much to pad outputs by -- depends on how many frames into the future we will predict
-npad = compute_npad(config['tspred_global'],dct_m)
-chunk_data_params = {'npad': npad}
-
-compute_feature_params = {
-    "simplify_out": config['simplify_out'],
-    "simplify_in": config['simplify_in'],
-    "dct_m": dct_m,
-    "tspred_global": config['tspred_global'],
-    "compute_pose_vel": config['compute_pose_vel'],
-    "discreteidx": config['discreteidx'],
+train_dataset_params = {
+    'input_noise_sigma': config['input_noise_sigma'],
 }
-# function for computing features
-reparamfun = lambda x,id,flynum,**kwargs: compute_features(x,id,flynum,scale_perfly,outtype=np.float32,
-                                                          **compute_feature_params,**kwargs)
 
-# chunk the data if we didn't load the pre-chunked cache file
-print('Chunking training data...')
-X = chunk_data(data,config['contextl'],reparamfun,**chunk_data_params)
+ntrain_batches = len(train_dataloader)
+num_training_steps = ntrain_batches * config['num_train_epochs']
+valexample = next(iter(val_dataloader))
+ntimepoints_per_batch = valexample['input'].shape[0]
+last_val_loss = loss_epoch['val'][epoch].item()
+if np.isnan(last_val_loss):
+    last_val_loss = None
 
-dataset_params = {
+
+# %% [markdown]
+# ## Create v1 FlyMLMDataset
+# Set up to be identical to train_dataset
+
+# %%
+assert config.get('dct_tau',None) is None, "dct_tau must be None"
+dct_m = None
+idct_m = None
+
+# new convention for contextl
+old_config = copy.deepcopy(config)
+old_config['contextl'] = config['contextl'] + 1
+
+# read dataset parameters from config file
+old_dataset_params = {
   'max_mask_length': config['max_mask_length'],
   'pmask': config['pmask'],
   'masktype': config['masktype'],
@@ -116,30 +133,158 @@ dataset_params = {
   'p_add_input_noise': config['p_add_input_noise'],
   'dct_ms': (dct_m,idct_m),
   'tspred_global': config['tspred_global'],
-  'discrete_tspred': config['discrete_tspred'],
-  'compute_pose_vel': config['compute_pose_vel'],
-}
-train_dataset_params = {
-  'input_noise_sigma': config['input_noise_sigma'],
-}
-compute_feature_params = {
-    "simplify_out": config['simplify_out'],
-    "simplify_in": config['simplify_in'],
-    "dct_m": dct_m,
-    "tspred_global": config['tspred_global'],
-    "compute_pose_vel": config['compute_pose_vel'],
-    "discreteidx": config['discreteidx'],
+  'discrete_tspred': config['discrete_tspred']
 }
 
-print('Creating training data set...')
-train_dataset = FlyMLMDataset(X,**train_dataset_params,**dataset_params)
+# extract binning parameters
+velocity_ops = train_dataset.labels['velocity'].operations
+discretize_op = apf.dataset.get_operation(velocity_ops, 'discretize', recursive=True)
+discretize_params = {
+    'bin_edges':   discretize_op.bin_edges,
+    'bin_samples': discretize_op.bin_samples,
+    'bin_medians': discretize_op.bin_centers,   # new Discretize stores medians as bin_centers (apf/dataset.py:717)
+    'bin_means':   discretize_op.bin_centers    # bin_means shouldn't be used anywhere, but we set it to the same as bin_medians
+}
 
-test_dataset_params = {}
-test_dataset_params['zscore_params'] = train_dataset.get_zscore_params()
-test_dataset_params['discretize_params'] = train_dataset.get_discretize_params()
+# force old dataset to use the same chunking
+chunk_indices = train_dataset.chunk_indices.copy()
+chunk_indices[:,0] -= 1 # new convention for contextl
+
+# force old dataset to use the same zscore parameters
+zscore_params = {
+    'mu_input': [],
+    'sig_input': [],
+    'mu_labels': [],
+    'sig_labels': []
+}
+
+for k,data in train_dataset.inputs.items():
+    if k == 'velocity':
+        continue
+    op = apf.dataset.get_operation(data.operations,'zscore',recursive=True)
+    zscore_params['mu_input'].append(op.mean)
+    zscore_params['sig_input'].append(op.std)
+
+for k,data in train_dataset.labels.items():
+    op = apf.dataset.get_operation(data.operations,'zscore',recursive=True)
+    zscore_params['mu_labels'].append(op.mean)
+    zscore_params['sig_labels'].append(op.std)
+    
+zscore_params = {k: np.concatenate(v) for k,v in zscore_params.items()}
+print('New dataset zscore params:')
+for k,v in zscore_params.items():
+    print(f'{k}: {v.shape}')
+
+res1 = flyllm.prepare.init_raw_data(config=old_config, needvaldata=False, debug_uselessdata=debug_uselessdata)
+res1 = flyllm.prepare.init_process_data(config=old_config, data=res1['data'], scale_perfly=res1['scale_perfly'], 
+                                        train_chunk_indices=chunk_indices,res=res1)
+X = res1['X']
+
+old_train_dataset = old_fly_llm.FlyMLMDataset(X,**train_dataset_params,**old_dataset_params,
+                                            discretize_params=discretize_params,
+                                            zscore_params=zscore_params)
+
 
 # %%
-## compare flyexample initialized from FlyMLMDataset and from keypoints directly
+import flyllm.legacy.MABeFlyUtils as mabe
+def get_v1_input_names(dataset):
+    idx, _ = dataset.get_input_shapes()   # {'labels': [0, d_input_labels], 'pose': [...], 'wall_touch': [...], ...}
+    total = max(end for _, end in idx.values())
+    names = [None] * total
+
+    # labels-as-input section (if input_labels=True): one name per nextframe index
+    if 'labels' in idx:
+        label_names = dataset.get_outnames()
+        for col, lbl_i in zip(range(*idx['labels']), dataset.nextframeidx):
+            names[col] = f'input_label:{label_names[lbl_i]}'
+
+    # pose section: relative pose keypoints by name
+    posenames_rel = [mabe.posenames[i] for i in np.nonzero(old_fly_llm.featrelative)[0]]
+    for col, pname in zip(range(*idx['pose']), posenames_rel):
+        names[col] = f'pose:{pname}'
+
+    # sensory sections — generic indexing (no per-element names available)
+    for section in ('wall_touch', 'otherflies_vision', 'otherflies_touch'):
+        if section in idx:
+            start, end = idx[section]
+            for i, col in enumerate(range(start, end)):
+                names[col] = f'{section}:{i}'
+
+    return names
+
+
+# %% [markdown]
+# ## Test that datasets are the same
+# Compares `train_dataset[sample]` and `old_train_dataset[sample]`
+
+# %%
+## compare flyexample initialized from train_dataset and old_train_dataset
+
+assert len(train_dataset) == len(old_train_dataset), "Datasets have different number of examples"
+samples = np.random.choice(len(train_dataset), size=5, replace=False)
+
+for sample in samples:
+    example_new = train_dataset[sample]
+    example_old = old_train_dataset[sample]
+
+    assert example_new['input'].shape == example_old['input'].shape, "Input shapes do not match"
+    assert np.allclose(example_new['input'], example_old['input'],atol=1e-5), "Input features do not match between new and old datasets"
+    
+    assert example_new['labels'].shape == example_old['labels'].shape, "Label shapes do not match"
+    assert np.allclose(example_new['labels'], example_old['labels'],atol=1e-5), "Labels do not match between new and old datasets"
+
+# %%
+# compare inputs and labels from dataset and from keypoints directly
+example = train_dataset[sample]
+print('train_data.keys():', train_data.keys())
+print('train_data["track"].shape: ', train_data['track'].shape)
+print('example metadata:')
+print(example['metadata'].keys())
+for k,v in example['metadata'].items():
+    if k in ['inputs','labels']:
+        print(f'  {k} with keys {v.keys()}')
+    else:
+        print(f'  {k}: {v}')
+agent_id = example['metadata']['agent_id']
+start_frame = example['metadata']['start_frame']
+duration = example['metadata']['duration']
+Xkp = train_data['track'][agent_id, start_frame:start_frame+duration]
+print(f'Keypoint data shape: {Xkp.shape}') # should be (T, 2, nkeypoints)
+
+# data_from_kp = train_dataset.rawdata_to_datadict()
+
+# item = train_dataset.rawdata_to_item(
+#     inputs={k: Xkp for k in train_dataset.inputs.keys()},
+#     labels={k: Xkp for k in train_dataset.labels.keys()},
+#     start_frame=t0,       # so stored invertdata (scale_perfly, flyid, isstart) gets cropped correctly
+#     agent_id=agent,
+#     duration=L,
+#     use_data_invertdata=True,
+# )
+
+def print_dict_shapes(d,prefixin=''):
+    if isinstance(d, dict):
+        for k,v in d.items():
+            prefix = f'{prefixin}{k} - '
+            print_dict_shapes(v,prefix)
+    elif isinstance(d, list):
+        for i, item in enumerate(d):
+            item_prefix = f'{prefixin}[{i}] - '
+            print_dict_shapes(item, item_prefix)
+    elif hasattr(d, 'shape'):
+        print(f'{prefixin}: {d.shape}')
+    else:
+        print(f'{prefixin}: {d}')
+
+# create input features from keypoints
+print_dict_shapes(example['metadata']['inputs'])
+
+# apf.dataset.apply_opers_from_data(example['metadata']['inputs'],
+#                                   )
+
+# %%
+
+
 
 # flyexample from training dataset
 flyexample = train_dataset.data[0]
@@ -282,7 +427,7 @@ _ = debug_plot_pose(flyexample,pred=flyexample,tsplot=tsplot)
 ## compare to legacy fly_llm code, which only supported velocities
 if config['compute_pose_vel']:
 
-  import flyllm.legacy.old_fly_llm as old_fly_llm
+  import flyllm.legacy.fly_llm_v1 as old_fly_llm
   
   old_dataset_params = dataset_params.copy()
   old_dataset_params.pop('compute_pose_vel')

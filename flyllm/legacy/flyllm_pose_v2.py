@@ -1,3 +1,44 @@
+""" Legacy fly-specific pose/example/labels/observations classes.
+
+Contains FlyExample, FlyPoseLabels, FlyObservationInputs, FlyParams, and the
+modernize_fly_params / remove_implicit_params helpers. Formerly at
+flyllm/pose.py. Moved here as part of the modernize_evaluate refactor, which
+replaces these per-chunk wrapper classes with direct use of apf.dataset.Data
+plus Operation pipelines (no dedicated wrapper class; a chunk is just the dict
+returned from Dataset.__getitem__).
+
+Still used by:
+    - flyllm.run_flyllm.main (unconverted legacy train path)
+    - flyllm.simulation.animate_predict_open_loop (still builds FlyPoseLabels
+      and FlyExample for animation overlays)
+    - flyllm.plotting helpers (FlyExample wrapping in debug plots)
+    - flyllm.legacy.flyllm_dataset_v2 (FlyMLMDataset.data is a list of
+      FlyExample; discretize_labels builds a dummy FlyExample)
+    - notebooks/evaluate_fly_llm.py — iterative-prediction comparison still
+      constructs FlyExample/FlyPoseLabels for error reporting
+    - notebooks/evaluate_fly_llm_remote.py, demo.py, choose_discretize_bins.py,
+      debug_fly_example.py (unconverted or regression-only)
+
+Replacement mapping (old -> new):
+    FlyExample            -> dict from Dataset.__getitem__ + Data objects via
+                             Dataset.item_to_data; introspection via
+                             Data.feature_names / .operations / .invertdata;
+                             inversion via apf.dataset.invert_to_named
+    FlyPoseLabels         -> labels['velocity'] Data with
+                             Zscore -> Fusion[Discretize, Identity] pipeline
+    FlyObservationInputs  -> inputs['pose'/'sensory'/'velocity'] Datas with
+                             Pose / Sensory / Roll / Zscore pipelines
+    FlyParams             -> no replacement; parameters live on Operations
+
+Sibling legacy files:
+    flyllm_dataset_v2.py — matching snapshot of FlyMLMDataset / FlyTestDataset;
+        FlyExample.data entries are instances of this file's classes.
+    fly_llm_v1.py        — deeper legacy snapshot (pre-AgentExample split).
+
+Do not add new functionality here. New code should target apf.dataset.Data and
+apf.dataset.Dataset.
+"""
+
 import numpy as np
 import torch
 import copy
@@ -19,7 +60,7 @@ from flyllm.features import (
 from apf.pose import AgentParams, AgentExample, PoseLabels, ObservationInputs
 
 if typing.TYPE_CHECKING:
-    from flyllm.dataset import FlyLLMDataset
+    from flyllm.legacy.flyllm_dataset_v2 import FlyMLMDataset
 
 
 # helper functions
@@ -1705,7 +1746,7 @@ class FlyExample(AgentExample):
     _paramsClass = FlyParams
     
     def __init__(self,example_in: typing.Optional[dict] = None,
-                 dataset: typing.Optional['FlyLLMDataset'] = None,
+                 dataset: typing.Optional['FlyMLMDataset'] = None,
                  Xkp: typing.Optional[np.ndarray] = None,
                  agentnum: typing.Optional[int] = None,
                  scale: typing.Optional[np.ndarray] = None,

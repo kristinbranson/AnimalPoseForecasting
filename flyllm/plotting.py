@@ -19,10 +19,10 @@ from flyllm.features import (
     compute_features, get_sensory_feature_idx,
     compute_noise_params, compute_scale_perfly, ensure_otherflies_touch_mult,
 )
-from flyllm.pose import FlyExample
+from flyllm.legacy.flyllm_pose_v2 import FlyExample
 from apf.io import read_config, load_and_filter_data
 import flyllm
-import flyllm.dataset
+import flyllm.legacy.flyllm_dataset_v2
 import apf.dataset
 import apf.utils
 from experiments.flyllm import get_bin_edges
@@ -1404,7 +1404,7 @@ def debug_plot_histogram_edges(train_dataset):
     return fig, ax
 
 def isflymlm_dataset(dataset):
-    return isinstance(dataset, flyllm.dataset.FlyMLMDataset)
+    return isinstance(dataset, flyllm.legacy.flyllm_dataset_v2.FlyMLMDataset)
 
 def initialize_debug_plots(dataset, dataloader, data, name='', tsplot=None, traj_nsamplesplot=3):
     

@@ -12,7 +12,7 @@ from apf.data import process_test_data, interval_all, debug_less_data, chunk_dat
 from apf.io import read_config, get_modeltype_str, load_and_filter_data, save_model, load_model, parse_modelfile, load_config_from_model_file
 from flyllm.config import read_config, keypointnames
 from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx, compute_scale_perfly, compute_pose_distribution_stats
-from flyllm.pose import FlyExample, FlyPoseLabels, FlyObservationInputs
+from flyllm.legacy.flyllm_pose_v2 import FlyExample, FlyPoseLabels, FlyObservationInputs
 from flyllm.plotting import (
     initialize_debug_plots, 
     initialize_loss_plots, 
@@ -112,17 +112,20 @@ def init_state(config=None,seedrandom=True,res={}):
     
     return res
 
-def init_raw_data(config=None,quickdebugdatafile=None,needtraindata=True,needvaldata=True,res={}):
+def init_raw_data(config=None,quickdebugdatafile=None,needtraindata=True,needvaldata=True,
+                  debug_uselessdata=False,res={}):
     """
     OBSOLETE -- used with FlyMLMDataset
-    res = init_raw_data(config=None,quickdebugdatafile=None,needtraindata=True,needvaldata=True,res={})
+    res = init_raw_data(config=None,quickdebugdatafile=None,needtraindata=True,needvaldata=True,
+                        debug_uselessdata=False,res={})
     Load raw data from files specified in config, and filter according to configuration parameters.
     Inputs:
-    config: dict, configuration dictionary    
+    config: dict, configuration dictionary
     quickdebugdatafile: str, path to small data file with data already filtered, used for speeding up loading
     and debugging. If None, load data from config['intrainfile'] and config['invalfile']. Default = None
     needtraindata: bool, whether to load training data. Default = True
     needvaldata: bool, whether to load validation data. Default = True
+    debug_uselessdata: bool, whether to subsample data via debug_less_data after loading. Default = False
     res: dict, dictionary to store results with the following keys:
         'data': dict, training data dictionary
         'scale_perfly': ndarray of shape nscale x nflies with scale data for each fly
@@ -130,25 +133,31 @@ def init_raw_data(config=None,quickdebugdatafile=None,needtraindata=True,needval
         'val_scale_perfly': ndarray of shape nscale x nflies with scale data for each fly
     """
 
-    LOG.warning('Obsolete -- meant to be used with FlyMLMDataset, which is being phased out')
+    LOG.warning('init_raw_data OBSOLETE -- meant to be used with FlyMLMDataset, which is being phased out')
     assert config is not None, "No configuration provided"
-    
+
     res['data'] = None
     res['scale_perfly'] = None
     res['valdata'] = None
     res['val_scale_perfly'] = None
-    
+
+    # Match experiments.flyllm.load_data's debug truncation so chunk_indices
+    # produced by the new Dataset can be reused against this data.
+    load_kwargs = {'keypointnames': keypointnames}
+    if debug_uselessdata:
+        load_kwargs.update({'debug': True, 'n_frames_per_video': 15000, 'max_n_videos': 5})
+
     ## load raw data
     if quickdebugdatafile is None:
         if needtraindata:
             data, scale_perfly = load_and_filter_data(config['intrainfile'], config, compute_scale_perfly,
-                                                    keypointnames=keypointnames)
+                                                    **load_kwargs)
             LOG.info(f"training data X shape: {data['X'].shape}")
             res['data'] = data
             res['scale_perfly'] = scale_perfly
         if needvaldata:
             valdata, val_scale_perfly = load_and_filter_data(config['invalfile'], config, compute_scale_perfly,
-                                                            keypointnames=keypointnames)
+                                                            **load_kwargs)
             LOG.info(f"val data X shape: {valdata['X'].shape}")
             res['valdata'] = valdata
             res['val_scale_perfly'] = val_scale_perfly
@@ -169,7 +178,8 @@ def init_raw_data(config=None,quickdebugdatafile=None,needtraindata=True,needval
 
 def init_process_data(config=None,data=None,scale_perfly=None,
                       valdata=None,val_scale_perfly=None,
-                      traindataprocess='chunk',valdataprocess='test',res={}):
+                      traindataprocess='chunk',valdataprocess='test',
+                      train_chunk_indices=None,val_chunk_indices=None,res={}):
     """
     OBSOLETE -- used with FlyMLMDataset
     res = init_process_data(config=None,data=None,scale_perfly=None,
@@ -197,7 +207,7 @@ def init_process_data(config=None,data=None,scale_perfly=None,
         'idct_m': ndarray or None, inverse DCT matrix
     """
     
-    LOG.warning('Obsolete -- meant to be used with FlyMLMDataset, which is being phased out')
+    LOG.warning('init_process_data OBSOLETE -- meant to be used with FlyMLMDataset, which is being phased out')
     assert config is not None
     
     # if using discrete cosine transform, create dct matrix
@@ -247,7 +257,7 @@ def init_process_data(config=None,data=None,scale_perfly=None,
     if data is not None:
         LOG.info('Processing training data...')
         if traindataprocess == 'chunk':
-            train_chunk_data_params = {'npad': npad}
+            train_chunk_data_params = {'npad': npad, 'chunk_indices': train_chunk_indices}
             X = chunk_data(data, config['contextl'], reparamfun, **train_chunk_data_params)
         elif traindataprocess == 'test':
             train_chunk_data_params = {'npad': npad, 'minnframes': config['contextl']+1}
@@ -257,11 +267,11 @@ def init_process_data(config=None,data=None,scale_perfly=None,
         res['X'] = X
         res['train_chunk_data_params'] = train_chunk_data_params
         LOG.info(f'{len(X)} training ids, total of {sum([x['input'].shape[0] for x in X])} time points')
-        
+
     if valdata is not None:
         LOG.info('Processing val data...')
         if valdataprocess == 'chunk':
-            val_chunk_data_params = {'npad': npad}
+            val_chunk_data_params = {'npad': npad, 'chunk_indices': val_chunk_indices}
             valX = chunk_data(valdata, config['contextl'], val_reparamfun, **val_chunk_data_params)
         elif valdataprocess == 'test':
             val_chunk_data_params = {'npad': npad, 'minnframes': config['contextl']+1}

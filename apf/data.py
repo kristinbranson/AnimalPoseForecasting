@@ -25,7 +25,57 @@ def interval_all(x, l):
     return y
 
 
-def chunk_data(data, contextl, reparamfun, npad=1):
+def _compute_chunk_indices_legacy(data, contextl, npad=1):
+    """ Returns (t0, agent_num) pairs chosen by the legacy canstart + random-offset
+    policy. Each agent gets a random start offset within [0, contextl), chunks are
+    placed every contextl frames, and skipped past any frame where canstart is False.
+    """
+    contextlpad = contextl + npad
+
+    # all frames for the main agent must have real data
+    allisdata = interval_all(data['isdata'], contextlpad)
+    isnotsplit = interval_all(data['isstart'] == False, contextlpad - 1)[1:, ...]
+    canstart = np.logical_and(allisdata, isnotsplit)
+
+    T = data['X'].shape[-2]
+    max_n_agents = data['X'].shape[-1]
+    assert T > 2 * contextlpad, f'Assumption that data has more frames than 2*(contextl+1) is incorrect, code will fail, T = {T}, contextl={contextl}'
+
+    maxt0 = canstart.shape[0] - 1
+    indices = []
+    for agent_num in tqdm.trange(max_n_agents, desc='Agent'):
+        canstartidx = np.nonzero(canstart[:, agent_num])[0]
+        if canstartidx.size == 0:
+            continue
+
+        mint0curr = canstartidx[0]
+        t0 = mint0curr + np.random.randint(0, contextl, None)
+        if canstart[t0, agent_num] == False:
+            if not np.any(canstart[t0:, agent_num]):
+                continue
+            t0 = np.nonzero(canstart[t0:, agent_num])[0][0] + t0
+
+        maxt0curr = canstartidx[-1]
+        ndata = np.count_nonzero(data['isdata'][:, agent_num])
+        maxintervals = ndata // contextl + 1
+        for _ in tqdm.trange(maxintervals, desc='Interval'):
+            if t0 > maxt0:
+                break
+            t1 = t0 + contextlpad - 1
+            indices.append((int(t0), int(agent_num)))
+            if t0 + contextl >= maxt0curr:
+                break
+            elif canstart[t0 + contextl, agent_num]:
+                t0 = t0 + contextl
+            else:
+                nxt = np.nonzero(canstart[t1 + 1:, agent_num])[0]
+                if nxt is None or nxt.size == 0:
+                    break
+                t0 = nxt[0] + t1 + 1
+    return indices
+
+
+def chunk_data(data, contextl, reparamfun, npad=1, chunk_indices=None):
     """
     Chunks data into pieces of length contextl+npad, with npad frames of padding on each side.
     Args:
@@ -42,73 +92,29 @@ def chunk_data(data, contextl, reparamfun, npad=1):
         contextl: length of main chunk, int
         reparamfun: function that takes (X,id,agent_num,npad) and returns a dict with reparameterized data
         npad: number of frames of padding on each side, int
+        chunk_indices: Optional iterable of (t0, agent_num) pairs. If None, indices are
+            computed via the legacy canstart + random-offset policy.
     """
+    if chunk_indices is None:
+        chunk_indices = _compute_chunk_indices_legacy(data, contextl, npad=npad)
+
     contextlpad = contextl + npad
-
-    # all frames for the main agent must have real data
-    allisdata = interval_all(data['isdata'], contextlpad)
-    isnotsplit = interval_all(data['isstart'] == False, contextlpad - 1)[1:, ...]
-    canstart = np.logical_and(allisdata, isnotsplit)
-
-    # X is nkeypts x 2 x T x n_agents
-    nkeypoints = data['X'].shape[0]
-    T = data['X'].shape[-2]
-    max_n_agents = data['X'].shape[-1]
-    assert T > 2 * contextlpad, f'Assumption that data has more frames than 2*(contextl+1) is incorrect, code will fail, T = {T}, contextl={contextl}'
-
-    # last possible start frame = T - contextl
-    maxt0 = canstart.shape[0] - 1
-    # X is a dict with chunked data
     X = []
-    # loop through ids
-    nframestotal = 0
-    for agent_num in tqdm.trange(max_n_agents, desc='Agent'):
-        # choose a first frame near the beginning, but offset a bit
-        # first possible start
-        canstartidx = np.nonzero(canstart[:, agent_num])[0]
-        if canstartidx.size == 0:
-            continue
+    for t0, agent_num in chunk_indices:
+        t0, agent_num = int(t0), int(agent_num)
+        t1 = t0 + contextlpad - 1
+        id = data['ids'][t0, agent_num]
+        xcurr = reparamfun(data['X'][..., t0:t1 + 1, :], id, agent_num, npad=npad)
+        metadata = {'flynum': agent_num, 'id': int(id), 't0': t0, 'frame0': data['frames'][t0, 0]}
+        if 'videoidx' in data:
+            metadata['videoidx'] = data['videoidx'][t0, 0]
+        else:
+            metadata['sessionidx'] = data['sessionids'][int(id)]
+        xcurr['metadata'] = metadata
+        xcurr['categories'] = data['y'][:, t0:t1 + 1, agent_num].astype(np.float32)
+        X.append(xcurr)
 
-        mint0curr = canstartidx[0]
-        # offset a bit
-        t0 = mint0curr + np.random.randint(0, contextl, None)
-        # find the next allowed frame
-        if canstart[t0, agent_num] == False:
-            if not np.any(canstart[t0:, agent_num]):
-                continue
-            t0 = np.nonzero(canstart[t0:, agent_num])[0][0] + t0
-
-        maxt0curr = canstartidx[-1]
-        # maxt1curr = maxt0curr+contextlpad-1
-        ndata = np.count_nonzero(data['isdata'][:, agent_num])
-        maxintervals = ndata // contextl + 1
-        for i in tqdm.trange(maxintervals, desc='Interval'):
-            if t0 > maxt0:
-                break
-            # this is guaranteed to be < T
-            t1 = t0 + contextlpad - 1
-            id = data['ids'][t0, agent_num]
-            xcurr = reparamfun(data['X'][..., t0:t1 + 1, :], id, agent_num, npad=npad)
-            metadata = {'flynum': agent_num, 'id': id, 't0': t0, 'frame0': data['frames'][t0, 0]}
-            if 'videoidx' in data:
-                metadata['videoidx'] = data['videoidx'][t0, 0]
-            else:
-                metadata['sessionidx'] = data['sessionids'][id]
-            xcurr['metadata'] = metadata
-            xcurr['categories'] = data['y'][:, t0:t1 + 1, agent_num].astype(np.float32)
-            X.append(xcurr)
-            if t0 + contextl >= maxt0curr:
-                break
-            elif canstart[t0 + contextl, agent_num]:
-                t0 = t0 + contextl
-            else:
-                t0 = np.nonzero(canstart[t1 + 1:, agent_num])[0]
-                if t0 is None or t0.size == 0:
-                    break
-                t0 = t0[0] + t1 + 1
-            nframestotal += contextl
-
-    LOG.info(f'In total {nframestotal} frames of data after chunking')
+    LOG.info(f'Returned {len(X)} chunks of {contextl} frames each')
     return X
 
 def process_test_data(data,reparamfun,npad=1,minnframes=None):

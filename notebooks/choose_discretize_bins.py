@@ -32,8 +32,8 @@ from apf.data import process_test_data, interval_all, debug_less_data, chunk_dat
 from apf.io import read_config, get_modeltype_str, load_and_filter_data, save_model, load_model, parse_modelfile, load_config_from_model_file
 from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames, keypointnames
 from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx, compute_scale_perfly, compute_pose_distribution_stats
-from flyllm.dataset import FlyTestDataset, FlyMLMDataset
-from flyllm.pose import FlyExample, FlyPoseLabels, FlyObservationInputs
+from flyllm.legacy.flyllm_dataset_v2 import FlyTestDataset, FlyMLMDataset
+from flyllm.legacy.flyllm_pose_v2 import FlyExample, FlyPoseLabels, FlyObservationInputs
 from flyllm.plotting import (
     initialize_debug_plots, 
     initialize_loss_plots, 

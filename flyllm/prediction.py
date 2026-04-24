@@ -9,7 +9,7 @@ from apf.models import (
     get_causal_mask
 )
 import apf.dataset
-from flyllm.pose import FlyExample
+from flyllm.legacy.flyllm_pose_v2 import FlyExample
 from contextlib import nullcontext
 import datetime
 import copy

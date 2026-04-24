@@ -1,3 +1,25 @@
+""" Deep-legacy fly-MLM code, formerly at flyllm/legacy/old_fly_llm.py.
+
+A pre-AgentExample snapshot of the fly-MLM training stack: self-contained
+FlyMLMDataset, feature extraction, fit_discretize_labels / discretize_labels
+helpers, training/eval loops, and plotting. Predates both
+flyllm.legacy.flyllm_dataset_v2 (the next-generation legacy snapshot) and the
+current generic apf.dataset.Dataset.
+
+Retained solely as a regression reference — notebooks/debug_fly_example.py
+imports this module (as `old_fly_llm`) to compare outputs of the current
+FlyMLMDataset against a frozen older implementation, and flyllm.run_flyllm has
+a legacy comparison branch guarded by config['compute_pose_vel'] that does the
+same.
+
+Relationship to sibling legacy file:
+    flyllm_dataset_v2.py is the newer snapshot (post-AgentExample split) and is
+    the FlyMLMDataset currently imported as `flyllm.dataset.FlyMLMDataset`.
+    fly_llm_v1 here is one generation older.
+
+Do not add new functionality here. New code should target apf.dataset.Dataset.
+"""
+
 import math
 import numpy as np
 import os

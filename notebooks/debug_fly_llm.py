@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.11.2
+#       jupytext_version: 1.18.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -41,7 +41,7 @@ from apf.models import (
 from apf.io import read_config, get_modeltype_str, load_and_filter_data
 from flyllm.config import scalenames, nfeatures, DEFAULTCONFIGFILE, featglobal, posenames
 from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx
-from flyllm.dataset import FlyMLMDataset
+from flyllm.legacy.flyllm_dataset_v2 import FlyMLMDataset
 from flyllm.plotting import (
     initialize_debug_plots, 
     initialize_loss_plots, 

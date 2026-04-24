@@ -8,7 +8,7 @@ from apf.utils import save_animation
 from flyllm.features import compute_pose_features, split_features
 from flyllm.config import ARENA_RADIUS_MM
 from flyllm.plotting import plot_flies, plot_arena
-from flyllm.pose import FlyPoseLabels, FlyExample
+from flyllm.legacy.flyllm_pose_v2 import FlyPoseLabels, FlyExample
 from flyllm.prediction import predict_iterative
 
 

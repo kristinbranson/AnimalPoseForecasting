@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 import tqdm
 
 from flyllm.prepare import init_flyllm
-from flyllm.dataset import FlyTestDataset
+from flyllm.legacy.flyllm_dataset_v2 import FlyTestDataset
 from IPython.display import HTML
 
 import logging

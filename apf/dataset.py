@@ -2615,6 +2615,30 @@ class Dataset(torch.utils.data.Dataset):
         assert len(idx) == len(np.unique(idx)), "subindex contains duplicate entries"
         y[idx] = x
         return y.reshape((n_agents,n_frames)+d)
+    
+    def get_input_names(self):
+        """
+        get_input_names()
+        Returns a list of input feature names, prefixed by the data key in self.inputs
+        {key}__{feature_name}.
+        """
+        
+        names = []
+        for k,v in self.inputs.items():
+            names.extend([f"{k}__{name}" for name in v.feature_names])
+        return names
+    
+    def get_label_names(self):
+        """
+        get_label_names()
+        Returns a list of label feature names, prefixed by the data key in self.labels
+        {key}__{feature_name}.
+        """
+        
+        names = []
+        for k,v in self.labels.items():
+            names.extend([f"{k}__{name}" for name in v.feature_names])
+        return names
 
 def array_to_data(array: np.ndarray, datalike: Data) -> Data:
     """
