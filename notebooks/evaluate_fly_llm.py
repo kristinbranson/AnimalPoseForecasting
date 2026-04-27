@@ -163,7 +163,7 @@ import pstats
 
 doprofile = False
 dodebug = False
-from flyllm.legacy.flyllm_dataset_v2 import FlyTestDataset
+from flyllm.dataset import FlyTestDataset
 # val_dataset.clear_cuda_cache()
 # val_dataset.ncudacaches = 0
 # val_dataset.cudaoptimize = False

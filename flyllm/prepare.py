@@ -9,8 +9,9 @@ import pickle
 
 from apf.utils import get_dct_matrix, compute_npad, save_animation
 from apf.data import process_test_data, interval_all, debug_less_data, chunk_data
-from apf.io import read_config, get_modeltype_str, load_and_filter_data, save_model, load_model, parse_modelfile, load_config_from_model_file
-from flyllm.config import read_config, keypointnames
+import apf.io
+from apf.io import get_modeltype_str, load_and_filter_data, save_model, load_model, parse_modelfile, load_config_from_model_file
+from flyllm.config import keypointnames
 from flyllm.features import compute_features, sanity_check_tspred, get_sensory_feature_idx, compute_scale_perfly, compute_pose_distribution_stats
 from flyllm.legacy.flyllm_pose_v2 import FlyExample, FlyPoseLabels, FlyObservationInputs
 from flyllm.plotting import (
@@ -48,7 +49,8 @@ mpl_backend = plt.get_backend()
 if mpl_backend == 'inline':
     from IPython import display
 
-def init_config(configfile=None,config=None,mode='train',loadmodelfile=None,overrideconfig={},res={}):
+def init_config(configfile=None,config=None,mode='train',loadmodelfile=None,overrideconfig={},
+                read_config_kwargs={},res={}):
     """
     res = init_config(configfile=None,config=None,mode='train',loadmodelfile=None,res={})
     Read configuration from configfile and optionally loadmodelfile
@@ -62,24 +64,11 @@ def init_config(configfile=None,config=None,mode='train',loadmodelfile=None,over
     res: dict, updated dictionary with the following keys:
         'config': dict, configuration dictionary
     """
-    
-    if config is None:
-        assert configfile is not None, "No configuration file provided"        
-        config = read_config(configfile) # flyllm.config.read_config
-        
-    if overrideconfig is not None:
-        for k in overrideconfig:
-            config[k] = overrideconfig[k]
-    
-    if mode in ['test']:
-        # set loadmodelfile from config if not specified
-        if (loadmodelfile is None) and ('loadmodelfile' in config):
-            loadmodelfile = config['loadmodelfile']
-        assert loadmodelfile is not None, "No model file provided"
-        load_config_from_model_file(loadmodelfile=loadmodelfile,config=config)
-        assert 'dataset_params' in config, 'dataset_params not in config'
-        
-    res['config'] = config
+    from flyllm.config import read_config_kwargs as flyllm_read_config_kwargs
+    from apf.io import init_config as apf_init_config
+    read_config_kwargs = {**flyllm_read_config_kwargs, **read_config_kwargs}
+    res = apf_init_config(configfile=configfile,config=config,mode=mode,loadmodelfile=loadmodelfile,overrideconfig=overrideconfig,
+                          read_config_kwargs=read_config_kwargs,res=res)
     return res
 
 def init_state(config=None,seedrandom=True,res={}):

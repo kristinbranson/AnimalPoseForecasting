@@ -101,17 +101,17 @@ Typical use from a notebook
 """
 
 import os
+import pickle
 import sys
+import inspect
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import multiprocessing as mp
+from dataclasses import dataclass, field
 
-
-# Make the sibling ratinabox/ checkout (synthrat/ratinabox/ratinabox/) importable
-# without installing it into site-packages, so `ratinabox` is only reachable via
-# this module rather than globally from AnimalPoseForecasting.
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ratinabox"))
+import apf.utils
+import apf.dataset
 
 import ratinabox
 import ratinabox.utils
@@ -203,7 +203,6 @@ def get_info(obj):
                 continue
             info[k] = v.copy() if hasattr(v, "copy") else v
     return info
-
 def get_agent_info(Ag):
     """Snapshot of an Agent's config plus the notebook's custom extras.
 
@@ -444,8 +443,12 @@ def rehydrate_data(data):
     if "value_neuron_info" in data:
         assert "inputs_placecell_info" in data, "rehydrating ValueNeuron requires the place cell info for its input layers"
         res['ValNeur'] = rehydrate_value_neuron(res['Ag'], data['value_neuron_info'], input_layers=[res['Inputs']])
-    if "sensory_info" in data:
-        res['Sensory'] = rehydrate_sensory(res['Ag'], data['sensory_info'])
+    try:
+        if "sensory_info" in data:
+                res['Sensory'] = rehydrate_sensory(res['Ag'], data['sensory_info'])
+    except Exception as e:
+        print(f"Error rehydrating sensory info: {e}")
+        res['Sensory'] = None
     return res
 
 
@@ -475,6 +478,9 @@ def get_sensory_info(Sensory):
         for attr in ("preferred_angles", "angular_tunings"):                                                                                          
             if hasattr(neuron, attr):                                                                                                                 
                 info[attr] = np.asarray(getattr(neuron, attr)).copy()
+        # FOV cell arrangement could be a function
+        if hasattr(neuron,'cell_arrangement') and callable(neuron.cell_arrangement):
+            info['cell_arrangement'] = neuron.cell_arrangement.__name__
                                                                                                                                                         
         # SpeedCell: save Agent-derived scale
         if hasattr(neuron, "one_sigma_speed"):                                                                                                        
@@ -535,7 +541,28 @@ def rehydrate_sensory(Ag, sensory_info):
             )
         cls = _CELL_TYPES[cls_name]
         valid_keys = set(ratinabox.utils.collect_all_params(cls).keys())
+
+        # If cell_arrangement is a callable (e.g. rect_polar_grid), its named
+        # kwargs (n_angles, spatial_resolution, beta, ...) aren't in any
+        # class's default_params and would get filtered out below. Resolve
+        # the callable now and add its parameter names to valid_keys.
+        ca = info.get('cell_arrangement')
+        if isinstance(ca, str) and ca in globals() and callable(globals()[ca]):
+            ca = globals()[ca]
+        if callable(ca):
+            sig = inspect.signature(ca)
+            valid_keys.update(
+                p for p, param in sig.parameters.items()
+                if param.kind not in (inspect.Parameter.VAR_POSITIONAL,
+                                      inspect.Parameter.VAR_KEYWORD)
+            )
+
         params = {k: v for k, v in info.items() if k in valid_keys}
+
+        # rehydrate rect_polar_grid cell arrangement if needed
+        if 'cell_arrangement' in params and params['cell_arrangement'] in globals():
+            params['cell_arrangement'] = globals()[params['cell_arrangement']]
+            
         neuron = cls(Ag, params=params)
 
         # Overwrite per-cell realized attributes so the population is
@@ -880,6 +907,37 @@ def generate_episodes(
 
     return {"track": track, "hidden": hidden, "sensory": None}
 
+def compute_velocity(episode):
+    """
+    forward_vel, sideways_vel, orientation_vel = compute_velocity(episode)
+    Given an episode dict (as returned by `collect_episode`), compute the forward 
+    velocity, sideways velocity, and orientation velocity between each step. 
+    Forward and sideways are defined relative to the head direction of the agent, 
+    which is given by episode['head_direction']. Orientation velocity is the 
+    change in head direction angle between steps.
+    
+    Inputs:
+    episode['pos'] : (T, 2)
+    episode['head_direction'] : (T, 2) unit vectors 
+    
+    Returns
+    -------
+    forward_vel : array (T-1,)
+    sideways_vel : array (T-1,)
+    orientation_vel : array (T-1,)
+    """
+    pos = episode['pos']
+    headdir_unitvec = episode['head_direction'] # [dx,dy]
+    vel_global = np.diff(pos, axis=0)
+    forward_vel = np.sum(vel_global * headdir_unitvec[:-1], axis=1)
+    orthogonal_unitvec = np.stack([headdir_unitvec[:-1,1], -headdir_unitvec[:-1,0]], axis=1)
+    sideways_vel = np.sum(vel_global * orthogonal_unitvec, axis=1)
+    
+    orientation = ratinabox.utils.get_angle(episode['head_direction'],is_array=True) # arctan2(headdir_unitvec[:,1], headdir_unitvec[:,0])
+    orientation_vel = apf.utils.modrange(np.diff(orientation, axis=0),-np.pi,np.pi)
+    
+    return forward_vel, sideways_vel, orientation_vel
+
 
 def init_sensory(Ag, Env, cell_config):
     """Instantiate a dict of sensory Neurons populations attached to `Ag`/`Env`.
@@ -941,8 +999,7 @@ def init_sensory(Ag, Env, cell_config):
 
     return Sensory
 
-
-def compute_sensory(track_curr, Sensory):
+def compute_sensory(track_curr, Sensory=None, info=None, **kwargs):
     """Compute firing rates along one trajectory for all sensory populations.
 
     Parameters
@@ -969,6 +1026,12 @@ def compute_sensory(track_curr, Sensory):
     vel      = np.asarray(track_curr["vel"]) if "vel" in track_curr else None
     T = pos.shape[0]
 
+    if info is not None:
+        # need to rehydrate
+        Env = rehydrate_env(info['env_info'])
+        Ag = rehydrate_agent(Env, info['agent_info'])
+        Sensory = rehydrate_sensory(Ag, info['sensory_info']) 
+
     # All Sensory neurons were attached to the same Ag at init time; recover it.
     Ag = next(iter(Sensory.values())).Agent
 
@@ -979,6 +1042,15 @@ def compute_sensory(track_curr, Sensory):
         )
     return out
 
+def get_rect_polar_grid_shape(neuron):
+    """
+    For rect_polar_grid FieldOfViewCells, return the shape of the firing-rate array per step,
+    i.e. (n_rings, n_per_ring). n_rings is derived from the unique tuning_distances; n_per_ring is derived from n // n_rings.
+    """
+    
+    n_rings = len(np.unique(neuron.tuning_distances))
+    n_per_ring = neuron.n // n_rings
+    return n_rings, n_per_ring
 
 def _firingrate_over_trajectory(neuron, Ag, pos, head_dir, vel, T):
     """Compute `(T, n_cells)` firing rates for one neuron population.
@@ -1001,8 +1073,8 @@ def _firingrate_over_trajectory(neuron, Ag, pos, head_dir, vel, T):
     """
     cls_name = type(neuron).__name__
 
-    # BVCs / OVCs / FieldOfView*: pos is vectorized over T; egocentric variants
-    # only accept a single head_direction per call, so we loop for those.
+    # BVCs / OVCs / FieldOfView*: pos is vectorized over T. Egocentric variants
+    # use the patched get_state(is_array=True) to also vectorize head_direction.
     if cls_name in (
         "BoundaryVectorCells", "ObjectVectorCells",
         "FieldOfViewBVCs", "FieldOfViewOVCs",
@@ -1012,92 +1084,114 @@ def _firingrate_over_trajectory(neuron, Ag, pos, head_dir, vel, T):
             fr = neuron.get_state(evaluate_at=None, pos=pos)  # (n_cells, T)
             return np.asarray(fr).T                           # (T, n_cells)
 
-        out = np.empty((T, neuron.n))
-        for t in range(T):
-            fr = neuron.get_state(
-                evaluate_at=None,
-                pos=pos[t:t + 1],
-                head_direction=head_dir[t],
-            )
-            out[t] = np.asarray(fr).ravel()
-        return out
+        fr = neuron.get_state(
+            evaluate_at=None,
+            pos=pos,
+            head_direction=head_dir,
+            is_array=True,
+        )                                                     # (n_cells, T)
+        return np.asarray(fr).T                               # (T, n_cells)
 
     if cls_name == "HeadDirectionCells":
-        out = np.empty((T, neuron.n))
-        for t in range(T):
-            fr = neuron.get_state(
-                evaluate_at=None,
-                head_direction=head_dir[t],
-            )
-            out[t] = np.asarray(fr).ravel()
-        return out
+        fr = neuron.get_state(
+            evaluate_at=None,
+            head_direction=head_dir,
+            is_array=True,
+        )                                                     # (n, T)
+        return np.asarray(fr).T                               # (T, n)
 
     if cls_name == "VelocityCells":
         if vel is None:
             raise ValueError("VelocityCells require track_curr['vel']")
-        # VelocityCells.get_state reads self.Agent.velocity directly to get the
-        # speed scale, so we must set Ag.velocity on each step as well as
-        # passing it via kwargs.
-        out = np.empty((T, neuron.n))
-        for t in range(T):
-            Ag.velocity = np.asarray(vel[t], dtype=float)
-            fr = neuron.get_state(evaluate_at=None, velocity=vel[t])
-            out[t] = np.asarray(fr).ravel()
-        return out
+        fr = neuron.get_state(
+            evaluate_at=None,
+            velocity=vel,
+            is_array=True,
+        )                                                     # (n, T)
+        return np.asarray(fr).T                               # (T, n)
 
     if cls_name == "SpeedCell":
         if vel is None:
             raise ValueError("SpeedCell requires track_curr['vel']")
-        out = np.empty((T, neuron.n))
-        for t in range(T):
-            fr = neuron.get_state(evaluate_at=None, vel=vel[t])
-            out[t] = np.asarray(fr).ravel()
-        return out
+        fr = neuron.get_state(evaluate_at=None, vel=vel, is_array=True)  # (1, T)
+        return np.asarray(fr).T                                          # (T, 1)
 
     raise TypeError(f"unsupported cell class: {cls_name}")
 
-def rect_polar_grid(distance_range, angle_range, n_rings, n_angles, **_):
-    """`cell_arrangement` callable for a rectangular polar grid of vector cells.
+def rect_polar_grid(distance_range, angle_range, n_angles,
+                    spatial_resolution, beta=5, **_):
+    """`cell_arrangement` callable for a polar grid of vector cells with
+    diverging-manifold ring spacing and a fixed number of cells per ring.
 
-    Pass this as `"cell_arrangement": rect_polar_grid` in a vector-cell
-    config (with extra keys `n_rings` and `n_angles`). Unlike RatInABox's
-    built-in `uniform_manifold` / `diverging_manifold`, which produce
-    variable cells-per-ring, this lays out a fixed n_rings × n_angles
-    grid so the resulting firing-rate vector reshapes cleanly to
+    Ring radii follow RatInABox's diverging_manifold rule (Hartley model
+    + just-touching radially):
+
+        resolution(r) = xi + r/beta,   xi chosen so resolution(d_min) = spatial_resolution
+        r_{k+1}       = (2*r_k + resolution_k + xi) / (2 - 1/beta)
+
+    The innermost ring is at d_min (clamped to >= 0.01); the loop stops
+    when r_{k+1} would exceed d_max (so the outermost ring is at most
+    d_max but typically a bit less). n_rings is derived; recover via
+    `len(mu_d) // n_angles`.
+
+    Each ring is given exactly n_angles cells, evenly tiled across
+    [-theta_max, +theta_max] at the midpoints of equal-width angular
+    bins, so the firing-rate vector reshapes cleanly to
     `(T, n_rings, n_angles)`.
 
-    Receptive-field widths are set to half the inter-cell spacing in both
-    radial and angular directions (rough tiling with ~1σ overlap).
+    In display_vector_cells (where the ellipse "width" axis is rotated
+    to point radially outward, despite the variable names):
+        - radial diameter      = sigma_angles * r = resolution(r)  -> ring neighbors just touch
+        - tangential diameter  = sigma_distances  = r * dtheta     -> in-ring neighbors just touch
+
+    Cells are not square in general (resolution(r) != r * dtheta), since
+    rings follow Hartley but n_angles is fixed.
+
+    Side effect: sigma_distances and sigma_angles are also used by
+    `get_state` as Gaussian / von Mises widths for the firing rate. With
+    this swap of axis roles, the *radial* firing field has width
+    r * dtheta and the *angular* one has width resolution(r) / r. Looks
+    right on the plot but physically idiosyncratic.
 
     Parameters
     ----------
     distance_range : (d_min, d_max)
-        Ring radii, in metres.
-    angle_range : (θ_min, θ_max)
-        Bearings in degrees, matching RatInABox's convention: `angle_range=[0, θ]`
-        means a symmetric ±θ FoV (total angular extent `2θ`). `θ_min` is
-        typically 0 (cells start at straight ahead); setting `θ_min > 0`
-        creates a blind spot directly ahead.
-    n_rings : number of concentric rings
-    n_angles : number of angular bins per ring (tiled symmetrically across ±θ_max)
+        Innermost ring at d_min (clamped to >= 0.01); outermost ring is
+        the largest one whose successor would exceed d_max.
+    angle_range : (theta_min, theta_max) in degrees
+        theta_min is currently ignored; cells tile symmetrically across
+        [-theta_max, +theta_max].
+    n_angles : int
+        Cells per ring (fixed across rings).
+    spatial_resolution : float
+        Radial cell size at the innermost ring, in metres.
+    beta : float, default 5
+        Hartley growth parameter; smaller -> faster cell growth -> fewer rings.
 
     Returns
     -------
-    (mu_d, mu_theta, sigma_d, sigma_theta) : four length-(n_rings*n_angles) arrays
-        Preferred distance (m), preferred bearing (rad), radial std (m),
-        angular std (rad). Flattened in ring-major order (ring 0 first,
-        so `reshape(n_rings, n_angles)` recovers the grid).
+    (mu_d, mu_theta, sigma_d, sigma_theta) : four 1-D arrays of length
+        n_rings * n_angles, flattened in ring-major order.
     """
-    r = np.linspace(distance_range[0], distance_range[1], n_rings)
-    # Symmetric about heading to match RatInABox's built-in manifold convention.
     theta_max = np.deg2rad(angle_range[1])
-    t = np.linspace(-theta_max, theta_max, n_angles)
-    dd, tt = np.meshgrid(r, t, indexing="ij")
+    dtheta = (2 * theta_max) / n_angles
+    t = np.linspace(-theta_max + dtheta / 2, theta_max - dtheta / 2, n_angles)
+
+    radii, resolutions = [], []
+    r = max(0.01, distance_range[0])
+    xi = spatial_resolution - r / beta
+    while r < distance_range[1]:
+        resolution = xi + r / beta
+        radii.append(r)
+        resolutions.append(resolution)
+        r = (2 * r + resolution + xi) / (2 - 1 / beta)
+    radii = np.array(radii)
+    resolutions = np.array(resolutions)
+
+    dd, tt = np.meshgrid(radii, t, indexing="ij")
     mu_d, mu_theta = dd.ravel(), tt.ravel()
-    d_step = (distance_range[1] - distance_range[0]) / max(n_rings - 1, 1)
-    t_step = (2 * theta_max) / max(n_angles - 1, 1)
-    sigma_d     = np.full_like(mu_d, d_step / 2)
-    sigma_theta = np.full_like(mu_d, t_step / 2)
+    sigma_d     = (dd * dtheta).ravel()                 # tangential, ring-touching
+    sigma_theta = (resolutions[:, None] / dd).ravel()   # radial, Hartley-touching
     return mu_d, mu_theta, sigma_d, sigma_theta
 
 def plot_episode(track_curr,Env,axcurr=None,**kwargs):
@@ -1218,14 +1312,17 @@ def plot_agent_state(axcurr, pos, head_dir, vel, t):
                         angles="xy", scale_units="xy", scale=1,
                         color="C2", width=0.005, zorder=6)
         
-def plot_head_direction(axcurr, neuron, fr, head_dir=None, head_bearing=None):
+def plot_head_direction(axcurr, neuron, fr, head_dir=None, head_bearing=None,
+                        min_height=0.1):
     """Plot an HDC/VelocityCells population on a polar axis as von-Mises bumps.
 
     Each cell is drawn as a smooth curve peaking at its preferred angle, with
-    peak height = firing rate `fr[j]` and angular width set by
-    `neuron.angular_tunings[j]` (via κ = 1/σ²). An orange (C1) radial line
-    marks the current heading direction so you can see how well-aligned the
-    population response is with the agent's actual heading.
+    peak height = max(firing rate `fr[j]`, `min_height`) and angular width set
+    by `neuron.angular_tunings[j]` (via κ = 1/σ²). The `min_height` floor
+    keeps every cell visible even when its firing rate is zero; cells with
+    non-zero firing rate appear larger in proportion. An orange (C1) radial
+    line marks the current heading direction so you can see how well-aligned
+    the population response is with the agent's actual heading.
 
     Convention: the polar axis is set to the **compass convention** (0° at
     North/top, angles increasing clockwise), matching the Cartesian trajectory
@@ -1243,10 +1340,13 @@ def plot_head_direction(axcurr, neuron, fr, head_dir=None, head_bearing=None):
     head_bearing : float (radians, compass convention).
         Exactly one of these must be provided. If `head_bearing` is given it
         is used directly, otherwise `get_bearing(head_dir)` is called.
+    min_height : float, default 0.1
+        Minimum peak height for each cell's bump, so silent cells stay
+        visible. Active cells with fr[j] > min_height plot at fr[j].
     """
     if head_bearing is None:
         head_bearing = ratinabox.utils.get_bearing(head_dir)  # radians
-    
+
     preferred = np.asarray(neuron.preferred_angles)   # (n,) radians, math (CCW from E)
     tunings   = np.asarray(neuron.angular_tunings)    # (n,) radians
     # Compass convention: 0° at N (top), increasing clockwise — so the
@@ -1261,14 +1361,15 @@ def plot_head_direction(axcurr, neuron, fr, head_dir=None, head_bearing=None):
     preferred_plot    = np.pi / 2 - preferred
     head_bearing_plot = head_bearing
     # Plot each cell as a von-Mises bump: peak at preferred_angle,
-    # peak height = firing rate, angular width set by angular_tunings.
+    # peak height = max(firing rate, min_height), angular width set by angular_tunings.
     theta_grid = np.linspace(-np.pi, np.pi, 360)
     for j in range(neuron.n):
         kappa = 1.0 / max(tunings[j]**2, 1e-6)
-        bump = fr[j] * np.exp(kappa * (np.cos(theta_grid - preferred_plot[j]) - 1))
+        height = max(min_height, fr[j])
+        bump = height * np.exp(kappa * (np.cos(theta_grid - preferred_plot[j]) - 1))
         axcurr.plot(theta_grid, bump,
                         color='C0', linewidth=2)
-    r_max = max(fr.max(), 1e-6)
+    r_max = max(fr.max(), min_height)
     axcurr.plot([head_bearing_plot, head_bearing_plot],[0, r_max * 1.05],color="C1", linewidth=2)
 
 def get_ax_lims(pos, Env, Sensory):
@@ -1367,6 +1468,9 @@ def visualize_sensory(track_curr, sensory_curr, t, Env, Sensory, fig=None, ax=No
         ax['traj'] = ax1[0]
         for i, name in enumerate(Sensory.keys()):
             ax[name] = ax1[i+1]
+    else:
+        if fig is None:
+            fig = ax['traj'].figure
 
     if ax_xlim is None or ax_ylim is None:
         ax_xlim, ax_ylim = get_ax_lims(pos[t], Env, Sensory)
@@ -1414,3 +1518,294 @@ def visualize_sensory(track_curr, sensory_curr, t, Env, Sensory, fig=None, ax=No
         ax[name].set_title(name, fontsize=16)
 
     fig.tight_layout()
+    
+@dataclass
+class Sensory(apf.dataset.Operation):
+    """ Computes sensory neuron firing rates
+
+    NOTE: this operation is not invertible.
+    Attributes: 
+        idxinfo: Keeps track of which dimensions of the sensory output correspond to what cell type
+    """
+    
+    localattrs = ['idxinfo','feature_names','sensory_info']
+    idxinfo: dict | None = None
+    feature_names: list | None = None
+    # dict containing 'env_info', 'agent_info', and 'sensory_info' needed to rehydrate the Sensory neurons
+    info: dict | None = None 
+    
+    def apply(self, X: np.ndarray, info: dict, isdata: np.ndarray | None = None) -> np.ndarray:
+        """ Computes sensory features from keypoints.
+
+        Args:
+            X: (x, y, orientation, vel_x, vel_y) position of the agents, (n_agents,  n_frames, 5) float array
+            isdata: indicates whether there is data for a given frame or agent, only used to speed up computation, 
+            (n_frames, n_agents) bool array
+
+        Returns:
+            sensory_data: (n_agents,  n_frames, n_sensory_features) float array
+        """
+        self.info = info
+        feats = []
+        self.idxinfo = {}
+        sensory_data = None
+        for ratid in range(X.shape[0]):
+            if isdata is not None:
+                isdatacurr = isdata[ratid]
+            else:
+                isdatacurr = None
+            head_direction = np.stack([np.cos(X[ratid,:,2]), np.sin(X[ratid,:,2])], axis=-1)
+            track = {
+                'pos': X[ratid,:,0:2],
+                'head_direction': head_direction,
+                'vel': X[ratid,:,3:5]
+            }
+            featscurr = compute_sensory(track,info=self.info)
+            if ratid == 0:
+                # store idxinfo
+                idxoff = 0
+                idxinfo = {}
+                for k,v in featscurr.items():
+                    ncurr = v.shape[1]
+                    idxinfo[k] = (idxoff, idxoff + ncurr)
+                    idxoff += ncurr
+                sensory_data = np.full((X.shape[0],X.shape[1],ncurr),np.nan)
+            sensory_data[ratid] = np.concatenate(list(featscurr.values()), axis=1)
+        self.idxinfo = idxinfo
+        self.feature_names = feature_names
+        return np.array(feats), {'isdata': isdata}
+
+    def invert(self, sensory: np.ndarray) -> None:
+        LOG.error(f"Operation {self} is not invertible")
+        return None
+    
+    def __str__(self):
+        s = f"Operation {self.name} of class Sensory with idxinfo keys:\n"
+        if self.idxinfo is not None:
+            for key in self.idxinfo:
+                s += f"  {key}: {self.idxinfo[key]}\n"
+        else:
+            s += "  idxinfo is None\n"
+        return s[:-1]
+    
+    def update_feature_names(self, input_feature_names):
+        return self.feature_names
+    
+    def invert_feature_names(self, input_feature_names):
+        LOG.error(f"Operation {self.name} is not invertible")
+        return None
+
+        
+def make_dataset(
+        config: dict,
+        filename: str,
+        ref_dataset: apf.dataset.Dataset | None = None,
+        return_all: bool = False,
+        debug: bool = True,
+        data: dict | None = None
+) -> apf.dataset.Dataset | tuple[apf.dataset.Dataset, np.ndarray, apf.dataset.Data, apf.dataset.Data, apf.dataset.Data, apf.dataset.Data]:
+    """ Creates a dataset from config, for a given file name and optionally using a reference dataset.
+
+    Args:
+        config: Config for loading the data
+        filename: Name of file to read the data from (e.g. 'intrainfile', 'invalfile')
+        ref_dataset: Dataset to copy postprocessing operations from.
+            When loading validation/test set, provide training set.
+        return_all: Whether to return intermediate variables in addition to Dataset (see returns)
+        debug: Whether to use less data for debugging
+        data: Optionally provide pre-loaded data dict to avoid re-loading from file. 
+        data dict: {
+            'track': [{
+                'pos': (T,2) array of x,y positions
+                'head_direction': (T,2) array of unit vectors
+            }, ...] list of episodes
+            'hidden': [{
+                firingrate_key: (T, n_cells) array of firing rates for each hidden neuron type
+            }, ...] list of episodes
+            'env_info': dict of environment setup
+            'agent_info': dict of agent setup
+            'sensory_info': {
+                sensory_key: dict of sensory cell setup 
+            }
+        }
+    
+
+    Returns:
+        dataset: Dataset for flyllm experiment.
+        [
+          track: x,y,orientation
+          velocity: Egocentric velocity data
+          sensory: Sensory data
+        ]
+    """
+    
+    # Load data
+    if data is None:
+        with open(filename, 'rb') as f:
+            data = pickle.load(f)
+
+    dt = data['agent_info']['dt']
+
+    if debug:
+        n_episodes = 5
+        data['track'] = data['track'][:n_episodes]
+        data['hidden'] = data['hidden'][:n_episodes]
+
+    info = {
+        'env_info': data['env_info'],
+        'agent_info': data['agent_info'],
+        'sensory_info': data['sensory_info']
+    }
+
+    # create track from X which is (n_agents, n_frames, 5):
+    # x, y, orientation, vel_x, vel_y
+
+    # concatenate all episodes together and create isstart arrays to keep track of 
+    # episode boundaries
+    episode_lengths = [len(ep['pos']) for ep in data['track']]
+    ntotal_frames = np.sum(episode_lengths)
+    isstart = np.zeros(ntotal_frames, dtype=bool)
+    isstart[0] = True
+    isstart[np.cumsum(episode_lengths)[:-1]] = True
+    pos = np.concatenate([ep['pos'] for ep in data['track']], axis=0)
+    head_direction = np.concatenate([ep['head_direction'] for ep in data['track']], axis=0)
+    orientation = apf.utils.modrange(ratinabox.utils.get_angle(head_direction,is_array=True),-np.pi, np.pi)
+    # vel can be computed from np.diff(pos,axis=0)/dt, except for first time point
+    vel = np.concatenate([ep['vel'] for ep in data['track']], axis=0)
+    
+    # all data valid
+    isdata = np.ones(ntotal_frames, dtype=bool)
+
+    # create X which is (n_frames, 5)
+    X = np.concatenate([pos,orientation[:,None],vel], axis=-1)
+    
+    track = apf.dataset.Data('position', X[None,...], [], feature_names=['x', 'y', 'orientation', 'vel_x', 'vel_y'])
+    
+    sensory = Sensory()(track,info=info)
+        
+    # transpose everything to be (n_agents, n_frames, ...)
+    isstart = isstart.T
+    isdata = isdata.T
+    flyids = flyids.T
+    Xkp = Xkp.T
+
+    # Compute features
+    LOG.info('Computing input and label features for dataset...')
+    if DOTIME:
+        start_time = utils.tic()
+    track = Data('keypoints', Xkp, [], feature_names=[kp for kp in keypointnames])
+    if DOTIME:
+        LOG.info(f"Track creation took {utils.toc(start_time):.2f} seconds")
+
+    LOG.info('Computing sensory features...')
+    if DOTIME:
+        start_time = utils.tic()
+    sensory = Sensory()(track,isdata=isdata)
+    if DOTIME:
+        LOG.info(f"Sensory computation took {utils.toc(start_time):.2f} seconds")
+
+    LOG.info('Computing pose features...')
+    if DOTIME:
+        start_time = utils.tic()
+    pose = Pose()(track, scale_perfly=scale_perfly, flyid=flyids, isdata=isdata)
+    
+    assert not np.any(np.isnan(sensory.array[isdata])) and np.all(np.isnan(sensory.array[~isdata])), "Sensory features should be nan iff isdata == False"
+    assert not np.any(np.isnan(pose.array[isdata])) and np.all(np.isnan(pose.array[~isdata])), "Pose features should be nan iff isdata == False"
+    if DOTIME:
+        LOG.info(f"Pose computation took {utils.toc(start_time):.2f} seconds")
+    
+    LOG.info('Computing velocity features...')
+    if DOTIME:
+        start_time = utils.tic()
+    velocity = Velocity(featrelative=featrelative, featangle=featangle)(pose, isstart=isstart)
+    if DOTIME:
+        LOG.info(f"Velocity computation took {utils.toc(start_time):.2f} seconds")
+
+    tspred_global = config['tspred_global']
+    aux_tspred = [dt for dt in tspred_global if dt > 1]
+    if len(aux_tspred) > 0:
+        LOG.warning('!!!Auxiliary prediction is currently commented out!!!')
+        if DOTIME:
+            start_time = utils.tic()
+        auxiliary = GlobalVelocity(tspred=aux_tspred)(pose, isstart=isstart)
+        if DOTIME:
+            LOG.info(f"Auxiliary computation took {utils.toc(start_time):.2f} seconds")
+    else:
+        auxiliary = None
+
+    LOG.info('Assembling dataset...')
+
+    args = {
+        'context_length': config['contextl'],
+        'isstart': isstart,
+        'useoutputmask': useoutputmask
+    }
+
+    # Assemble the dataset
+    if ref_dataset is not None:
+        if DOTIME:
+            start_time = utils.tic()
+        dataset = Dataset(
+            inputs=apply_opers_from_data(ref_dataset.inputs, {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
+            labels=apply_opers_from_data(ref_dataset.labels, {'velocity': velocity}), #, 'auxiliary': auxiliary}),
+            **args
+        )
+        if DOTIME:
+            LOG.info(f"Applying ref_dataset operations took {utils.toc(start_time):.2f} seconds")
+    elif 'dataset_params' in config and config['dataset_params'] is not None and \
+        ('inputs' in config['dataset_params']) and ('labels' in config['dataset_params']):
+        if DOTIME:
+            start_time = utils.tic()
+        dataset = Dataset(
+            inputs=apply_opers_from_data_params(config['dataset_params']['inputs'], {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
+            labels=apply_opers_from_data_params(config['dataset_params']['labels'], {'velocity': velocity}), #, 'auxiliary': auxiliary}),
+            **args
+        )
+        if DOTIME:
+            LOG.info(f"Applying dataset_params operations took {utils.toc(start_time):.2f} seconds")
+    else:
+        # velocity = OddRoot(5)(velocity)
+
+        discreteidx = config['discreteidx']
+        continuousidx = np.setdiff1d(np.arange(velocity.array.shape[-1]), discreteidx)
+        indices_per_op = [discreteidx, continuousidx]
+    
+
+        # Need to zscore before binning, otherwise bin_epsilon values need to be divided by zscore stds
+        if DOTIME:
+            start_time = utils.tic()
+        zscored_velocity = Zscore()(velocity)
+        if DOTIME:
+            LOG.info(f"Zscoring velocity took {utils.toc(start_time):.2f} seconds")
+
+        zsig = zscored_velocity.operations[-1].std
+        bin_config = {'nbins': config['discretize_nbins'],
+                      'bin_epsilon': config['discretize_epsilon'] / zsig[discreteidx]}
+
+        if 'bin_edges_absolute' in config and config['bin_edges_absolute'] is not None and len(config['bin_edges_absolute']) > 0:
+            # check that all discreteidx are present
+            assert all(idx in config['bin_edges_absolute'] for idx in discreteidx), "Not all discreteidx are present in bin_edges_absolute"
+            bin_config['bin_edges'] = np.vstack([config['bin_edges_absolute'][featidx]/zsig[featidx] for featidx in discreteidx]) # nfeat x nbins + 1
+
+        if DOTIME:
+            start_time = utils.tic()
+        dataset = Dataset(
+            inputs={
+                'velocity': Zscore()(Roll(dt=1)(velocity)),
+                'pose': Zscore()(Subset(featrelative)(pose)),
+                'sensory': Zscore()(sensory),
+            },
+            labels={
+                'velocity': Fusion([Discretize(**bin_config), Identity()], indices_per_op)(zscored_velocity),
+                # 'velocity': Fusion([Discretize(**bin_config), Zscore()], indices_per_op)(velocity),
+                # 'auxiliary': Discretize()(auxiliary)
+            },
+            **args
+        )
+        if DOTIME:
+            LOG.info(f"Creating dataset with new operations took {utils.toc(start_time):.2f} seconds")
+    dataset_params = dataset.get_params()
+    if return_all:
+        return dataset, flyids, track, pose, velocity, sensory, dataset_params, isdata, isstart, useoutputmask
+    else:
+        return dataset

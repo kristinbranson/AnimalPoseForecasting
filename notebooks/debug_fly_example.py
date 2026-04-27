@@ -245,6 +245,9 @@ for k,v in example['metadata'].items():
         print(f'  {k} with keys {v.keys()}')
     else:
         print(f'  {k}: {v}')
+        
+        
+print("")
 agent_id = example['metadata']['agent_id']
 start_frame = example['metadata']['start_frame']
 duration = example['metadata']['duration']
@@ -277,10 +280,24 @@ def print_dict_shapes(d,prefixin=''):
         print(f'{prefixin}: {d}')
 
 # create input features from keypoints
+print("\nexample['metadata']['inputs']:")
 print_dict_shapes(example['metadata']['inputs'])
 
 # apf.dataset.apply_opers_from_data(example['metadata']['inputs'],
 #                                   )
+
+# %%
+raw_data = {}
+with np.load(config['datadir'] + '/' + config['invalfilestr']) as data1:
+    for key in data1:
+        raw_data[key] = data1[key]
+
+# %%
+np.max(raw_data['videoidx'])
+config['invalfilestr']
+
+# %% [raw]
+#
 
 # %%
 

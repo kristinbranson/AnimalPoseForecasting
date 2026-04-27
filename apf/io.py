@@ -143,7 +143,7 @@ def read_config(jsonfile, default_configfile=None, get_sensory_feature_idx=None,
     if config['modelstatetype'] == 'prob' and config['minstateprob'] is None:
         config['minstateprob'] = 1 / config['nstates']
 
-    if 'all_discretize_epsilon' in config:
+    if 'all_discretize_epsilon' in config and config['all_discretize_epsilon'] is not None:
         config['all_discretize_epsilon'] = np.array(config['all_discretize_epsilon'])
         if 'discreteidx' in config and config['discreteidx'] is not None:
             config['discretize_epsilon'] = config['all_discretize_epsilon'][config['discreteidx']]
@@ -245,6 +245,43 @@ def overwrite_config(config0, config1, no_overwrite=()):
         else:
             config0[k] = v
     return
+
+
+def init_config(configfile=None,config=None,mode='train',loadmodelfile=None,overrideconfig={},
+                read_config_kwargs={},
+                res={}):
+    """
+    res = init_config(configfile=None,config=None,mode='train',loadmodelfile=None,res={})
+    Read configuration from configfile and optionally loadmodelfile
+    Inputs:
+    configfile: str, path to configuration file
+    config: dict, configuration dictionary read friom configfile
+    mode: str, one of ['train','test'], whether training or testing
+    loadmodelfile: str, path to model file to load
+    res: dict, dictionary to store results
+    Outputs:
+    res: dict, updated dictionary with the following keys:
+        'config': dict, configuration dictionary
+    """
+    
+    if config is None:
+        assert configfile is not None, "No configuration file provided"        
+        config = read_config(configfile, **read_config_kwargs) 
+        
+    if overrideconfig is not None:
+        for k in overrideconfig:
+            config[k] = overrideconfig[k]
+    
+    if mode in ['test']:
+        # set loadmodelfile from config if not specified
+        if (loadmodelfile is None) and ('loadmodelfile' in config):
+            loadmodelfile = config['loadmodelfile']
+        assert loadmodelfile is not None, "No model file provided"
+        load_config_from_model_file(loadmodelfile=loadmodelfile,config=config)
+        assert 'dataset_params' in config, 'dataset_params not in config'
+        
+    res['config'] = config
+    return res
 
 
 def get_modeltype_str(config):
