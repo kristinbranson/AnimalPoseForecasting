@@ -733,9 +733,6 @@ class Discretize(Operation):
         # n x n_feat x nbins float
         data_flat_discrete = discretize_labels(data_flat, self.bin_edges, soften_to_ends=True)
 
-        if DOTIME:
-            LOG.info(f"Discretize apply took {toc(start_time):.2f} seconds")
-
         invertdata = {'to_discretize': data}
 
         return data_flat_discrete.reshape(sz_rest + (-1,)), invertdata
@@ -869,9 +866,6 @@ class Fusion(Operation):
         
         if not ismultiagent:
             fused = fused[0]
-
-        if DOTIME:
-            LOG.info(f"Fusion apply took {toc(start_time):.2f} seconds")
 
         return fused, {'kwargs_per_op': invertdata}
 
@@ -2008,9 +2002,23 @@ def apply_opers_from_data_params(data_params: list[dict], datas: dict[str, Data]
 
 
 def collate_nested_dicts(batch):
-    """Recursively collates nested dicts/arrays into batched tensors"""
+    """Recursively collates nested dicts/arrays into batched tensors.
+
+    For lists (e.g. per-operation invertdata), recurses element-wise so a
+    `[[op0, op1, ...]_b for b in batch]` structure becomes
+    `[batched_op0, batched_op1, ...]` — keeping the per-op axis intact and
+    stacking the leaf arrays inside each op's dict. This lets
+    `apply_inverse_operations` consume the batched Data directly.
+    """
+    if batch[0] is None and all(b is None for b in batch):
+        return None
     if isinstance(batch[0], dict):
         return {k: collate_nested_dicts([d[k] for d in batch]) for k in batch[0]}
+    elif isinstance(batch[0], list):
+        n = len(batch[0])
+        if not all(isinstance(b, list) and len(b) == n for b in batch):
+            return batch
+        return [collate_nested_dicts([b[i] for b in batch]) for i in range(n)]
     elif isinstance(batch[0], np.ndarray):
         return torch.stack([torch.from_numpy(x) for x in batch])
     elif isinstance(batch[0], torch.Tensor):
@@ -2310,20 +2318,27 @@ class Dataset(torch.utils.data.Dataset):
         if continuous_key is None:
             if 'labels' in output_discr_cont:
                 continuous_key = 'labels'
-            else:
+            elif 'continuous' in output_discr_cont:
                 continuous_key = 'continuous'
+            else:
+                continuous_key = None
         if discrete_key is None:
             if 'labels_discrete' in output_discr_cont:
                 discrete_key = 'labels_discrete'
-            else:
+            elif 'discrete' in output_discr_cont:
                 discrete_key = 'discrete'
+            else:
+                discrete_key = None
         
         # assemble output to look like original concatenated data (before splitting discrete and continuous)
         n_dim = self.d_output_discrete * self.discretize_nbins + self.d_output_continuous
         is_binned = np.zeros(n_dim, bool)
         for inds in self.label_bin_indices:
             is_binned[inds] = True
-        sz = list(output_discr_cont[continuous_key].shape[:-1])
+        if continuous_key is not None:
+            sz = list(output_discr_cont[continuous_key].shape[:-1])
+        else:
+            sz = list(output_discr_cont[discrete_key].shape[:-1])
         concated = np.ones(sz + [n_dim]) * np.nan
         if discrete_key in output_discr_cont:
             x = output_discr_cont[discrete_key]

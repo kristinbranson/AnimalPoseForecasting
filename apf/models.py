@@ -2,6 +2,9 @@ import numpy as np
 import math
 import typing
 import torch
+import apf.io
+import apf.training
+import datetime
 
 def CrossEntropyLossEps(eps=1e-8,**kwargs):
     ce = torch.nn.CrossEntropyLoss(**kwargs)
@@ -1081,6 +1084,122 @@ def get_output_and_attention_weights(model, inputs, mask=None, is_causal=False):
 
     return output, activation
 
+def init_state(config=None,seedrandom=True,res={}):
+    """
+    res = init_state(config,seedrandom=True,res={})
+    Initialize run state variables: random seed, and torch device
+    Inputs:
+    config: dict, configuration dictionary
+    seedrandom: bool, whether to seed the random number generators, default = True
+    res: dict, dictionary to store results with the following keys:
+        'device': torch.device, device to run torch computations on
+    """
+
+    assert config is not None, "No configuration provided"    
+    if seedrandom:
+        # seed the random number generators
+        np.random.seed(config['numpy_seed'])
+        torch.manual_seed(config['torch_seed'])
+        
+    # set device (cuda/cpu)
+    device = torch.device(config['device'])
+    if device.type == 'cuda':
+        assert torch.cuda.is_available(), 'CUDA is not available'
+        
+    res['device'] = device
+    
+    return res
+
+def init_model_wrapper(config=None,somedataset=None,somedataloader=None,device=None,loadmodelfile=None,
+                        restartmodelfile=None,mode='train',res={}, optimizer=None, lr_scheduler=None,
+                        optimizer_args={}):
+    """
+    res = init_model_wrapper(config=None,somedataset=None,somedataloader=None,device=None,loadmodelfile=None,
+                            restartmodelfile=None,mode='train',ntrain_batches=None,res={})
+    Initialize the model, loss function, optimizer, and scheduler.
+    Inputs:
+    config: dict, configuration dictionary
+    somedataset: FlyMLMDataset or FlyTestDataset, dataset to use for training or testing
+    somedataloader: torch DataLoader, dataloader for somedataset
+    device: torch device, device to run computations on
+    loadmodelfile: str, path to model file to load
+    restartmodelfile: str, path to model file to restart training from
+    mode: str, one of ['train','test'], whether training or testing
+    res: dict, dictionary to store results with the following keys:
+    Output:
+    res: dict, updated dictionary with the following keys:
+        'model': torch Module, model
+        'criterion': torch Module, loss function
+        'optimizer': if mode in ['train',] and restartmodelfile is not None, torch Optimizer, optimizer, otherwise None
+        'lr_scheduler': if mode in ['train',] and restartmodelfile is not None, torch Scheduler, learning rate scheduler, otherwise None
+        'opt_model': if mode in ['test',], torch Module, compiled model for testing, otherwise None
+        'modeltype_str': str, model type string, used in creating unique names for various files
+        'model_savetime': str, time the model was saved
+        'loss_epoch': dict, loss history
+        'epoch': int, current epoch number if mode in ['train',], otherwise None. only non-zeros if restarting from restartmodelfile
+    """
+    
+    assert config is not None, "No configuration provided"
+    assert somedataset is not None, "No dataset provided"
+    assert somedataloader is not None, "No dataloader provided"
+    assert device is not None, "No device provided"
+    
+    # create the model
+    model, criterion = initialize_model(config, somedataset, device)
+    res['criterion'] = criterion
+
+    # load the model
+    if loadmodelfile is not None:
+        modeltype_str, savetime = apf.io.parse_modelfile(loadmodelfile)
+        loss_epoch = apf.io.load_model(loadmodelfile, model, device)
+        if 'train' in loss_epoch and loss_epoch['train'] is not None:
+            if np.any(np.isnan(loss_epoch['train'].cpu().numpy())):
+                epoch = np.nonzero(np.isnan(loss_epoch['train'].cpu().numpy()))[0][0]
+            else:
+                epoch = loss_epoch['train'].shape[0]
+        else:
+            epoch = config['num_train_epochs']
+    else:
+        modeltype_str = apf.io.get_modeltype_str(config)
+        if ('model_nickname' in config) and (config['model_nickname'] is not None):
+            modeltype_str = config['model_nickname']
+        if mode in ['train',]:
+            if restartmodelfile is not None:
+                num_training_steps = config['num_train_epochs'] * len(somedataloader)
+                if optimizer is None or lr_scheduler is None:
+                    optimizer, lr_scheduler = apf.training.init_optimizer(num_training_steps, model, optimizer_args)
+                loss_epoch = apf.io.load_model(restartmodelfile, model, device, lr_optimizer=optimizer, scheduler=lr_scheduler)
+                apf.models.update_loss_nepochs(loss_epoch, config['num_train_epochs'])
+                if np.any(np.isnan(loss_epoch['train'].cpu().numpy())):
+                    epoch = np.nonzero(np.isnan(loss_epoch['train'].cpu().numpy()))[0][0]
+                else:
+                    epoch = loss_epoch['train'].shape[0]
+            else:
+                epoch = 0
+                # initialize structure to keep track of loss
+                loss_epoch = initialize_loss(somedataset, config)
+            savetime = datetime.datetime.now()
+            savetime = savetime.strftime('%Y%m%dT%H%M%S')
+        else:
+            loss_epoch = None
+            epoch = None
+            savetime = None
+
+    res['model'] = model
+    res['criterion'] = criterion
+    res['optimizer'] = optimizer
+    res['lr_scheduler'] = lr_scheduler
+    res['modeltype_str'] = modeltype_str
+    res['model_savetime'] = savetime
+    res['loss_epoch'] = loss_epoch
+    res['epoch'] = epoch
+        
+    if mode in ['test',]:
+        res['opt_model'] = torch.compile(model)
+    else:
+        res['opt_model'] = None
+
+    return res
 
 def initialize_model(config, train_dataset, device):
     # architecture arguments

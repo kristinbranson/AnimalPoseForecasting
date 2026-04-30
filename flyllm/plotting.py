@@ -820,9 +820,9 @@ def debug_plot_pose(examplein, train_dataset=None, predin=None, data=None,
         h = {'kpt0': [], 'kpt1': [], 'edge0': [], 'edge1': []}
 
     if true_discrete_mode == 'to_discretize':
-        true_args = {'use_todiscretize': True}
+        true_args = {'discretize': {'use_todiscretize': True}}
     elif true_discrete_mode == 'sample':
-        true_args = {'sample': True}
+        true_args = {'discretize': {'do_sampling': True}}
     else:
         true_args = {}
 
@@ -847,7 +847,7 @@ def debug_plot_pose(examplein, train_dataset=None, predin=None, data=None,
             t0 = examplecurr.metadata['t0']
             flynum = examplecurr.metadata['flynum']
         else:
-            Xkp_true = apf.dataset.apply_inverse_operations(examplecurr['labels']['velocity'],extraargs=invert_args)
+            Xkp_true = apf.dataset.apply_inverse_operations(examplecurr['labels']['velocity'],extraargs=true_args)
             Xkp_true = Xkp_true[0].transpose(0,2,1)
             t0 = examplecurr['metadata']['start_frame']
             flynum = examplecurr['metadata']['agent_id']

@@ -131,12 +131,19 @@ def len_wrapper(x, defaultlen=None):
         return 1
 
 
-def dict_convert_torch_to_numpy(d):
-    for k, v in d.items():
-        if type(v) is torch.Tensor:
-            d[k] = v.numpy()
-        elif type(v) is dict:
-            d[k] = dict_convert_torch_to_numpy(v)
+def convert_torch_to_numpy(d):
+    """Recursively convert torch.Tensor leaves to numpy arrays inside a nested
+    dict / list / tuple structure. Returns new containers (does not mutate the
+    input) so callers can safely reuse the original. Tensors return a new
+    ndarray; anything else is returned unchanged."""
+    if type(d) is torch.Tensor:
+        return d.detach().cpu().numpy()
+    if type(d) is dict:
+        return {k: convert_torch_to_numpy(v) for k, v in d.items()}
+    if type(d) is list:
+        return [convert_torch_to_numpy(v) for v in d]
+    if type(d) is tuple:
+        return tuple(convert_torch_to_numpy(v) for v in d)
     return d
 
 

@@ -289,11 +289,12 @@ def get_modeltype_str(config):
         modeltype_str = f"{config['modelstatetype']}_{config['modeltype']}"
     else:
         modeltype_str = config['modeltype']
-    if config['categories'] is None or len(config['categories']) == 0:
-        category_str = 'all'
-    else:
-        category_str = '_'.join(config['categories'])
-    modeltype_str += f'_{category_str}'
+    if 'categories' in config:
+        if config['categories'] is None or len(config['categories']) == 0:
+            category_str = 'all'
+        else:
+            category_str = '_'.join(config['categories'])
+        modeltype_str += f'_{category_str}'
 
     return modeltype_str
 

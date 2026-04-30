@@ -116,6 +116,9 @@ import apf.dataset
 import ratinabox
 import ratinabox.utils
 
+import logging
+LOG = logging.getLogger(__name__)
+
 # NB: `ratinabox/__init__.py` does `from .Neurons import *`, `.Environment
 # import *`, `.Agent import *`, and `from . import contribs` (whose own
 # __init__ stars ValueNeuron in). After that, at the top level:
@@ -1047,10 +1050,92 @@ def get_rect_polar_grid_shape(neuron):
     For rect_polar_grid FieldOfViewCells, return the shape of the firing-rate array per step,
     i.e. (n_rings, n_per_ring). n_rings is derived from the unique tuning_distances; n_per_ring is derived from n // n_rings.
     """
-    
+
     n_rings = len(np.unique(neuron.tuning_distances))
     n_per_ring = neuron.n // n_rings
     return n_rings, n_per_ring
+
+def get_feature_names(neuron, prefix=None):
+    """Return a list of feature (cell) names for one Neurons population.
+
+    Length matches `neuron.n` and ordering matches the columns of the (T, n)
+    firing-rate array produced by `_firingrate_over_trajectory`.
+
+    Naming conventions per cell type:
+      - BoundaryVectorCells / ObjectVectorCells / FieldOfView*:
+          `{prefix}__r={d:.3f}_theta={deg:+.1f}deg`. For rect_polar_grid
+          layouts (constant cells per ring) a `_ring{i}_ang{j}` suffix is
+          appended so grid indexing is recoverable.
+      - HeadDirectionCells / VelocityCells:
+          `{prefix}__theta={deg:+.1f}deg`
+      - SpeedCell:
+          `{prefix}__speed`
+
+    Parameters
+    ----------
+    neuron : ratinabox Neurons instance
+    prefix : str or None
+        Prepended (with `__`) to each name. Defaults to `neuron.name`.
+    """
+    cls_name = type(neuron).__name__
+    if prefix is None:
+        prefix = neuron.name
+
+    if cls_name in ("BoundaryVectorCells", "ObjectVectorCells",
+                    "FieldOfViewBVCs", "FieldOfViewOVCs"):
+        d = np.asarray(neuron.tuning_distances)
+        theta_deg = np.degrees(np.asarray(neuron.tuning_angles))
+        unique_r = np.unique(d)
+        n_rings = len(unique_r)
+        if n_rings > 0 and neuron.n % n_rings == 0:
+            n_per_ring = neuron.n // n_rings
+            ring_idx = np.searchsorted(unique_r, d)
+            ang_idx = np.tile(np.arange(n_per_ring), n_rings)[:neuron.n]
+            return [
+                f"{prefix}__r={d[i]:.3f}_theta={theta_deg[i]:+.1f}deg"
+                f"_ring{ring_idx[i]}_ang{ang_idx[i]}"
+                for i in range(neuron.n)
+            ]
+        return [
+            f"{prefix}__r={d[i]:.3f}_theta={theta_deg[i]:+.1f}deg"
+            for i in range(neuron.n)
+        ]
+
+    if cls_name in ("HeadDirectionCells", "VelocityCells"):
+        theta_deg = np.degrees(np.asarray(neuron.preferred_angles))
+        return [f"{prefix}__theta={theta_deg[i]:+.1f}deg" for i in range(neuron.n)]
+
+    if cls_name == "SpeedCell":
+        return [f"{prefix}__speed"]
+
+    raise TypeError(f"unsupported cell class: {cls_name}")
+
+def get_all_feature_names(sensory_or_info):
+    """Concatenate per-population feature names into one flat list.
+
+    Accepts either:
+      - a live `Sensory` dict (population name -> Neurons), or
+      - a full info bundle (dict with 'env_info', 'agent_info', 'sensory_info'
+        keys, as stored on the `Sensory` Operation). In that case the
+        populations are rehydrated first via rehydrate_env / rehydrate_agent
+        / rehydrate_sensory.
+
+    Order matches the iteration order of the resulting `Sensory` dict (matching
+    how `compute_sensory` returns its result). Population name is used as the
+    prefix for each cell's feature name.
+    """
+    if isinstance(sensory_or_info, dict) and 'sensory_info' in sensory_or_info:
+        info = sensory_or_info
+        Env = rehydrate_env(info['env_info'])
+        Ag = rehydrate_agent(Env, info['agent_info'])
+        Sensory = rehydrate_sensory(Ag, info['sensory_info'])
+    else:
+        Sensory = sensory_or_info
+
+    names = []
+    for pop_name, neuron in Sensory.items():
+        names.extend(get_feature_names(neuron, prefix=pop_name))
+    return names
 
 def _firingrate_over_trajectory(neuron, Ag, pos, head_dir, vel, T):
     """Compute `(T, n_cells)` firing rates for one neuron population.
@@ -1075,13 +1160,18 @@ def _firingrate_over_trajectory(neuron, Ag, pos, head_dir, vel, T):
 
     # BVCs / OVCs / FieldOfView*: pos is vectorized over T. Egocentric variants
     # use the patched get_state(is_array=True) to also vectorize head_direction.
+    # For very large N_pos we additionally chunk + run those chunks across a
+    # multiprocessing pool (numpy ufuncs are single-threaded on their own).
+    # Sweet spot from bench_sensory: chunk_size=50k, n_workers=8.
     if cls_name in (
         "BoundaryVectorCells", "ObjectVectorCells",
         "FieldOfViewBVCs", "FieldOfViewOVCs",
     ):
         is_ego = getattr(neuron, "reference_frame", "allocentric") == "egocentric"
         if not is_ego:
-            fr = neuron.get_state(evaluate_at=None, pos=pos)  # (n_cells, T)
+            fr = neuron.get_state(evaluate_at=None, pos=pos,
+                                  chunk_size=50000, n_workers=8,
+                                  parallel_threshold=200000)
             return np.asarray(fr).T                           # (T, n_cells)
 
         fr = neuron.get_state(
@@ -1089,6 +1179,9 @@ def _firingrate_over_trajectory(neuron, Ag, pos, head_dir, vel, T):
             pos=pos,
             head_direction=head_dir,
             is_array=True,
+            chunk_size=50000,
+            n_workers=8,
+            parallel_threshold=200000,
         )                                                     # (n_cells, T)
         return np.asarray(fr).T                               # (T, n_cells)
 
@@ -1225,8 +1318,17 @@ def plot_episode(track_curr,Env,axcurr=None,**kwargs):
     if axcurr is None:
         axcurr = plt.gca()
     fig = axcurr.figure
-    trajectory = track_curr['pos']
-    head_direction = track_curr['head_direction']
+    if isinstance(track_curr, dict):
+        trajectory = track_curr['pos']
+        head_direction = track_curr['head_direction']
+    elif hasattr(track_curr,'shape'):
+        trajectory = track_curr[..., :2]
+        # last dim is an angle (radians); convert to a unit direction vector
+        # so downstream code (get_bearing) sees a consistent (T, 2) shape.
+        angle = track_curr[..., 2]
+        head_direction = np.stack([np.cos(angle), np.sin(angle)], axis=-1)
+    else:
+        raise ValueError("track_curr must be a dict with 'pos' and 'head_direction' keys, or an array with shape (..., 3) where the last dimension is (x, y, head_direction).")
     _, _ = Env.plot_environment(fig=fig, ax=axcurr, autosave=False)
     htraj = axcurr.scatter(
         trajectory[:-1, 0],
@@ -1451,9 +1553,18 @@ def visualize_sensory(track_curr, sensory_curr, t, Env, Sensory, fig=None, ax=No
     -------
     fig : the matplotlib Figure.
     """
-    pos      = np.asarray(track_curr["pos"])
-    head_dir = np.asarray(track_curr["head_direction"])
-    vel      = np.asarray(track_curr["vel"]) if "vel" in track_curr else None
+    # Accept either a dict {'pos','head_direction'[,'vel']} or an array of
+    # shape (T, 3) where the last dim is (x, y, theta).
+    if isinstance(track_curr, dict):
+        pos      = np.asarray(track_curr["pos"])
+        head_dir = np.asarray(track_curr["head_direction"])
+        vel      = np.asarray(track_curr["vel"]) if "vel" in track_curr else None
+    else:
+        track_curr = np.asarray(track_curr)
+        pos = track_curr[..., :2]
+        angle = track_curr[..., 2]
+        head_dir = np.stack([np.cos(angle), np.sin(angle)], axis=-1)
+        vel = None
 
     # Split populations into "vector" (overlaid on trajectory) vs "other"
     # (separate right-column subplot).
@@ -1546,20 +1657,23 @@ class Sensory(apf.dataset.Operation):
             sensory_data: (n_agents,  n_frames, n_sensory_features) float array
         """
         self.info = info
-        feats = []
         self.idxinfo = {}
         sensory_data = None
         for ratid in range(X.shape[0]):
             if isdata is not None:
                 isdatacurr = isdata[ratid]
+                head_direction = np.stack([np.cos(X[ratid,isdatacurr,2]), np.sin(X[ratid,isdatacurr,2])], axis=-1)
+                track = {
+                    'pos': X[ratid,isdatacurr,0:2],
+                    'head_direction': head_direction
+                }
             else:
                 isdatacurr = None
-            head_direction = np.stack([np.cos(X[ratid,:,2]), np.sin(X[ratid,:,2])], axis=-1)
-            track = {
-                'pos': X[ratid,:,0:2],
-                'head_direction': head_direction,
-                'vel': X[ratid,:,3:5]
-            }
+                head_direction = np.stack([np.cos(X[ratid,:,2]), np.sin(X[ratid,:,2])], axis=-1)
+                track = {
+                    'pos': X[ratid,:,0:2],
+                    'head_direction': head_direction
+                }
             featscurr = compute_sensory(track,info=self.info)
             if ratid == 0:
                 # store idxinfo
@@ -1569,11 +1683,15 @@ class Sensory(apf.dataset.Operation):
                     ncurr = v.shape[1]
                     idxinfo[k] = (idxoff, idxoff + ncurr)
                     idxoff += ncurr
-                sensory_data = np.full((X.shape[0],X.shape[1],ncurr),np.nan)
-            sensory_data[ratid] = np.concatenate(list(featscurr.values()), axis=1)
+                sensory_data = np.full((X.shape[0],X.shape[1],idxoff),np.nan)
+            sensory_data_curr = np.concatenate(list(featscurr.values()), axis=1)
+            if isdatacurr is not None:
+                sensory_data[ratid,isdatacurr,:] = sensory_data_curr
+            else:
+                sensory_data[ratid,:,:] = sensory_data_curr
         self.idxinfo = idxinfo
-        self.feature_names = feature_names
-        return np.array(feats), {'isdata': isdata}
+        self.feature_names = get_all_feature_names(self.info)
+        return sensory_data, {'isdata': isdata}
 
     def invert(self, sensory: np.ndarray) -> None:
         LOG.error(f"Operation {self} is not invertible")
@@ -1602,7 +1720,8 @@ def make_dataset(
         ref_dataset: apf.dataset.Dataset | None = None,
         return_all: bool = False,
         debug: bool = True,
-        data: dict | None = None
+        data: dict | None = None,
+        cached_sensory_array: np.ndarray | None = None,
 ) -> apf.dataset.Dataset | tuple[apf.dataset.Dataset, np.ndarray, apf.dataset.Data, apf.dataset.Data, apf.dataset.Data, apf.dataset.Data]:
     """ Creates a dataset from config, for a given file name and optionally using a reference dataset.
 
@@ -1613,7 +1732,13 @@ def make_dataset(
             When loading validation/test set, provide training set.
         return_all: Whether to return intermediate variables in addition to Dataset (see returns)
         debug: Whether to use less data for debugging
-        data: Optionally provide pre-loaded data dict to avoid re-loading from file. 
+        data: Optionally provide pre-loaded data dict to avoid re-loading from file.
+        cached_sensory_array: Optional precomputed sensory firing-rate array of
+            shape (n_agents, n_total_frames, n_sensory_features). If provided,
+            Sensory.apply is skipped and this array is wrapped in a Data with
+            the matching Sensory operation. The shape must match what
+            Sensory.apply would have produced for the given inputs (otherwise
+            downstream Zscore/Discretize/etc. shapes won't line up).
         data dict: {
             'track': [{
                 'pos': (T,2) array of x,y positions
@@ -1672,111 +1797,58 @@ def make_dataset(
     orientation = apf.utils.modrange(ratinabox.utils.get_angle(head_direction,is_array=True),-np.pi, np.pi)
     # vel can be computed from np.diff(pos,axis=0)/dt, except for first time point
     vel = np.concatenate([ep['vel'] for ep in data['track']], axis=0)
+    X = np.concatenate([pos,orientation[:,None]],axis=-1)
     
-    # all data valid
-    isdata = np.ones(ntotal_frames, dtype=bool)
+    pose = apf.dataset.Data('pos',X[None])
 
-    # create X which is (n_frames, 5)
-    X = np.concatenate([pos,orientation[:,None],vel], axis=-1)
-    
-    track = apf.dataset.Data('position', X[None,...], [], feature_names=['x', 'y', 'orientation', 'vel_x', 'vel_y'])
-    
-    sensory = Sensory()(track,info=info)
-        
-    # transpose everything to be (n_agents, n_frames, ...)
-    isstart = isstart.T
-    isdata = isdata.T
-    flyids = flyids.T
-    Xkp = Xkp.T
+    # position_velocity = apf.dataset.Data('pos_vel', X[None,...], [], feature_names=['x', 'y', 'orientation', 'vel_x', 'vel_y'])
 
-    # Compute features
-    LOG.info('Computing input and label features for dataset...')
-    if DOTIME:
-        start_time = utils.tic()
-    track = Data('keypoints', Xkp, [], feature_names=[kp for kp in keypointnames])
-    if DOTIME:
-        LOG.info(f"Track creation took {utils.toc(start_time):.2f} seconds")
-
-    LOG.info('Computing sensory features...')
-    if DOTIME:
-        start_time = utils.tic()
-    sensory = Sensory()(track,isdata=isdata)
-    if DOTIME:
-        LOG.info(f"Sensory computation took {utils.toc(start_time):.2f} seconds")
-
-    LOG.info('Computing pose features...')
-    if DOTIME:
-        start_time = utils.tic()
-    pose = Pose()(track, scale_perfly=scale_perfly, flyid=flyids, isdata=isdata)
-    
-    assert not np.any(np.isnan(sensory.array[isdata])) and np.all(np.isnan(sensory.array[~isdata])), "Sensory features should be nan iff isdata == False"
-    assert not np.any(np.isnan(pose.array[isdata])) and np.all(np.isnan(pose.array[~isdata])), "Pose features should be nan iff isdata == False"
-    if DOTIME:
-        LOG.info(f"Pose computation took {utils.toc(start_time):.2f} seconds")
-    
-    LOG.info('Computing velocity features...')
-    if DOTIME:
-        start_time = utils.tic()
-    velocity = Velocity(featrelative=featrelative, featangle=featangle)(pose, isstart=isstart)
-    if DOTIME:
-        LOG.info(f"Velocity computation took {utils.toc(start_time):.2f} seconds")
-
-    tspred_global = config['tspred_global']
-    aux_tspred = [dt for dt in tspred_global if dt > 1]
-    if len(aux_tspred) > 0:
-        LOG.warning('!!!Auxiliary prediction is currently commented out!!!')
-        if DOTIME:
-            start_time = utils.tic()
-        auxiliary = GlobalVelocity(tspred=aux_tspred)(pose, isstart=isstart)
-        if DOTIME:
-            LOG.info(f"Auxiliary computation took {utils.toc(start_time):.2f} seconds")
+    if cached_sensory_array is not None:
+        # Skip the expensive Sensory.apply call by wrapping the cached firing-
+        # rate array in a Data with the same Sensory operation metadata.
+        # `isstart` here matches the un-broadcast (1-axis-less) form expected by
+        # Sensory.apply's invertdata; it gets broadcast to the dataset's
+        # convention below.
+        sensory_op = Sensory()
+        sensory_op.info = info
+        sensory = apf.dataset.Data('sensory', cached_sensory_array,
+                                   operations=[sensory_op],
+                                   invertdata=[{'isdata': isstart}])
     else:
-        auxiliary = None
-
-    LOG.info('Assembling dataset...')
+        sensory = Sensory()(pose, info=info)
+        
+    # reshape to be (n_agents, n_frames, ...)
+    isstart = isstart[None,:]
+    
+    velocity = apf.dataset.GlobalVelocity(tspred=[1,])(pose,isstart=isstart)
 
     args = {
         'context_length': config['contextl'],
-        'isstart': isstart,
-        'useoutputmask': useoutputmask
+        'isstart': isstart
     }
 
     # Assemble the dataset
     if ref_dataset is not None:
-        if DOTIME:
-            start_time = utils.tic()
-        dataset = Dataset(
-            inputs=apply_opers_from_data(ref_dataset.inputs, {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
-            labels=apply_opers_from_data(ref_dataset.labels, {'velocity': velocity}), #, 'auxiliary': auxiliary}),
+        dataset = apf.dataset.Dataset(
+            inputs=apf.dataset.apply_opers_from_data(ref_dataset.inputs, {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
+            labels=apf.dataset.apply_opers_from_data(ref_dataset.labels, {'velocity': velocity}), #, 'auxiliary': auxiliary}),
             **args
         )
-        if DOTIME:
-            LOG.info(f"Applying ref_dataset operations took {utils.toc(start_time):.2f} seconds")
     elif 'dataset_params' in config and config['dataset_params'] is not None and \
         ('inputs' in config['dataset_params']) and ('labels' in config['dataset_params']):
-        if DOTIME:
-            start_time = utils.tic()
-        dataset = Dataset(
-            inputs=apply_opers_from_data_params(config['dataset_params']['inputs'], {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
-            labels=apply_opers_from_data_params(config['dataset_params']['labels'], {'velocity': velocity}), #, 'auxiliary': auxiliary}),
+        dataset = apf.dataset.Dataset(
+            inputs=apf.dataset.apply_opers_from_data_params(config['dataset_params']['inputs'], {'velocity': velocity, 'pose': pose, 'sensory': sensory}),
+            labels=apf.dataset.apply_opers_from_data_params(config['dataset_params']['labels'], {'velocity': velocity}), #, 'auxiliary': auxiliary}),
             **args
         )
-        if DOTIME:
-            LOG.info(f"Applying dataset_params operations took {utils.toc(start_time):.2f} seconds")
     else:
         # velocity = OddRoot(5)(velocity)
 
-        discreteidx = config['discreteidx']
-        continuousidx = np.setdiff1d(np.arange(velocity.array.shape[-1]), discreteidx)
-        indices_per_op = [discreteidx, continuousidx]
-    
+        # discretize everything
+        discreteidx = config['discreteidx']    
 
         # Need to zscore before binning, otherwise bin_epsilon values need to be divided by zscore stds
-        if DOTIME:
-            start_time = utils.tic()
-        zscored_velocity = Zscore()(velocity)
-        if DOTIME:
-            LOG.info(f"Zscoring velocity took {utils.toc(start_time):.2f} seconds")
+        zscored_velocity = apf.dataset.Zscore()(velocity)
 
         zsig = zscored_velocity.operations[-1].std
         bin_config = {'nbins': config['discretize_nbins'],
@@ -1787,25 +1859,205 @@ def make_dataset(
             assert all(idx in config['bin_edges_absolute'] for idx in discreteidx), "Not all discreteidx are present in bin_edges_absolute"
             bin_config['bin_edges'] = np.vstack([config['bin_edges_absolute'][featidx]/zsig[featidx] for featidx in discreteidx]) # nfeat x nbins + 1
 
-        if DOTIME:
-            start_time = utils.tic()
-        dataset = Dataset(
+        dataset = apf.dataset.Dataset(
             inputs={
-                'velocity': Zscore()(Roll(dt=1)(velocity)),
-                'pose': Zscore()(Subset(featrelative)(pose)),
-                'sensory': Zscore()(sensory),
+                'velocity': apf.dataset.Zscore()(apf.dataset.Roll(dt=1)(velocity)),
+                'sensory': apf.dataset.Zscore()(sensory),
             },
             labels={
-                'velocity': Fusion([Discretize(**bin_config), Identity()], indices_per_op)(zscored_velocity),
-                # 'velocity': Fusion([Discretize(**bin_config), Zscore()], indices_per_op)(velocity),
-                # 'auxiliary': Discretize()(auxiliary)
+                'velocity': apf.dataset.Discretize(**bin_config)(zscored_velocity),
             },
             **args
         )
-        if DOTIME:
-            LOG.info(f"Creating dataset with new operations took {utils.toc(start_time):.2f} seconds")
     dataset_params = dataset.get_params()
     if return_all:
-        return dataset, flyids, track, pose, velocity, sensory, dataset_params, isdata, isstart, useoutputmask
+        return dataset, info, pose, velocity, sensory, dataset_params, isstart
     else:
-        return dataset
+        return dataset, info
+
+def debug_plot_sample(example_in, ratinabox_info, nplot=3, pred=None, fig=None, ax=None):
+    """Visualize nplot random batch elements via visualize_sensory.
+
+    Layout: nplot rows × (1 trajectory + n_sensory) columns. The trajectory
+    column shows the inverted pose plus vector-cell ellipses; subsequent
+    columns show one panel per non-vector sensory population.
+
+    Parameters
+    ----------
+    example_in : dict from dataset.item_to_data — must have 'labels'/'velocity'
+        and 'inputs'/'sensory' Data objects.
+    ratinabox_info : dict with 'Env' and 'Sensory' (live populations).
+    dataset : (unused, accepted for caller compatibility)
+    nplot : number of batch elements to draw.
+    pred : (unused for now; reserved for overlaying model predictions).
+    fig, ax : if both None, a new figure is created and returned.
+        If provided, ax must be the list-of-dicts structure that this function
+        previously returned (one dict per row, mapping 'traj' / population
+        names to Axes); the panels are cleared and redrawn so subsequent
+        update calls reuse the same figure.
+
+    Returns
+    -------
+    fig, ax : matplotlib Figure and the per-row list of Axes-dicts.
+    """
+    invert_args = {'discretize': {'use_todiscretize': True}}
+    pose_true = apf.dataset.apply_inverse_operations(example_in['labels']['velocity'], extraargs=invert_args)
+    sensory_op = apf.dataset.get_operation(example_in['inputs']['sensory'].operations, 'sensory')
+    fr_all = example_in['inputs']['sensory'].array      # (B, T, total_cells)
+
+    Sensory = ratinabox_info['Sensory']
+    pop_names = list(Sensory.keys())
+    n_cols = 1 + len(pop_names)
+    t = pose_true.shape[1] - 1
+    batch_size = pose_true.shape[0]
+    samples_plot = np.random.choice(batch_size, size=min(nplot, batch_size), replace=False)
+    nrows = len(samples_plot)
+
+    # --- Figure / axes setup ----------------------------------------------
+    if fig is None and ax is None:
+        fig, ax_grid = plt.subplots(nrows, n_cols, figsize=(5 * n_cols, 5 * nrows),
+                                    squeeze=False)
+        ax = []
+        for i in range(nrows):
+            ax_row = {'traj': ax_grid[i, 0]}
+            for j, name in enumerate(pop_names):
+                ax_row[name] = ax_grid[i, 1 + j]
+            ax.append(ax_row)
+    else:
+        # Reuse prior axes; clear them so the redraw doesn't pile up.
+        if fig is None:
+            fig = ax[0]['traj'].figure
+        for ax_row in ax:
+            for axcurr in ax_row.values():
+                axcurr.clear()
+
+    # --- Draw each sample --------------------------------------------------
+    for ax_row, sample_idx in zip(ax, samples_plot):
+        sensory_curr = {name: fr_all[sample_idx, ..., start:end]
+                        for name, (start, end) in sensory_op.idxinfo.items()}
+        visualize_sensory(pose_true[sample_idx], sensory_curr, t,
+                          ratinabox_info['Env'], Sensory,
+                          fig=fig, ax=ax_row)
+
+        # Overlay the predicted trajectory + final state on the trajectory
+        # panel, in a different color, so it's directly comparable to the
+        # ground truth drawn by visualize_sensory.
+        if pred is not None:
+            pose_p = pred[sample_idx]                           # (T, 3)
+            ax_row['traj'].scatter(pose_p[:t + 1, 0], pose_p[:t + 1, 1],
+                                   s=12, alpha=0.5, linewidth=0,
+                                   c='C3', zorder=3)
+            ax_row['traj'].scatter(pose_p[t, 0], pose_p[t, 1],
+                                   s=80, c='C3', linewidth=0, zorder=6)
+
+    return fig, ax
+
+
+def initialize_debug_plots(dataset, dataloader, ratinabox_info, name='', nplot=3):
+
+    example_batch = next(iter(dataloader))
+    example = dataset.item_to_data(apf.utils.convert_torch_to_numpy(example_batch))
+
+    # plot to visualize input features
+    figsample, axsample = debug_plot_sample(example, ratinabox_info, nplot=nplot)
+
+    axsample[0]['traj'].set_title(name)
+    figsample.tight_layout()
+
+    hdebug = {
+        'figsample': figsample,
+        'axsample': axsample,
+        'example': example
+    }
+
+    return hdebug
+
+
+def update_debug_plots(hdebug, config, model, dataset, ratinabox_info, example, pred,
+                       criterion=None, name='', nplot=3):
+    if config['modelstatetype'] == 'prob':
+        pred1 = model.maxpred({k: v.detach() for k, v in pred.items()})
+    elif config['modelstatetype'] == 'best':
+        pred1 = model.randpred(pred.detach())
+    else:
+        if isinstance(pred, dict):
+            pred1 = {k: v.detach().cpu() for k, v in pred.items()}
+        else:
+            pred1 = pred.detach().cpu()
+    # `example` from the training loop is a raw batched torch dict
+    # ({'input', 'labels', 'labels_discrete', 'metadata'}). Convert to the
+    # Data-dict form ({'inputs', 'labels'} of Data objects) that
+    # debug_plot_sample expects.
+    example_data = dataset.item_to_data(apf.utils.convert_torch_to_numpy(example))
+
+    # Build a "prediction example" that uses pred1 in place of the discrete
+    # labels (with the example's metadata so invertdata is intact), then run
+    # the same inversion to recover a (B, T, 3) predicted pose array. We use
+    # do_sampling=False so the inverted bins become the deterministic weighted
+    # average of bin centers.
+    pred_item = {'metadata': example['metadata']}
+    if isinstance(pred1, dict):
+        if 'labels_discrete' in pred1:
+            pred_item['labels_discrete'] = pred1['labels_discrete']
+        elif 'discrete' in pred1:
+            pred_item['labels_discrete'] = pred1['discrete']
+        if 'labels' in pred1:
+            pred_item['labels'] = pred1['labels']
+        elif 'continuous' in pred1:
+            pred_item['labels'] = pred1['continuous']
+    else:
+        pred_item['labels_discrete'] = pred1
+    pred_data = dataset.item_to_data(apf.utils.convert_torch_to_numpy(pred_item))
+    pose_pred = apf.dataset.apply_inverse_operations(
+        pred_data['labels']['velocity'],
+        extraargs={'discretize': {'do_sampling': False}})
+
+    debug_plot_sample(example_data, ratinabox_info, nplot=nplot,
+                      fig=hdebug['figsample'], ax=hdebug['axsample'], pred=pose_pred)
+    hdebug['axsample'][0]['traj'].set_title(name)
+    hdebug['figsample'].tight_layout()
+
+
+def initialize_loss_plots(loss_epoch):
+    nax = len(loss_epoch) // 2
+    assert (nax >= 1) and (nax <= 3)
+    hloss = {}
+
+    hloss['fig'], hloss['ax'] = plt.subplots(nax, 1)
+    if nax == 1:
+        hloss['ax'] = [hloss['ax'], ]
+
+    hloss['train'], = hloss['ax'][0].plot(loss_epoch['train'].cpu(), '.-', label='Train')
+    hloss['val'], = hloss['ax'][0].plot(loss_epoch['val'].cpu(), '.-', label='Val')
+
+    if 'train_continuous' in loss_epoch:
+        hloss['train_continuous'], = hloss['ax'][1].plot(loss_epoch['train_continuous'].cpu(), '.-',
+                                                         label='Train continuous')
+    if 'train_discrete' in loss_epoch:
+        hloss['train_discrete'], = hloss['ax'][2].plot(loss_epoch['train_discrete'].cpu(), '.-', label='Train discrete')
+    if 'val_continuous' in loss_epoch:
+        hloss['val_continuous'], = hloss['ax'][1].plot(loss_epoch['val_continuous'].cpu(), '.-', label='Val continuous')
+    if 'val_discrete' in loss_epoch:
+        hloss['val_discrete'], = hloss['ax'][2].plot(loss_epoch['val_discrete'].cpu(), '.-', label='Val discrete')
+
+    hloss['ax'][-1].set_xlabel('Epoch')
+    hloss['ax'][-1].set_ylabel('Loss')
+    for l in hloss['ax']:
+        l.legend()
+    return hloss
+
+
+def update_loss_plots(hloss, loss_epoch):
+    hloss['train'].set_ydata(loss_epoch['train'].cpu())
+    hloss['val'].set_ydata(loss_epoch['val'].cpu())
+    if 'train_continuous' in loss_epoch:
+        hloss['train_continuous'].set_ydata(loss_epoch['train_continuous'].cpu())
+    if 'train_discrete' in loss_epoch:
+        hloss['train_discrete'].set_ydata(loss_epoch['train_discrete'].cpu())
+    if 'val_continuous' in loss_epoch:
+        hloss['val_continuous'].set_ydata(loss_epoch['val_continuous'].cpu())
+    if 'val_discrete' in loss_epoch:
+        hloss['val_discrete'].set_ydata(loss_epoch['val_discrete'].cpu())
+    for l in hloss['ax']:
+        l.relim()
+        l.autoscale()

@@ -11,8 +11,8 @@ import os
 
 plt.ion()
 
-CHANGE_SENSORY = True
-DOGENERATE = True
+CHANGE_SENSORY = False
+DOGENERATE = False
 VISUALIZE = True
 HISTOGRAM = True
 
@@ -81,9 +81,6 @@ if CHANGE_SENSORY:
             "type": "HeadDirectionCells",
             "n": n_head_direction_cells,                       # 36° bins around the circle
             "angular_spread_degrees": angular_spread_range[1], # von-Mises width
-        },
-        "speed": {
-            "type": "SpeedCell",                               # n is forced to 1
         },
     }
     data['sensory_config'] = cell_config

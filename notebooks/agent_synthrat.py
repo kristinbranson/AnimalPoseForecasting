@@ -76,13 +76,155 @@ if not os.path.exists(outfigdir):
     os.makedirs(outfigdir)
 
 # %%
-import synthrat.config
 from synthrat.config import read_config_kwargs
 import apf.io
+mode = 'train'
+loadmodelfile = None
+restartmodelfile = None
 
-res = apf.io.init_config(configfile=configfile,mode='train',
-                         read_config_kwargs=read_config_kwargs)
-print(res['config'])
-apf_ratinabox.make_dataset(config=res['config'],
-                           filename=res['config']['intrainfile'],
-                           debug=True)
+res = apf.io.init_config(configfile=configfile,mode=mode,read_config_kwargs=read_config_kwargs)
+config = res['config']
+config['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+res = apf.models.init_state(config=config)
+device = res['device']
+
+train_data = {}
+dataset_params = config.get('dataset_params', {})
+train_dataset, ratinabox_info, train_data['pose'], train_data['velocity'], train_data['sensory'], _, train_data['isstart'] = \
+        apf_ratinabox.make_dataset(config=config,
+                                    filename=config['intrainfile'],
+                                    debug=debug_uselessdata,
+                                    return_all=True)
+        
+train_dataloader = apf.dataset.DataLoader(train_dataset, 
+                                          batch_size=config['batch_size'], 
+                                          shuffle=True, pin_memory=True)
+ratinabox_info = apf_ratinabox.rehydrate_data(ratinabox_info)
+
+val_data = {}
+val_dataset, _, val_data['pose'], val_data['velocity'], val_data['sensory'], _, val_data['isstart'] = \
+        apf_ratinabox.make_dataset(config=config,
+                                    filename=config['invalfile'],
+                                    debug=debug_uselessdata,
+                                    return_all=True)
+val_dataloader = apf.dataset.DataLoader(val_dataset, 
+                                        batch_size=config['batch_size'], 
+                                        shuffle=False, pin_memory=True)
+
+res = apf.models.init_model_wrapper(config=config,device=device,loadmodelfile=loadmodelfile,
+                                    restartmodelfile=restartmodelfile,mode=mode,
+                                    somedataset=train_dataset,
+                                    somedataloader=train_dataloader)
+model = res['model']
+criterion = res['criterion']
+optimizer = res['optimizer']
+lr_scheduler = res['lr_scheduler']
+opt_model = res['opt_model']
+modeltype_str = res['modeltype_str']
+savetime = res['model_savetime']
+loss_epoch = res['loss_epoch']
+epoch = res['epoch']
+
+train_dataset_params = {
+    'input_noise_sigma': config['input_noise_sigma'],
+}
+
+ntrain_batches = len(train_dataloader)
+num_training_steps = ntrain_batches * config['num_train_epochs']
+trainexample = next(iter(train_dataloader))
+ntimepoints_per_batch = trainexample['input'].shape[0]
+last_val_loss = loss_epoch['val'][epoch].item()
+if np.isnan(last_val_loss):
+    last_val_loss = None
+
+
+# %% [markdown]
+# ## set up debug plots
+
+# %%
+debug_params = {'nplot': 3}
+
+hdebug = {}
+hdebug['train'] = apf_ratinabox.initialize_debug_plots(
+    train_dataset, train_dataloader, ratinabox_info, name='Train', **debug_params)
+hdebug['val'] = apf_ratinabox.initialize_debug_plots(
+    val_dataset, val_dataloader, ratinabox_info, name='Val', **debug_params)
+hloss = apf_ratinabox.initialize_loss_plots(loss_epoch)
+
+if ISNOTEBOOK:
+    plt.close(hdebug['train']['figsample'])
+    plt.close(hdebug['val']['figsample'])
+    plt.close(hloss['fig'])
+
+def refresh_plots(hdebugin, prefix=''):
+    if ISNOTEBOOK:
+        if 'displayed_keys' not in hdebugin:
+            hdebugin['displayed_keys'] = set()
+        for k, fig in hdebugin.items():
+            if not k.startswith('fig') or fig is None:
+                continue
+            fig.canvas.draw_idle()      # force matplotlib to render the new state
+            display_id = f'{prefix}__{k}'
+            if k in hdebugin['displayed_keys']:
+                display(fig, display_id=display_id, update=True)
+            else:
+                display(fig, display_id=display_id)
+                hdebugin['displayed_keys'].add(k)
+    else:
+        for k, fig in hdebugin.items():
+            if not k.startswith('fig') or fig is None:
+                continue
+            fig.canvas.draw()
+            fig.canvas.flush_events()
+            
+valexample = next(iter(val_dataloader))
+
+def end_iter_hook(model=None, step=None, example=None, predfn=None, **kwargs):
+    if step % config['niterplot'] != 0:
+        return
+    with torch.no_grad():
+        trainpred = predfn(example['input'].to(device=device))
+        valpred   = predfn(valexample['input'].to(device=device))
+    apf_ratinabox.update_debug_plots(
+        hdebug['train'], config, model, train_dataset, ratinabox_info,
+        example, trainpred, name='Train', criterion=criterion, **debug_params)
+    apf_ratinabox.update_debug_plots(
+        hdebug['val'], config, model, val_dataset, ratinabox_info,
+        valexample, valpred, name='Val', criterion=criterion, **debug_params)
+    refresh_plots(hdebug['train'], 'train')
+    refresh_plots(hdebug['val'], 'val')
+
+
+def end_epoch_hook(loss_epoch=None, epoch=None, **kwargs):
+    apf_ratinabox.update_loss_plots(hloss, loss_epoch)
+    refresh_plots(hloss, 'loss')
+    
+if ISNOTEBOOK:
+    refresh_plots(hdebug['train'], 'train')
+    refresh_plots(hdebug['val'], 'val')
+    refresh_plots(hloss, 'loss')
+else:
+    plt.ion()
+    plt.show(block=False)
+
+# %%
+savefilestr = os.path.join(config['savedir'], f"fly{modeltype_str}_{savetime}")
+
+train_args = utils.function_args_from_config(config,train)
+train_args['train_dataloader'] = train_dataloader
+train_args['val_dataloader'] = val_dataloader
+train_args['model'] = model
+train_args['loss_epoch'] = loss_epoch
+train_args['end_epoch_hook'] = end_epoch_hook
+train_args['end_iter_hook'] = end_iter_hook
+train_args['optimizer'] = optimizer
+train_args['lr_scheduler'] = lr_scheduler
+# criterion hard-coded to mixed_causal_criterion
+#train_args['criterion'] = criterion
+train_args['start_epoch'] = epoch
+train_args['savefilestr'] = savefilestr
+
+# can override args here
+train_args['num_train_epochs'] = 10
+model, best_model, loss_epoch = train(**train_args)
