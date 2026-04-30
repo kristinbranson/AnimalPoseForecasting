@@ -89,33 +89,73 @@ config['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
 res = apf.models.init_state(config=config)
 device = res['device']
 
-train_data = {}
-dataset_params = config.get('dataset_params', {})
-train_dataset, ratinabox_info, train_data['pose'], train_data['velocity'], train_data['sensory'], _, train_data['isstart'] = \
-        apf_ratinabox.make_dataset(config=config,
-                                    filename=config['intrainfile'],
-                                    debug=debug_uselessdata,
-                                    return_all=True)
-        
-train_dataloader = apf.dataset.DataLoader(train_dataset, 
-                                          batch_size=config['batch_size'], 
-                                          shuffle=True, pin_memory=True)
+import pickle, os
+
+CACHE_VERSION = 1
+
+def _cache_path(input_file):
+    base = os.path.splitext(os.path.basename(input_file))[0]
+    return os.path.join(os.path.dirname(input_file),
+                        f'apf_cache_v{CACHE_VERSION}_{base}.pkl')
+
+def _build_one(input_file):
+    """Build a (dataset, data_dict, ratinabox_info) for one input file and
+    return them. ratinabox_info comes back as a dict-of-dicts (already pickle-stable)."""
+    data = {}
+    dataset, ratinabox_info, data['pose'], data['velocity'], \
+        data['sensory'], _, data['isstart'] = \
+            apf_ratinabox.make_dataset(config=config, filename=input_file,
+                                        debug=debug_uselessdata, return_all=True)
+    return dataset, data, ratinabox_info
+
+def _save_cache(path, dataset, data, ratinabox_info):
+    cached = {
+        'ratinabox_info': ratinabox_info,                  # dict-of-dicts
+        'pose_array':     data['pose'].array,
+        'velocity_array': data['velocity'].array,
+        'sensory_array':  data['sensory'].array,           # the expensive one
+        'isstart':        data['isstart'],
+        'dataset_params': dataset.get_params(),            # pure dict via to_dict()
+    }
+    print(f'Saving cache to: {path}')
+    with open(path, 'wb') as f:
+        pickle.dump(cached, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+def _load_cache(input_file, path):
+    with open(path, 'rb') as f:
+        cached = pickle.load(f)
+    data = {}
+    dataset, ratinabox_info, data['pose'], data['velocity'], \
+        data['sensory'], _, data['isstart'] = \
+            apf_ratinabox.make_dataset(config=config, filename=input_file,
+                                        debug=debug_uselessdata, return_all=True,
+                                        cached_sensory_array=cached['sensory_array'])
+    return dataset, data, ratinabox_info
+
+def _get_or_build(input_file):
+    path = _cache_path(input_file)
+    if (not debug_uselessdata) and os.path.exists(path):
+        print(f'Loading cache: {path}')
+        return _load_cache(input_file, path)
+    print(f'Building (slow), will cache to: {path}')
+    dataset, data, ratinabox_info = _build_one(input_file)
+    if not debug_uselessdata:
+        _save_cache(path, dataset, data, ratinabox_info)
+    return dataset, data, ratinabox_info
+
+train_dataset, train_data, ratinabox_info = _get_or_build(config['intrainfile'])
+val_dataset,   val_data,   _              = _get_or_build(config['invalfile'])
+
+# rehydrate ratinabox_info if you still use it as live objects downstream
 ratinabox_info = apf_ratinabox.rehydrate_data(ratinabox_info)
 
-val_data = {}
-val_dataset, _, val_data['pose'], val_data['velocity'], val_data['sensory'], _, val_data['isstart'] = \
-        apf_ratinabox.make_dataset(config=config,
-                                    filename=config['invalfile'],
-                                    debug=debug_uselessdata,
-                                    return_all=True)
-val_dataloader = apf.dataset.DataLoader(val_dataset, 
-                                        batch_size=config['batch_size'], 
+train_dataloader = apf.dataset.DataLoader(train_dataset,
+                                        batch_size=config['batch_size'],
+                                        shuffle=True, pin_memory=True)
+val_dataloader = apf.dataset.DataLoader(val_dataset,
+                                        batch_size=config['batch_size'],
                                         shuffle=False, pin_memory=True)
 
-res = apf.models.init_model_wrapper(config=config,device=device,loadmodelfile=loadmodelfile,
-                                    restartmodelfile=restartmodelfile,mode=mode,
-                                    somedataset=train_dataset,
-                                    somedataloader=train_dataloader)
 model = res['model']
 criterion = res['criterion']
 optimizer = res['optimizer']
@@ -226,5 +266,5 @@ train_args['start_epoch'] = epoch
 train_args['savefilestr'] = savefilestr
 
 # can override args here
-train_args['num_train_epochs'] = 10
+train_args['num_train_epochs'] = 100
 model, best_model, loss_epoch = train(**train_args)
