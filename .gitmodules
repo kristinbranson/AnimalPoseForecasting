@@ -1,0 +1,4 @@
+[submodule "synthrat/ratinabox_repo"]
+	path = synthrat/ratinabox_repo
+	url = git@github.com:kristinbranson/RatInABox.git
+	branch = speedup
