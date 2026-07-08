@@ -25,3 +25,7 @@ For each variant, the flow diagram (left) shows how data is transformed, and the
 | <img src="images/flow_nobin.png" height="640" alt="Flow diagram for nobin variant"> | <img src="images/nobin_sample1_640p.gif" height="640" alt="Simulation from nobin variant"> |
 | <img src="images/flow_predpose.png" height="640" alt="Flow diagram for predpose variant"> | <img src="images/predpose_sample1_640p.gif" height="640" alt="Simulation from predpose variant"> |
 | <img src="images/flow_short.png" height="640" alt="Flow diagram for short variant"> | <img src="images/short_sample1_640p.gif" height="640" alt="Simulation from short variant"> |
+
+## Credits
+
+Library developed by [Eyrun Eyjolfsdottir](https://github.com/eyrun) and [Kristin Branson](https://github.com/kristinbranson)
