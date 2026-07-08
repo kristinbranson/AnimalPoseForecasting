@@ -14,7 +14,7 @@ This Python and PyTorch-based library is built around the observation that, to t
 
 ## Model variants
 
-For each variant, the flow diagram (left) shows how data is transformed, and the GIF (right) shows a simulation from that model.
+For each variant, the flow diagram (left) shows how data is transformed, and the GIF (right) shows a simulation from that model. Colored circles highlight simulated male flies; non-highlighted flies are real female flies. 
 
 | Operations | Simulation |
 |:---:|:---:|
