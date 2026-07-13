@@ -138,3 +138,22 @@ dmypy.json
 *.mp4
 *.pkl
 flyllm/.playfmfrc.mat
+
+# Interpretability run outputs (checkpoints, activations, animations, plots).
+# These are results, not code -- several GB each.
+attn_examples/
+concept_animations/
+concept_optimization/
+model_interpretation/
+pca_pipeline/
+residual_classifier_results/
+residual_patching/
+notebooks/attn_examples/
+notebooks/concept_animations/
+notebooks/concept_optimization/
+notebooks/model_interpretation/
+notebooks/pca_pipeline/
+notebooks/residual_classifier_results/
+notebooks/residual_patching/
+notebooks/training_log.txt
+wandb/

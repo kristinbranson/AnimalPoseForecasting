@@ -1,0 +1,5 @@
+# Track this directory and its docs, never the artifacts themselves.
+# The files listed in README.md are 49 GB and must not enter git history.
+*
+!.gitignore
+!README.md
