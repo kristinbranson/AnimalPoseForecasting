@@ -1,0 +1,6 @@
+# generated / regenerable artifacts -- not source
+*.out
+*.log
+*.mat
+*.asv
+__pycache__/

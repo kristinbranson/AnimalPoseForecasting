@@ -1,0 +1,52 @@
+{
+  "ellipse_from_keypoints": {
+    "description": "Reconstruct a FlyTracker-style body ellipse (x,y,theta,a,b) from APT/flyllm keypoints, for applying JAABA classifiers (or other ellipse-based features) to keypoint-only data such as flyllm/APF simulated tracks. All quantities in mm.",
+    "units": "mm",
+    "axis_convention": "quarter-axis (JAABA/Ctrax): full major axis length = 4*a_mm, full minor = 4*b_mm",
+    "center": {
+      "method": "midpoint",
+      "keypoints_apt": ["ant_head", "pos_abdomen"],
+      "keypoints_flyllm": ["antennae_midpoint", "tip_abdomen"]
+    },
+    "orientation": {
+      "method": "atan2(head - tail)",
+      "keypoints_apt": ["ant_head", "pos_abdomen"],
+      "keypoints_flyllm": ["antennae_midpoint", "tip_abdomen"]
+    },
+    "a_mm": {
+      "model": "linear",
+      "predictor": "distance(head, tail)",
+      "keypoints_apt": ["ant_head", "pos_abdomen"],
+      "keypoints_flyllm": ["antennae_midpoint", "tip_abdomen"],
+      "slope": 0.2386,
+      "intercept": 0.0556
+    },
+    "b_mm": {
+      "model": "linear",
+      "predictor": "distance(left_thorax, right_thorax)",
+      "keypoints_apt": ["left_thorax", "right_thorax"],
+      "keypoints_flyllm": ["left_front_thorax", "right_front_thorax"],
+      "slope": 0.3445,
+      "intercept": 0.0008
+    },
+    "fit": {
+      "date": "2026-07-19",
+      "dataset": "flybubble_social",
+      "explist": "MABE_explist20250104.txt",
+      "script": "jaaba_detect/test/fit_ellipse_coeffs.py",
+      "method": "least-squares, stratified over 6 genotype families / rigs A-D / eras 2019-2023",
+      "frame_stride": 200,
+      "n_experiments": 12,
+      "n_fly_frames": 30829,
+      "heldout": {
+        "n_experiments": 12,
+        "n_fly_frames": 30544,
+        "note": "disjoint experiments, not used in the fit",
+        "residual_mm": {
+          "a_mm": {"mean_abs": 0.0075, "p95": 0.0187, "rms": 0.0114},
+          "b_mm": {"mean_abs": 0.0087, "p95": 0.0238, "rms": 0.0116}
+        }
+      }
+    }
+  }
+}
