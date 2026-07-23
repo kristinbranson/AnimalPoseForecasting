@@ -18,6 +18,10 @@ The dataset files are not passed on the command line — they are found via `dat
 `intrainfilestr` / `invalfilestr` **inside the config JSON**, which you must edit to point at
 wherever you put them.
 
+Separately, three small **JAABA behavior classifiers** also live here — optional, and only
+for scoring behavior (chase / wing extension / courtship) on tracks via `jaaba_detect`. See
+[JAABA behavior classifiers](#jaaba-behavior-classifiers-optional) below.
+
 ## What you need
 
 | File | Size | What it is |
@@ -44,6 +48,38 @@ needed if you are training or evaluating a model, not probing one.
 There is no small fixture and no smoke-test path — `needtraindata=True` means even a
 one-trajectory probe pays the full 31 GB load. Budget for that.
 
+## JAABA behavior classifiers (optional)
+
+The `jaaba_detect` package (a MATLAB-free port of JAABADetect) scores tracking data — MABe
+`X` arrays or flyllm/APF keypoint tracks such as `apf.simulation.simulate()` output — with a
+trained JAABA classifier, and returns per-frame, per-fly behavior scores + bouts. It needs a
+classifier exported to a plain `.classifier.mat`. Three are provided:
+
+| File | Size | Behavior |
+|------|------|----------|
+| `chase_apt.classifier.mat` | ~9.5 KB | chase |
+| `wingextension_apt.classifier.mat` | ~9.5 KB | wing extension |
+| `courtship_v2pt3_apt.classifier.mat` | ~9.3 KB | courtship |
+
+These are tiny — unlike the artifacts above, they're small enough to `scp` in seconds. None
+are bundled or hardcoded: pass the path explicitly. For a flyllm/APF rollout:
+
+```python
+import numpy as np
+import jaaba_detect as jd
+from apf.simulation import simulate
+
+gt_track, pred_track = simulate(...)          # (nagents, nframes, 2, nkpts) for this config
+# jaaba_detect wants (nagents, nframes, nkpts, 2) -- transpose the last two axes:
+pred = jd.jaaba_detect_from_track(np.asarray(pred_track).transpose(0, 1, 3, 2),
+                                  "external_data/chase_apt.classifier.mat")
+print(pred["score_norm"], [len(t) for t in pred["t0s"]])   # bout counts per fly
+```
+
+`simulate()` emits xy before keypoints, so the transpose is required or `track_to_apt` raises
+`ValueError: track has 2 keypoints but N names`. `jaaba_detect_from_X` (MABe `X` arrays)
+additionally needs `hdf5storage`; the track path above does not.
+
 ## Current state
 
 The paths are hardcoded, and valid **only on the Janelia cluster**:
@@ -53,6 +89,7 @@ The paths are hardcoded, and valid **only on the Janelia cluster**:
 | config | `/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/flyllm/configs/` | `interpretability/interpret.py` (`DEFAULT_CONFIG`), `notebooks/agent_fly.py` |
 | weights | `/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/notebooks/flyllm_models/` | `interpretability/interpret.py` (`DEFAULT_MODEL`), `notebooks/agent_fly.py` |
 | datasets | `/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/` | `datadir` inside the config JSON |
+| JAABA classifiers | `/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/{chase_apt,wingextension_apt,courtship_v2pt3_apt}.classifier.mat` | not hardcoded — pass the path to `jaaba_detect_from_track` / `jaaba_detect_from_X` |
 
 Note the config lives under **`bransonk`'s working copy of this repo**, not in the repo
 itself — cloning the repo does not get you the config, even on the cluster. That is the first
