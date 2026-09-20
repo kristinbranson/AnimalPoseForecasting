@@ -138,3 +138,11 @@ dmypy.json
 *.mp4
 *.pkl
 flyllm/.playfmfrc.mat
+
+# Trained model checkpoints. Large (multi-GB each) and reproducible from configs.
+notebooks/synthrat_models/
+
+# Full-resolution animated gifs, too large for GitHub's 100 MB per-file limit.
+# The downscaled versions used in the README are tracked.
+images/*.gif
+!images/*_640p.gif

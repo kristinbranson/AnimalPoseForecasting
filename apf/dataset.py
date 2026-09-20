@@ -42,6 +42,29 @@ class Operation(ABC):
         if self.name is None:
             self.name = self.__class__.__name__.lower()
 
+    def update_feature_names(self, input_feature_names: list[str] | None) -> list[str] | None:
+        """ Updates the feature names after applying the operation.
+
+        Operations that change the meaning or the number of feature dimensions should
+        override this. The default passes names through unchanged.
+
+        Args:
+            input_feature_names: Feature names before applying the operation, or None.
+        Returns:
+            Feature names after applying the operation, or None.
+        """
+        return input_feature_names
+
+    def invert_feature_names(self, input_feature_names: list[str] | None) -> list[str] | None:
+        """ Updates the feature names after inverting the operation.
+
+        Args:
+            input_feature_names: Feature names before inverting the operation, or None.
+        Returns:
+            Feature names after inverting the operation, or None.
+        """
+        return input_feature_names
+
     def __call__(self, data, **kwargs):
         """
 
@@ -54,10 +77,19 @@ class Operation(ABC):
             if input is Data, returns a new Data with processed array and this operation appended to operaitons.
         """
         if isinstance(data, Data):
+            name = f"{data.name}_{self.name}"
+            array = self.apply(data.array, **kwargs)
+            feature_names = self.update_feature_names(data.feature_names)
+            # Fall back to generic names whenever the operation changed the number of
+            # feature dimensions without overriding update_feature_names, so names are
+            # never silently misaligned with the array.
+            if feature_names is None or len(feature_names) != array.shape[-1]:
+                feature_names = [f'{name}_{i}' for i in range(array.shape[-1])]
             return Data(
-                name=f"{data.name}_{self.name}",
-                array=self.apply(data.array, **kwargs),
-                operations=data.operations + [self]
+                name=name,
+                array=array,
+                operations=data.operations + [self],
+                feature_names=feature_names
             )
         elif isinstance(data, np.ndarray):
             return self.apply(data, **kwargs)
@@ -118,6 +150,21 @@ class Data(NamedTuple):
     # Operations that have been applied to the data (can be later applied in inverse to obtain original data).
     operations: list[Operation] = []
     invertdata: Any = None # any additional data needed for inverting the operations, e.g. flyid for Pose operation
+    # Human-readable name per feature dimension, len == array.shape[-1]. Populated by
+    # Operation.__call__; None for Data constructed directly from a raw array.
+    feature_names: list[str] | None = None
+
+    def print_feature_names(self):
+        """ Prints the feature names, one per line, prefixed by their index.
+        """
+        if self.feature_names is not None and len(self.feature_names) > 0:
+            s = ""
+            for i, fn in enumerate(self.feature_names):
+                s += f"{i}. {fn}\n"
+        else:
+            s = "  No feature names\n"
+        print(s[:-1])
+        return
 
 @dataclass
 class Identity(Operation):
@@ -186,6 +233,16 @@ class Zscore(Operation):
         if not ismultiagent:
             inverted = inverted[0]
         return inverted
+
+    def update_feature_names(self, input_feature_names):
+        if input_feature_names is None:
+            return None
+        return [f'{name}_zscored' for name in input_feature_names]
+
+    def invert_feature_names(self, input_feature_names):
+        if input_feature_names is None:
+            return None
+        return [name.replace('_zscored', '') for name in input_feature_names]
 
 @dataclass
 class OddRoot(Operation):
@@ -454,7 +511,23 @@ class Discretize(Operation):
         if isinstance(data, Data):
             data = data.array
         return data.reshape(data.shape[:-1] + (-1,self.nbins))
-        
+
+    def update_feature_names(self, input_feature_names):
+        if input_feature_names is None:
+            return None
+        # Each input feature expands into nbins consecutive output dimensions,
+        # matching the flattened (n_feat, n_bins) layout produced by apply.
+        output_feature_names = []
+        for name in input_feature_names:
+            output_feature_names.extend([f'{name}_bin{b}' for b in range(self.nbins)])
+        return output_feature_names
+
+    def invert_feature_names(self, input_feature_names):
+        if input_feature_names is None:
+            return None
+        nfeat = len(input_feature_names) // self.nbins
+        return [input_feature_names[i * self.nbins].replace('_bin0', '') for i in range(nfeat)]
+
 
 @dataclass
 class Fusion(Operation):
@@ -615,6 +688,16 @@ class Roll(Operation):
             unrolled_data = unrolled_data[0]
         return unrolled_data
 
+    def update_feature_names(self, input_feature_names):
+        if input_feature_names is None:
+            return None
+        return [f'{name}_rolled{self.dt}' for name in input_feature_names]
+
+    def invert_feature_names(self, input_feature_names):
+        if input_feature_names is None:
+            return None
+        return [name.replace(f'_rolled{self.dt}', '') for name in input_feature_names]
+
 
 @dataclass
 class LocalVelocity(Operation):
@@ -766,8 +849,18 @@ class GlobalVelocity(Operation):
         
         if not ismultiagent:
             inverted = inverted[0, ...]
-        
+
         return inverted
+
+    def update_feature_names(self, input_feature_names):
+        # Output dims are (forward, sideways, angular) per entry of tspred, regardless
+        # of the input pose names.
+        return [name for dt in self.tspred
+                for name in [f'forward_velocity_{dt}', f'sideways_velocity_{dt}',
+                             f'angular_velocity_{dt}']]
+
+    def invert_feature_names(self, input_feature_names):
+        return ['x_position', 'y_position', 'orientation']
 
 # no dataclass decorator, directly defined __init__
 class Velocity(Operation):
@@ -1165,6 +1258,22 @@ def invert_to_named(data: Data, name: str, **kwargs) -> np.ndarray | torch.Tenso
 
     return array
 
+def _prefixed_feature_names(datas: dict[str, Data]) -> list[str]:
+    """ Concatenates per-Data feature names, prefixed by their dict key as {key}__{name}.
+
+    Falls back to positional names for any Data lacking feature_names (e.g. one built
+    directly from a raw array), so the returned list always matches the concatenated
+    feature axis in length.
+    """
+    names = []
+    for key, data in datas.items():
+        feature_names = data.feature_names
+        if feature_names is None:
+            feature_names = [f'{i}' for i in range(data.array.shape[-1])]
+        names.extend([f"{key}__{name}" for name in feature_names])
+    return names
+
+
 def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict[str, Data]) -> dict[str, Data]:
     """ Applies post processing operations from reference datas to datas, for each key.
 
@@ -1174,9 +1283,9 @@ def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict[str, Data]) ->
     This is useful for building a validation set from a training set, or for applying operations with the right
     parameters to data during simulation.
 
-    TODO: This assumes that they key correspond to the name of the operation used to compute data (e.g. Velocity)
-        as it uses the key to extract post-processing operations. It would be nicer to label the operations themselves
-        so that we can drop this assumption.
+    Which operations still need applying is determined from the last operation already
+    applied to each entry of datas, so the dict key does not need to match the name of the
+    operation that produced it.
 
     Params:
         datas_ref: Dictionary of data (e.g. train_dataset.inputs) from which to copy post processing operations.
@@ -1189,10 +1298,23 @@ def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict[str, Data]) ->
     processed_data = {}
     for key in datas_ref.keys():
         assert key in datas, "Expect both data to have all of the same keys"
-        opers = get_post_operations(datas_ref[key].operations, key)
-        if opers is None:
-            LOG.warning(f"Did not find an operation '{key}', applying all operations")
+        # Resolve the operation suffix from the last operation already applied to the
+        # incoming data, rather than from the dict key. The key only matches the
+        # operation name by convention (e.g. Velocity under 'velocity'); an operation
+        # such as GlobalVelocity under a 'velocity' key would otherwise not be found,
+        # and the whole chain would be re-applied to already-processed data.
+        if isinstance(datas[key], (np.ndarray, torch.Tensor)) or not datas[key].operations:
+            # Nothing applied yet, so every reference operation still needs applying.
             opers = datas_ref[key].operations
+        else:
+            _, idx = get_operation(datas_ref[key].operations,
+                                   datas[key].operations[-1].name, return_idx=True)
+            if idx is None:
+                LOG.warning(f"Did not find operation '{datas[key].operations[-1].name}' "
+                            f"for '{key}', applying all operations")
+                opers = datas_ref[key].operations
+            else:
+                opers = datas_ref[key].operations[idx + 1:]
         processed_data[key] = apply_operations(datas[key], opers)
     return processed_data
 
@@ -1470,7 +1592,18 @@ class Dataset(torch.utils.data.Dataset):
         is_binned = np.zeros(n_dim, bool)
         for inds in self.label_bin_indices:
             is_binned[inds] = True
-        sz = list(output_discr_cont[continuous_key].shape[:-1])
+        if continuous_key in output_discr_cont:
+            sz = list(output_discr_cont[continuous_key].shape[:-1])
+        else:
+            # Fully-discretized model: there is no continuous output to take the leading
+            # dimensions from. Chunks store the discrete labels flattened as
+            # (..., d_output_discrete * nbins), while model predictions keep them
+            # unflattened as (..., d_output_discrete, nbins).
+            x = output_discr_cont[discrete_key]
+            if x.shape[-1] == self.d_output_discrete * self.discretize_nbins:
+                sz = list(x.shape[:-1])
+            else:
+                sz = list(x.shape[:-2])
         concated = np.ones(sz + [n_dim]) * np.nan
         if discrete_key in output_discr_cont:
             x = output_discr_cont[discrete_key]
@@ -1501,10 +1634,26 @@ class Dataset(torch.utils.data.Dataset):
 
         return data
     
+    def get_input_names(self) -> list[str]:
+        """
+        get_input_names()
+        Returns a list of input feature names, prefixed by the data key in self.inputs as
+        {key}__{feature_name}. Order matches the concatenated input feature axis.
+        """
+        return _prefixed_feature_names(self.inputs)
+
+    def get_label_names(self) -> list[str]:
+        """
+        get_label_names()
+        Returns a list of label feature names, prefixed by the data key in self.labels as
+        {key}__{feature_name}. Order matches the concatenated label feature axis.
+        """
+        return _prefixed_feature_names(self.labels)
+
     def get_params(self) -> dict:
         """
         get_params()
-        Returns a dictionary of parameters of the dataset operations. Calls get_params on each operation 
+        Returns a dictionary of parameters of the dataset operations. Calls get_params on each operation
         of the inputs and labels.
         """
         params = {'inputs': {}, 'labels': {}}
@@ -1543,7 +1692,7 @@ class Dataset(torch.utils.data.Dataset):
                     metadatacurr = item['metadata']['inputs'][k]
                 else:
                     metadatacurr = None
-                datadict['inputs'][k] = Data(name=self.inputs[k].name, array=v, operations=self.inputs[k].operations, invertdata=metadatacurr)
+                datadict['inputs'][k] = Data(name=self.inputs[k].name, array=v, operations=self.inputs[k].operations, invertdata=metadatacurr, feature_names=self.inputs[k].feature_names)
         continuous_key = None
         discrete_key = None
         if 'labels' in item: 
@@ -1562,7 +1711,7 @@ class Dataset(torch.utils.data.Dataset):
                     metadatacurr = item['metadata']['labels'][k]
                 else:
                     metadatacurr = None
-                datadict['labels'][k] = Data(name=self.labels[k].name, array=v, operations=self.labels[k].operations, invertdata=metadatacurr)
+                datadict['labels'][k] = Data(name=self.labels[k].name, array=v, operations=self.labels[k].operations, invertdata=metadatacurr, feature_names=self.labels[k].feature_names)
         datadict['metadata'] = {k: v for k,v in item.get('metadata',{}).items() if k not in ['inputs','labels']}        
         if 'useoutputmask' in item:
             datadict['useoutputmask'] = item['useoutputmask']

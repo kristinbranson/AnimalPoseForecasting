@@ -143,7 +143,7 @@ def read_config(jsonfile, default_configfile=None, get_sensory_feature_idx=None,
     if config['modelstatetype'] == 'prob' and config['minstateprob'] is None:
         config['minstateprob'] = 1 / config['nstates']
 
-    if 'all_discretize_epsilon' in config:
+    if 'all_discretize_epsilon' in config and config['all_discretize_epsilon'] is not None:
         config['all_discretize_epsilon'] = np.array(config['all_discretize_epsilon'])
         if 'discreteidx' in config and config['discreteidx'] is not None:
             config['discretize_epsilon'] = config['all_discretize_epsilon'][config['discreteidx']]
@@ -252,10 +252,12 @@ def get_modeltype_str(config):
         modeltype_str = f"{config['modelstatetype']}_{config['modeltype']}"
     else:
         modeltype_str = config['modeltype']
-    if config['categories'] is None or len(config['categories']) == 0:
+    # 'categories' is a fly-specific filter; non-fly configs (e.g. synthrat) omit it.
+    categories = config.get('categories')
+    if categories is None or len(categories) == 0:
         category_str = 'all'
     else:
-        category_str = '_'.join(config['categories'])
+        category_str = '_'.join(categories)
     modeltype_str += f'_{category_str}'
 
     return modeltype_str
