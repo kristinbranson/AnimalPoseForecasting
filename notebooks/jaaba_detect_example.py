@@ -65,10 +65,10 @@ for i, s in enumerate(res["scores"]):
 # %% [markdown]
 # ## 2. On `agent_fly.py` tracks (ground truth & simulated)
 #
-# `simulate()` returns `gt_track, pred_track` of shape `(nagents, nframes, nkpts, 2)`
-# -- mm keypoints in flyllm order. Feed either straight into
-# `jaaba_detect_from_track`; it reorders the 19 flyllm keypoints to APT order and
-# reconstructs the ellipse (a/b/center/orientation) from the keypoints.
+# `simulate()` returns `gt_track, pred_track` of shape `(nagents, nframes, 2, nkpts)`
+# -- mm keypoints in flyllm order. Feed either into # `jaaba_detect_from_track`; 
+# it reorders the flyllm keypoints to APT order and reconstructs the ellipse 
+# (a/b/center/orientation) from the keypoints.
 #
 # Run this after the `simulate(...)` cell in `agent_fly.py` (same kernel/variables):
 
@@ -98,12 +98,12 @@ for i, s in enumerate(res["scores"]):
 col = {n: i for i, n in enumerate(Xnames)}
 names = jd.flyllm_keypoint_names()                 # authoritative flyllm order
 nfr, nfl, _ = Xv.shape
-track = np.full((nfl, nfr, len(names), 2), np.nan)
+track = np.full((nfl, nfr, 2, len(names)), np.nan)
 for k, name in enumerate(names):
     ap = jd.FLYLLM_TO_APT_NAME[name]               # flyllm kpt -> APT/X column
-    track[:, :, k, 0] = Xv[:, :, col[f"{ap}_x_mm"]].T
-    track[:, :, k, 1] = Xv[:, :, col[f"{ap}_y_mm"]].T
-print("flyllm-order track:", track.shape, "(nagents, nframes, 19, 2)")
+    track[:, :, 0, k] = Xv[:, :, col[f"{ap}_x_mm"]].T
+    track[:, :, 1, k] = Xv[:, :, col[f"{ap}_y_mm"]].T
+print("flyllm-order track:", track.shape, "(nagents, nframes, 2, nkpts)")
 
 sim = jd.jaaba_detect_from_track(track, CLASSIFIER, verbose=False)
 print("chase bouts per agent (from track):", [len(t) for t in sim["t0s"]])

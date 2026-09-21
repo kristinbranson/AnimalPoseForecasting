@@ -60,8 +60,9 @@ for i, s in enumerate(res["scores"]):
 
 ### On simulations / ground truth from `agent_fly.py`
 `apf.simulation.simulate()` returns `gt_track, pred_track` of shape
-`(nagents, nframes, nkpts, 2)` — mm keypoints in flyllm order (`[...,0]`=x, `[...,1]`=y).
-Feed either straight in:
+`(nagents, nframes, 2, nkpts)` — mm keypoints in flyllm order, with the **xy axis before
+the keypoint axis** (`[...,0,:]`=x, `[...,1,:]`=y), because `experiments/flyllm.py` builds
+the track as `Xkp.T` from an `(nkpts, 2, nframes, nagents)` array. Feed either straight in:
 
 ```python
 from apf.simulation import simulate
@@ -69,7 +70,7 @@ import mabe_adapter as M
 
 gt_track, pred_track = simulate(dataset=train_dataset, model=model, track=track,
                                 pose=pose, identities=flyids, agent_ids=agent_ids, ...)
-# gt_track / pred_track: (nagents, nframes, 19, 2) mm keypoints, flyllm order
+# gt_track / pred_track: (nagents, nframes, 2, nkpts) mm keypoints, flyllm order
 
 pred = M.jaaba_detect_from_track(pred_track, "chase_apt.classifier.mat")  # scored simulation
 gt   = M.jaaba_detect_from_track(gt_track,   "chase_apt.classifier.mat")  # scored ground truth

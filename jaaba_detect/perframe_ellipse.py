@@ -619,7 +619,11 @@ class EllipseFeatures:
                 continue
             dx2 = f2.x_mm[off + idx + 1] - f2.x_mm[off + idx]
             dy2 = f2.y_mm[off + idx + 1] - f2.y_mm[off + idx]
-            out[idx] = np.sqrt((dx1[idx] - dx2) ** 2 + (dy1[idx] - dy2) ** 2)
+            # Per dt, not per frame. compute_magveldiff.m omits the division in its
+            # body but declares units of mm/s, and the values JAABA stores are larger
+            # than the per-frame difference by exactly the frame rate.
+            out[idx] = (np.sqrt((dx1[idx] - dx2) ** 2 + (dy1[idx] - dy2) ** 2)
+                        / f1.dt[idx])
             maxidx = max(maxidx, int(idx.max()))
         return self._matlab_trim(out, maxidx)
 

@@ -179,7 +179,9 @@ def jaaba_detect_from_X(X, Xnames, classifier, *, pxpermm=DEFAULT_PXPERMM,
 # --------------------------------------------------------------------------
 # flyllm / APF simulated tracks (keypoints only)
 # --------------------------------------------------------------------------
-# A flyllm `track` is (nagents, nframes, nkpts, 2) mm keypoints. Its keypoint order
+# A flyllm `track` is (nagents, nframes, 2, nkpts) mm keypoints -- the xy axis
+# precedes the keypoint axis, because experiments.flyllm builds it as Xkp.T from an
+# (nkpts, 2, nframes, nagents) array. Its keypoint order
 # is flyllm.config.keypointnames, which we read at runtime (authoritative) -- we do
 # NOT assume an order; the map to APT landmarks is done BY NAME. flyllm has 19
 # keypoints: no outer-wing landmarks and no FlyTracker ellipse, both of which the
@@ -262,15 +264,27 @@ _A_FIT, _B_FIT = load_ellipse_coeffs()
 def track_to_apt(track, kpt_names=None):
     """Reorder a keypoint track to APT-21 landmark order, matching keypoints BY NAME.
 
-    track: (nagents, nframes, nkpts, 2) mm. kpt_names: the nkpts keypoint names; if
-    None, the flyllm order (flyllm.config.keypointnames) is assumed. Names may be APT
-    landmark names or flyllm keypoint names. Returns (nagents, nframes, 21, 2); the
-    two outer-wing landmarks reuse the mid-wing points.
+    track: (nagents, nframes, 2, nkpts) float mm. This is the layout 
+        apf.simulation.simulate() returns and the one the cached simulation tracklets 
+        are stored in.
+    kpt_names: the nkpts keypoint names; if None, the flyllm order
+        (flyllm.config.keypointnames) is assumed. Names may be APT landmark names or
+        flyllm keypoint names.
+
+    Returns (nagents, nframes, nkpts, 2) float mm, keypoint-major -- the layout the rest of
+    this module and trx_io.Fly.kpts use. The two outer-wing landmarks reuse the
+    corresponding mid-wing points.
     """
     track = np.asarray(track, float)
     names = flyllm_keypoint_names() if kpt_names is None else list(kpt_names)
-    if track.shape[2] != len(names):
-        raise ValueError(f"track has {track.shape[2]} keypoints but {len(names)} names")
+    if track.ndim != 4 or track.shape[2] != 2:
+        raise ValueError(
+            f"track must be (nagents, nframes, 2, nkpts) mm, the flyllm/APF layout; got "
+            f"{track.shape}. A keypoint-major (nagents, nframes, nkpts, 2) array needs "
+            f"track.transpose(0, 1, 3, 2)."
+        )
+    if track.shape[3] != len(names):
+        raise ValueError(f"track has {track.shape[3]} keypoints but {len(names)} names")
     pos = {n: i for i, n in enumerate(names)}
     idx = []
     for apt_name in APT_LANDMARK_NAMES:
@@ -278,7 +292,9 @@ def track_to_apt(track, kpt_names=None):
         if src is None or src not in pos:
             raise KeyError(f"no keypoint for APT landmark {apt_name!r}; names={names}")
         idx.append(pos[src])
-    return track[:, :, idx, :]
+    # select/reorder keypoints, then swap the xy and keypoint axes:
+    # (nagents, nframes, 2, nkpts) -> (nagents, nframes, nkpts, 2)
+    return track[:, :, :, idx].transpose(0, 1, 3, 2)
 
 
 def _ellipse_from_kpts(apt_kpts, a_fit=_A_FIT, b_fit=_B_FIT):
@@ -299,16 +315,23 @@ def _ellipse_from_kpts(apt_kpts, a_fit=_A_FIT, b_fit=_B_FIT):
 
 def trajectories_from_track(track, *, kpt_names=None, pxpermm=DEFAULT_PXPERMM,
                             fps=DEFAULT_FPS, first_frame=1, min_frames=1,
-                            a_fit=_A_FIT, b_fit=_B_FIT):
+                            a_fit=_A_FIT, b_fit=_B_FIT, return_agents=False):
     """Build a Trajectories from a flyllm/APF keypoint track.
 
-    track: (nagents, nframes, nkpts, 2) mm keypoints. Missing frames are NaN. The
-    ellipse pose is reconstructed from the keypoints (see module notes). Each
-    agent's contiguous non-NaN run becomes one fly.
+    track: (nagents, nframes, 2, nkpts) mm keypoints. Missing frames are NaN. The ellipse
+    pose is reconstructed from the keypoints (see module notes). Each agent's
+    contiguous non-NaN run becomes one fly, so the returned Trajectories is indexed by
+    tracklet, not by agent.
+    return_agents: also return the agent index each fly came from, which is the only way
+        to map per-tracklet results back onto agents.
+
+    Returns a trx_io.Trajectories, or (Trajectories, agents) when return_agents is set,
+    where agents is a list[int] of length traj.nflies.
     """
     apt = track_to_apt(track, kpt_names)               # (nagents,nframes,21,2)
     nagents, nframes = apt.shape[:2]
     flies = []
+    agents = []
     for ag in range(nagents):
         k = apt[ag]                                    # (nframes,21,2)
         valid = np.isfinite(k[:, 0, 0]) & np.isfinite(k[:, 6, 0])
@@ -320,7 +343,9 @@ def trajectories_from_track(track, *, kpt_names=None, pxpermm=DEFAULT_PXPERMM,
             seg = k[i:j]                               # (n,21,2)
             pose_mm = _ellipse_from_kpts(seg, a_fit, b_fit)
             flies.append(_fly_from_slice(pose_mm, seg, first_frame + i, pxpermm, fps))
-    return trx_io.Trajectories(flies)
+            agents.append(ag)
+    traj = trx_io.Trajectories(flies)
+    return (traj, agents) if return_agents else traj
 
 
 def jaaba_detect_from_track(track, classifier, *, kpt_names=None,
@@ -329,14 +354,20 @@ def jaaba_detect_from_track(track, classifier, *, kpt_names=None,
                             a_fit=_A_FIT, b_fit=_B_FIT):
     """Apply a JAABA classifier to a flyllm/APF simulated (or GT) keypoint track.
 
+    track: (nagents, nframes, 2, nkpts) mm keypoints. Returns the same dict as 
+    detect.jaaba_detect, plus an 'agents' key: the agent index of each tracklet, since the 
+    per-tracklet lists are indexed by tracklet rather than by agent.
+
     NOTE: flyllm has no outer-wing landmarks and no FlyTracker ellipse, so this
     reconstructs both from the keypoints (approximate). For exact reproduction use
     jaaba_detect_from_X on the registered X arrays.
     """
-    traj = trajectories_from_track(track, kpt_names=kpt_names, pxpermm=pxpermm,
-                                   fps=fps, first_frame=first_frame,
-                                   a_fit=a_fit, b_fit=b_fit)
-    return jaaba_detect_traj(traj, classifier, roi=roi, verbose=verbose)
+    traj, agents = trajectories_from_track(track, kpt_names=kpt_names, pxpermm=pxpermm,
+                                           fps=fps, first_frame=first_frame,
+                                           a_fit=a_fit, b_fit=b_fit, return_agents=True)
+    result = jaaba_detect_traj(traj, classifier, roi=roi, verbose=verbose)
+    result['agents'] = agents
+    return result
 
 
 def load_X_video(matfile, videoidx):

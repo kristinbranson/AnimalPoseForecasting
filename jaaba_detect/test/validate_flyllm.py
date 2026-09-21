@@ -30,15 +30,19 @@ CLFS = [
 def build_flyllm_track(Xv, Xnames):
     """Build a flyllm-order keypoint track from the X columns, using flyllm's own
     keypoint order + the adapter's name map (so this exercises the real by-name path
-    and would catch a left/right wing swap)."""
+    and would catch a left/right wing swap).
+
+    Returns (nagents, nframes, 2, nkpts) mm -- the layout apf.simulation.simulate()
+    actually produces, so this test exercises the same axis order as a real caller.
+    """
     col = {n: i for i, n in enumerate(Xnames)}
     names = M.flyllm_keypoint_names()
     nf, nfl, _ = Xv.shape
-    track = np.full((nfl, nf, len(names), 2), np.nan)
+    track = np.full((nfl, nf, 2, len(names)), np.nan)
     for k, name in enumerate(names):
         ap = M.FLYLLM_TO_APT_NAME[name]
-        track[:, :, k, 0] = Xv[:, :, col[f"{ap}_x_mm"]].T
-        track[:, :, k, 1] = Xv[:, :, col[f"{ap}_y_mm"]].T
+        track[:, :, 0, k] = Xv[:, :, col[f"{ap}_x_mm"]].T
+        track[:, :, 1, k] = Xv[:, :, col[f"{ap}_y_mm"]].T
     return track
 
 

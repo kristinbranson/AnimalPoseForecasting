@@ -14,7 +14,36 @@ import detect, jab_io, matio
 
 
 def _cell(v, i):
+    """Fly i's vector from a MATLAB cell array.
+
+    The h5py path yields a list of vectors and the scipy path a (1, nflies) object
+    ndarray; only the latter needs flattening before indexing by fly.
+    """
+    if isinstance(v, np.ndarray) and v.dtype == object:
+        v = v.ravel()
     return np.asarray(v[i], float).ravel()
+
+
+def _unwrap(A):
+    """Strip the 1x1 containers the two .mat loaders wrap a struct in."""
+    while True:
+        if isinstance(A, list) and len(A) == 1:
+            A = A[0]
+        elif isinstance(A, np.ndarray) and A.dtype == object and A.size == 1:
+            A = A.ravel()[0]
+        else:
+            return A
+
+
+def _field(A, name, default=None):
+    """One field of an allScores struct, whichever loader produced it.
+
+    matio.loadmat returns nested dicts for v7.3 files (h5py path) and scipy
+    mat_struct objects for v7 files, so ground truth saved either way works here.
+    """
+    if isinstance(A, dict):
+        return A.get(name, default)
+    return getattr(A, name, default)
 
 
 def main(expdir, gt_mat, clf_mats):
@@ -23,9 +52,7 @@ def main(expdir, gt_mat, clf_mats):
     gt = {}
     k = 1
     while f"allScores_{k}" in data:
-        A = data[f"allScores_{k}"]
-        while isinstance(A, list):
-            A = A[0]
+        A = _unwrap(data[f"allScores_{k}"])
         beh = data[f"behavior_{k}"]
         beh = beh if isinstance(beh, str) else str(np.asarray(beh).ravel()[0])
         gt[beh] = A
@@ -40,8 +67,8 @@ def main(expdir, gt_mat, clf_mats):
             print(f"  no ground truth for behavior {beh!r}; have {list(gt.keys())}"); continue
         A = gt[beh]
         res = detect.jaaba_detect(expdir, cm, verbose=False)
-        gs_all = A["scores"]
-        gp_all = A.get("postprocessed")
+        gs_all = _field(A, "scores")
+        gp_all = _field(A, "postprocessed")
         nflies = len(res["scores"])
         tot_f = tot_sd = tot_pd = 0
         worst = 0.0
@@ -60,7 +87,7 @@ def main(expdir, gt_mat, clf_mats):
             else:
                 pd = sd
             tot_f += int(both.sum()); tot_sd += sd; tot_pd += max(0, pd)
-        print(f"  scoreNorm py={res['score_norm']:.4f} matlab={float(np.asarray(A['scoreNorm']).ravel()[0]):.4f}")
+        print(f"  scoreNorm py={res['score_norm']:.4f} matlab={float(np.asarray(_field(A, 'scoreNorm')).ravel()[0]):.4f}")
         print(f"  {nflies} flies, {tot_f} frames: worst|score d|={worst:.3e}  "
               f"sign-diff={tot_sd}  postproc(behavior)-diff={tot_pd}  ({100*(1-tot_pd/max(tot_f,1)):.4f}% agree)")
 

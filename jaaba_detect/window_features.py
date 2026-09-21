@@ -151,6 +151,10 @@ def _change(x: np.ndarray, r: int, off: int, change_r: int) -> np.ndarray:
     res_mean = _mean_core(x, change_w)          # len N+2*change_r
     w = 2 * r + 1
     L = res_mean.size
+    if L < w:
+        # The window is longer than the padded trajectory, so no frame has both a start
+        # and an end sub-window to difference. Those frames have no value.
+        return np.full(N, np.nan)
     res = res_mean[w - 1:] - res_mean[:L - w + 1]
     return _shift(res, N, off - r + change_r) / r
 
@@ -167,6 +171,11 @@ def _harmonic_core(x: np.ndarray, w: int, nh: int) -> np.ndarray:
         res[r:N - r] = c
     for smallr in range(1, r):
         smallw = 2 * smallr + 1
+        if smallr >= N:
+            # The off-centre windows have walked past the end of the trajectory, which
+            # happens when the radius exceeds the trajectory length. Everything from
+            # here on stays NaN, which res already holds.
+            break
         if smallw > N:
             res[smallr] = np.nan
             res[N - 1 - smallr] = np.nan

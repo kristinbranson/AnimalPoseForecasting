@@ -12,9 +12,19 @@ import numpy as np
 def boost_classify(X_unique: np.ndarray, clf) -> np.ndarray:
     """myBoostClassify: scores[t] = sum_j alpha_j * (+1 if stump j fires else -1).
 
-    X_unique is (N, n_unique_descs); clf.stump_col maps each stump to its column.
+    X_unique is (N, n_unique_descs) window features, any float dtype; clf.stump_col
+    maps each stump to its column. Returns float64 scores, (N,).
+
+    The window features are rounded to float32 before the threshold comparison,
+    because JAABA stores window data as single (JLabelData.ComputeWindowDataChunk)
+    and its thresholds were learned from that single data, so every threshold is a
+    float32 value. Quantized features land exactly on a threshold often -- e.g.
+    angleonclosestfly takes only 20 values, -pi + k*2*pi/19, and a threshold at
+    9*pi/19 is hit on ~5% of frames. In float64 such a value sits slightly off the
+    float32 threshold and the stump flips relative to JAABA; after rounding to
+    float32 it equals the threshold and the comparison resolves as JAABA's does.
     """
-    d = X_unique[:, clf.stump_col]                       # (N, nstumps)
+    d = np.asarray(X_unique, dtype=np.float32)[:, clf.stump_col]   # (N, nstumps) float32
     fire = np.where(clf.dir > 0, d > clf.tr, d <= clf.tr)  # bool (N, nstumps)
     tt = fire.astype(float) * 2.0 - 1.0
     return tt @ clf.alpha                                 # (N,)
