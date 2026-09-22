@@ -1,0 +1,532 @@
+# ---
+# jupyter:
+#   jupytext:
+#     custom_cell_magics: kql
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.18.1
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+# %% [markdown]
+# # Train fly forecasting network
+
+# %% [markdown]
+# ### Imports
+
+# %%
+# Enable autoreload so changes to imported modules are picked up without restarting the kernel.
+# Import core numerical/deep-learning libraries and the apf/flyllm packages that implement the
+# pose forecasting model and data pipeline.  Configure logging and the matplotlib backend.
+# %load_ext autoreload
+# %autoreload 2
+# %matplotlib inline
+
+import numpy as np
+import torch
+import time
+import os
+
+import apf
+from apf.training import train
+import apf.utils as utils
+import matplotlib.pyplot as plt
+
+import flyllm
+from flyllm.prepare import init_flyllm
+from flyllm.plotting import initialize_debug_plots, initialize_loss_plots
+
+import logging
+logging.basicConfig(level=logging.INFO)
+LOG = logging.getLogger(__name__)
+
+utils.set_mpl_backend('tkAgg')
+ISNOTEBOOK = utils.is_notebook()
+if ISNOTEBOOK:
+    from IPython.display import HTML, display, clear_output
+else:
+    plt.ion()
+
+LOG.info('CUDA available: ' + str(torch.cuda.is_available()))
+LOG.info('isnotebook: ' + str(ISNOTEBOOK))
+
+# %%
+# Generate a unique timestamp string used later to name saved model checkpoint files,
+# so that each training run produces distinctly named outputs.
+timestamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
+print('Timestamp: ' + timestamp)
+
+# %% [markdown]
+# ### Set parameters
+
+# %%
+# Point to the female-specific JSON config file (looked up in the current working directory),
+# set optional restart checkpoint to None (start fresh), specify the figure and model
+# checkpoint output directories,
+# and set debug_uselessdata=True to run quickly on a small data subset during development
+# (set False for real training).  All outputs go under outrootdir (= PWD), never into the
+# source tree.
+# configfile = 'configs/config_fly_llm_predvel_optimalbinning_20251113.json'
+configfile = 'config_fly_llm_predvel_optimalbinning_20251113_female.json'
+restartmodelfile = None
+outfigdirname = 'figs'
+outmodeldirname = 'models'
+debug_uselessdata = False   # full training run
+
+flyllmdir = flyllm.__path__[0]
+# all outputs (and the config file) are resolved against the working directory
+outrootdir = os.getcwd()
+configfile = os.path.join(outrootdir, configfile)
+assert os.path.exists(configfile), f'Config file {configfile} does not exist!'
+
+outfigdir = os.path.join(outrootdir, outfigdirname)
+LOG.info(f'Writing figures to {outfigdir}')
+os.makedirs(outfigdir, exist_ok=True)
+
+outmodeldir = os.path.join(outrootdir, outmodeldirname)
+LOG.info(f'Writing model checkpoints to {outmodeldir}')
+os.makedirs(outmodeldir, exist_ok=True)
+
+# %% [markdown]
+# ### Load configuration and data 
+
+# %%
+# Call the main flyllm initializer, which reads the config, loads and pre-processes the
+# female fly tracking data, builds train/val datasets and dataloaders, constructs the
+# transformer model, criterion, optimizer, and learning-rate scheduler.
+# Prints a summary of each returned object's type and size, then unpacks everything
+# into named variables for use in the rest of the notebook.
+res = init_flyllm(configfile=configfile,mode='train',restartmodelfile=restartmodelfile,
+                debug_uselessdata=debug_uselessdata)
+
+for key in res:
+    s = f'{key}: {type(res[key])}'
+    if hasattr(res[key], 'shape'):
+        s += f', shape: {res[key].shape}'
+    elif hasattr(res[key], '__len__') and not isinstance(res[key], str):
+        s += f', len: {len(res[key])}'
+    print(s)
+
+assert res['success'], 'init_flyllm failed!'
+
+# unpack outputs
+config = res['config']
+device = res['device']
+train_data = res['train_data']
+val_data = res['val_data']
+train_dataset = res['train_dataset']
+train_dataloader = res['train_dataloader']
+val_dataset = res['val_dataset']
+val_dataloader = res['val_dataloader']
+model = res['model']
+criterion = res['criterion']
+optimizer = res['optimizer']
+lr_scheduler = res['lr_scheduler']
+modeltype_str = res['modeltype_str']
+loss_epoch = res['loss_epoch']
+epoch = res['epoch']
+savetime = res['model_savetime']
+
+train_dataset_params = {
+    'input_noise_sigma': config['input_noise_sigma'],
+}
+
+ntrain_batches = len(train_dataloader)
+num_training_steps = ntrain_batches * config['num_train_epochs']
+valexample = next(iter(val_dataloader))
+ntimepoints_per_batch = valexample['input'].shape[0]
+last_val_loss = loss_epoch['val'][epoch].item()
+if np.isnan(last_val_loss):
+    last_val_loss = None
+
+
+# %%
+# (Disabled) Sanity-check that left-right flipping augmentation is applied correctly by
+# overlaying keypoint trajectories from a frame and its horizontally-flipped counterpart.
+
+# print(train_data['track'].array.shape)
+# T = train_data['track'].array.shape[1]
+# t = 123
+# print(f'{t} -> {t+T//2}')
+# plt.plot(train_data['track'].array[:,t,0,:].T, train_data['track'].array[:,t,1,:].T,'r.-')
+# plt.plot(train_data['track'].array[:,t+T//2,0,:].T, train_data['track'].array[:,t+T//2,1,:].T,'b.-')
+# plt.axis('equal')
+
+# %%
+# (Disabled) cProfile run to measure the wall-clock cost of the data-loading pipeline
+# (init_flyllm in train mode). Uncomment to collect and inspect a cumulative timing report.
+# import cProfile
+# import pstats
+
+# def profile_test():
+#     res1 = init_flyllm(configfile=configfile,mode='train',restartmodelfile=restartmodelfile,
+#                 debug_uselessdata=False)
+    
+# cProfile.run('profile_test()', 'init_flyllm_profile.stats')
+# p = pstats.Stats('init_flyllm_profile.stats')
+# p.sort_stats('cumtime').print_stats(100)
+
+# %% [markdown]
+# ### some helper functions for profiling memory usage
+#
+
+# %%
+# Define display_top(), a helper that takes a tracemalloc memory snapshot and prints
+# the top allocating source lines with their sizes, filtered to exclude import machinery.
+# Used to diagnose unexpected RAM growth during data loading or training.
+import tracemalloc
+import linecache
+
+def display_top(snapshot, key_type='lineno', limit=None):
+    snapshot = snapshot.filter_traces((
+        tracemalloc.Filter(False, "<frozen importlib._bootstrap>"),
+        tracemalloc.Filter(False, "<unknown>"),
+    ))
+    top_stats = snapshot.statistics(key_type)
+
+    if limit is None:
+        limit = len(top_stats)
+    print("Top %s lines" % limit)
+    for index, stat in enumerate(top_stats[:limit], 1):
+        frame = stat.traceback[0]
+        # replace "/path/to/module/file.py" with "module/file.py"
+        filename = os.sep.join(frame.filename.split(os.sep)[-2:])
+        print("#%s: %s:%s: %.1f KiB"
+              % (index, filename, frame.lineno, stat.size / 1024))
+        line = linecache.getline(frame.filename, frame.lineno).strip()
+        if line:
+            print('    %s' % line)
+
+    other = top_stats[limit:]
+    if other:
+        size = sum(stat.size for stat in other)
+        print("%s other: %.1f KiB" % (len(other), size / 1024))
+    total = sum(stat.size for stat in top_stats)
+    print("Total allocated size: %.1f KiB" % (total / 1024))
+
+# %% [markdown]
+# ### profile init code
+
+# %%
+# (Disabled) cProfile / timing block for profiling init_flyllm itself.
+# Toggle doprofile to switch between full cProfile instrumentation and a simple wall-clock timer.
+# import cProfile
+# import pstats
+
+# doprofile = True
+
+# def profile_test():
+#     res = init_flyllm(configfile=configfile,mode='train',restartmodelfile=restartmodelfile,
+#                 debug_uselessdata=debug_uselessdata)
+
+# if doprofile:
+
+#     cProfile.run('profile_test()','profile_test.out')
+#     p = pstats.Stats('profile_test.out')
+#     p.sort_stats('cumtime').print_stats(100)
+
+# if not doprofile:
+#     st = time.time()
+#     profile_test()
+#     print("Total elapsed time:", time.time() - st)
+
+# %%
+# (Disabled) Ad-hoc inspection of a single dataset item: retrieves an example, applies
+# inverse label transforms to recover the raw pose, and prints metadata such as start
+# frame and agent ID.
+
+# example_curr = train_dataset[0]
+# data_curr = train_dataset.item_to_data(example_curr)
+# data_curr['labels']['velocity'].array.shape
+# pose = apf.dataset.apply_inverse_operations(data_curr['labels']['velocity'])
+# print(pose.shape)
+# print(pose[0,0])
+# print(example_curr['metadata'].keys())
+# t0 = example_curr['metadata']['start_frame']
+# flynum = example_curr['metadata']['agent_id']
+
+
+# %% [markdown]
+# ### set up debug plots
+
+# %%
+# Create matplotlib figure handles for visualizing pose predictions and loss curves.
+# For long context windows, restrict the time axis of debug plots to the first 64 frames
+# to keep the figures readable.  refresh_plots() redraws figures in-place: in a Jupyter
+# notebook it uses IPython display handles for live updates; in a plain Python session
+# it flushes the interactive backend instead.
+debug_params = {}
+# if contextl is long, still just look at samples from the first 64 frames
+if config['contextl'] > 64:
+    debug_params['tsplot'] = np.round(np.linspace(0,64,5)).astype(int)
+    debug_params['traj_nsamplesplot'] = 1
+hdebug = {}
+hdebug['train'] = initialize_debug_plots(train_dataset, train_dataloader, train_data, name='Train', **debug_params)
+hdebug['val'] = initialize_debug_plots(val_dataset, val_dataloader, val_data, name='Val', **debug_params)
+hloss = initialize_loss_plots(loss_epoch)
+
+def refresh_plots(hdebugin,prefix=''):
+
+    if ISNOTEBOOK:
+        if 'display_handles' not in hdebugin:
+            hdebugin['display_handles'] = {}
+        for k,fig in hdebugin.items():
+            if not k.startswith('fig') or fig is None:
+                continue
+            if k in hdebugin['display_handles']:
+                hdebugin['display_handles'][k].update(fig)
+            else:
+                hdebugin['display_handles'][k] = display(fig,display_id=f'{prefix}__{k}')
+
+    else:
+        for k,fig in hdebugin.items():
+            if not k.startswith('fig') or fig is None:
+                continue
+            fig.canvas.draw()
+            fig.canvas.flush_events()
+
+if ISNOTEBOOK:
+    refresh_plots(hdebug['train'],'train')
+    refresh_plots(hdebug['val'],'val')
+    refresh_plots(hloss,'loss')
+else:
+    plt.ion()
+    plt.show(block=False)
+
+
+
+# %%
+# Define callback hooks that the training loop calls at the end of each iteration and epoch.
+# end_iter_hook() runs inference on a train and val batch every niterplot steps and
+# refreshes the pose-prediction debug figures.
+# end_epoch_hook() updates the loss-curve figure after every epoch.
+# Both hooks are then exercised once on the first batch to verify they work before training starts.
+
+from flyllm.plotting import update_debug_plots, update_loss_plots
+
+def end_iter_hook(model=None, step=None, example=None, predfn=None, **kwargs):
+    
+    assert step is not None
+    
+    if step % config['niterplot'] != 0:
+        return
+
+    assert model is not None
+    assert example is not None
+    assert predfn is not None
+
+    LOG.info(f'Updating debug plots at step {step}')
+
+    with torch.no_grad():
+        trainpred = predfn(example['input'].to(device=device))
+        valpred = predfn(valexample['input'].to(device=device))
+    update_debug_plots(hdebug['train'],config,model,train_dataset,example,trainpred,name='Train',criterion=criterion,**debug_params)
+    update_debug_plots(hdebug['val'],config,model,val_dataset,valexample,valpred,name='Val',criterion=criterion,**debug_params)
+    refresh_plots(hdebug['train'])
+    refresh_plots(hdebug['val'])
+    return
+
+def end_epoch_hook(loss_epoch=None, epoch=None, **kwargs):
+    assert loss_epoch is not None
+    LOG.info(f'Updating loss plots at end of epoch {epoch}')
+    update_loss_plots(hloss, loss_epoch)
+    refresh_plots(hloss)
+    return
+
+# test the hooks
+if True:
+    for i,trainexample in enumerate(train_dataloader):
+        if i >= 1:
+            break
+    valexample = next(iter(val_dataloader))
+    contextl = trainexample['input'].shape[1]
+    train_src_mask = torch.nn.Transformer.generate_square_subsequent_mask(contextl, device=device)
+
+    end_iter_hook(model=model,step=0,example=trainexample,predfn=lambda input: model.output(input, mask=train_src_mask, is_causal=True))
+    end_epoch_hook(loss_epoch=loss_epoch)
+
+# %%
+# Move the model to CPU, zero its gradients, release the CUDA cache, and run Python's
+# garbage collector to free any lingering allocations (important after notebook crashes
+# that may leave stale tensors on the GPU).  Then move the model back to the target
+# device and report how much GPU memory it occupies.
+
+import gc
+
+model = model.to(device='cpu')
+model.zero_grad()
+torch.cuda.empty_cache()
+gc.collect()
+    
+utils.torch_mem_report(model)
+
+model = model.to(device=device)
+
+memalloc = torch.cuda.memory_allocated() / 1e9
+print(f'Cuda memory allocated for model: {memalloc:.3f} GB')
+memreserved = torch.cuda.memory_reserved() / 1e9
+print(f'Cuda memory reserved for model: {memreserved:.3f} GB')
+
+
+# %%
+# Build the base filename for checkpoint saves (rooted in outmodeldir, not config['savedir']),
+# then assemble the full argument dict for the train() function by pulling matching keys
+# from config and injecting the runtime objects (dataloaders, model, optimizer, scheduler,
+# hooks, etc.).  The call to train() runs the full training loop and returns the trained
+# model, the best-checkpoint model, and the per-epoch loss history.
+savefilestr = os.path.join(outmodeldir, f"fly{modeltype_str}_{savetime}")
+
+train_args = utils.function_args_from_config(config,train)
+train_args['train_dataloader'] = train_dataloader
+train_args['val_dataloader'] = val_dataloader
+train_args['model'] = model
+train_args['loss_epoch'] = loss_epoch
+train_args['end_epoch_hook'] = end_epoch_hook
+train_args['end_iter_hook'] = end_iter_hook
+train_args['optimizer'] = optimizer
+train_args['lr_scheduler'] = lr_scheduler
+# criterion hard-coded to mixed_causal_criterion
+#train_args['criterion'] = criterion
+train_args['start_epoch'] = epoch
+train_args['savefilestr'] = savefilestr
+
+# can override args here
+#train_args['num_train_epochs'] = 100
+model, best_model, loss_epoch = train(**train_args)
+
+# %%
+# (Disabled) Smoke-tests for checkpoint loading: verifies that re-initialising from a saved
+# .pth file restores dataset normalisation statistics (mean/std) identically to the
+# original training run, for both 'train' (restart) and 'test' (inference) modes.
+# restartmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredvel_20241125_20251028T132437_epoch6.pth'
+# res = init_flyllm(configfile=configfile,mode='train',restartmodelfile=restartmodelfile,
+#                 debug_uselessdata=debug_uselessdata)
+# # test testing model
+# loadmodelfile = '/groups/branson/home/bransonk/behavioranalysis/code/MABe2022/llmnets/flypredvel_20241125_20251028T132437_epoch6.pth'
+# res = init_flyllm(configfile=configfile,mode='test',loadmodelfile=loadmodelfile,
+#                   debug_uselessdata=debug_uselessdata)
+# assert(np.all(model.dataset_params['labels']['velocity'][2]['attributes']['mean'] == \
+#     res['model'].dataset_params['labels']['velocity'][2]['attributes']['mean']))
+# assert(np.all(model.dataset_params['labels']['velocity'][2]['attributes']['std'] == \
+#     res['model'].dataset_params['labels']['velocity'][2]['attributes']['std']))
+
+# %%
+# (Disabled) The original inline training loop, now superseded by the train() function above.
+# Retained for reference: shows the per-step forward pass, loss backward, gradient clipping,
+# optimizer/scheduler step, periodic validation, loss tracking, checkpoint saving, and
+# dataset rechunking logic that train() now encapsulates.
+
+# progress_bar = tqdm.tqdm(range(num_training_steps),initial=epoch*ntrain_batches)
+
+
+# # train loop
+# for epoch in range(epoch, config['num_train_epochs']):
+
+#     model.train()
+#     tr_loss = torch.tensor(0.0).to(device)
+#     if train_dataset.discretize:
+#         tr_loss_discrete = torch.tensor(0.0).to(device)
+#         tr_loss_continuous = torch.tensor(0.0).to(device)
+    
+#     nmask_train = 0
+#     for step, example in enumerate(train_dataloader):
+    
+#         pred = model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal)
+#         loss, loss_discrete, loss_continuous = criterion_wrapper(example, pred, criterion, train_dataset, config)
+#         assert np.isnan(loss.item()) == False, f'loss is nan at step {step}, epoch {epoch}'
+        
+#         loss.backward()
+        
+#         for weights in model.parameters():
+#             assert torch.isnan(weights.grad).any() == False, f'nan in gradients at step {step}, epoch {epoch}'
+        
+#         # how many timepoints are in this batch for normalization
+#         if config['modeltype'] == 'mlm':
+#             nmask_train += torch.count_nonzero(example['mask'])
+#         else:
+#             nmask_train += example['input'].shape[0]*ntimepoints_per_batch 
+    
+#         if step % config['niterplot'] == 0:
+        
+#             with torch.no_grad():
+#                 trainpred = model.output(example['input'].to(device=device),mask=train_src_mask,is_causal=is_causal)
+#                 valpred = model.output(valexample['input'].to(device=device),mask=train_src_mask,is_causal=is_causal)
+#             update_debug_plots(hdebug['train'],config,model,train_dataset,example,trainpred,name='Train',criterion=criterion,**debug_params)
+#             update_debug_plots(hdebug['val'],config,model,val_dataset,valexample,valpred,name='Val',criterion=criterion,**debug_params)
+#             refresh_plots(hdebug)
+    
+#         tr_loss_step = loss.detach()
+#         tr_loss += tr_loss_step
+#         if train_dataset.discretize:
+#             tr_loss_discrete += loss_discrete.detach()
+#             tr_loss_continuous += loss_continuous.detach()
+    
+#         # gradient clipping
+#         torch.nn.utils.clip_grad_norm_(model.parameters(),config['max_grad_norm'])
+#         optimizer.step()
+#         lr_scheduler.step()
+#         model.zero_grad()
+        
+#         # update progress bar
+#         stat = {'train loss': tr_loss.item()/nmask_train,'last val loss': last_val_loss,'epoch': epoch}
+#         if train_dataset.discretize:
+#             stat['train loss discrete'] = tr_loss_discrete.item()/nmask_train
+#             stat['train loss continuous'] = tr_loss_continuous.item()/nmask_train
+#         progress_bar.set_postfix(stat)
+#         progress_bar.update(1)
+        
+#         # end of iteration loop
+    
+#     # training epoch complete
+#     loss_epoch['train'][epoch] = tr_loss.item() / nmask_train
+#     if train_dataset.discretize:
+#         loss_epoch['train_discrete'][epoch] = tr_loss_discrete.item() / nmask_train
+#         loss_epoch['train_continuous'][epoch] = tr_loss_continuous.item() / nmask_train
+    
+#     # compute validation loss after this epoch
+#     if val_dataset.discretize:
+#         loss_epoch['val'][epoch],loss_epoch['val_discrete'][epoch],loss_epoch['val_continuous'][epoch] = \
+#             compute_loss(model,val_dataloader,val_dataset,device,train_src_mask,criterion,config)
+#     else:
+#         loss_epoch['val'][epoch] = \
+#             compute_loss(model,val_dataloader,val_dataset,device,train_src_mask,criterion,config)
+#     last_val_loss = loss_epoch['val'][epoch].item()
+    
+#     update_loss_plots(hloss, loss_epoch)
+#     refresh_plots(hdebug|{'loss': hloss})
+    
+#     if (epoch + 1) % config['save_epoch'] == 0:
+#         savefile = os.path.join(config['savedir'], f"fly{modeltype_str}_epoch{epoch + 1}_{savetime}.pth")
+#         print(f'Saving to file {savefile}')
+#         save_model(savefile, model,
+#                     lr_optimizer=optimizer,
+#                     scheduler=lr_scheduler,
+#                     loss=loss_epoch,
+#                     config=config)
+    
+#     # rechunk the training data
+#     if np.mod(epoch+1,config['epochs_rechunk']) == 0:
+#         print(f'Rechunking data after epoch {epoch}')
+#         X = chunk_data(data,config['contextl'],reparamfun,**chunk_data_params)
+
+#         train_dataset = FlyMLMDataset(X,**train_dataset_params,**dataset_params)
+#         print('New training data set created')
+
+# print('Done training')
+
+# %%
+# (Disabled) Inline checkpoint-saving code that was previously called at the end of each epoch.
+# This is now handled internally by the train() function; kept here for reference.
+
+# savefile = os.path.join(config['savedir'], f"fly{modeltype_str}_epoch{epoch + 1}_{savetime}.pth")
+# print(f'Saving to file {savefile}')
+# save_model(savefile, model,
+#             lr_optimizer=optimizer,
+#             scheduler=lr_scheduler,
+#             loss=loss_epoch,
+#             config=config)
