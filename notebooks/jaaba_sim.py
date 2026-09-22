@@ -4,10 +4,11 @@ The forecasting models are evaluated by open-loop simulation: a model is prompte
 `contextl` frames of real tracking and then predicts the following `sim_len` frames on
 its own, for a subset of the flies in the arena. Those predictions are cached on disk as
 one `.npy` per window, holding one tracklet per simulated agent. For each window this
-module takes the real segment (prompt plus simulated stretch) and the same segment with
-the simulated agents' tracklets substituted, runs JAABA classifiers (chase / wing
-extension / courtship) over both, and keeps the simulated stretch, so simulated behavior
-can be compared against real behavior on matched agent-frames.
+module takes the real segment (SCORE_CONTEXTL frames of real history plus the simulated
+stretch) and the same segment with the simulated agents' tracklets substituted, runs
+JAABA classifiers (chase / wing extension / courtship) over both, and keeps the simulated
+stretch, so simulated behavior can be compared against real behavior on matched
+agent-frames.
 
 A tracklet here is a contiguous portion of one agent's trajectory.
 
@@ -203,6 +204,17 @@ EXPERIMENTS = {
 # testtrain split as their validation set.
 VALIDATION_SPLIT = 'testtrain'
 EVALUATION_SPLIT = 'test2'
+
+# Frames of real track before each window's first simulated frame that are included in
+# the segment JAABA scores. It is the same for every model, whatever its prompt length
+# (contextl), so every model's ground-truth numbers are computed from the same real
+# data. JAABA's output depends on the whole scored segment, not only the frames kept --
+# e.g. its 'relative' transform takes percentile bins from it -- so a model-specific
+# segment would make the ground truth model-specific. It must be at least every model's
+# contextl. The frames before a shorter
+# prompt are real, continuous tracking because the cached windows start 512 frames into
+# each stretch the simulation run tiled with windows.
+SCORE_CONTEXTL = 512
 
 # Cached window filenames, e.g.
 #   session_10_startsimframe_136051_agentid_3_5_6_7_9_simlen_512.npy
@@ -569,10 +581,11 @@ def _score(nickname: str, max_windows: int | None, out_dir: str,
     track = ground_truth['track']
     contextl = ground_truth['contextl']
     n_agents, n_frames = track.array.shape[:2]
-    print(f"  track {track.array.shape}, contextl {contextl}", flush=True)
+    print(f"  track {track.array.shape}, contextl {contextl}, "
+          f"scoring context {SCORE_CONTEXTL}", flush=True)
 
     windows = parse_windows(savedir)
-    windows = usable_windows(windows, n_agents, n_frames, contextl)
+    windows = usable_windows(windows, n_agents, n_frames, max(contextl, SCORE_CONTEXTL))
     if max_windows is not None:
         windows = windows[:max_windows]
     print(f"  {len(windows)} usable windows of {len(parse_windows(savedir))}", flush=True)
@@ -593,7 +606,7 @@ def _score(nickname: str, max_windows: int | None, out_dir: str,
         classifier = jab_io.load_classifier(path)
         for label, simulated in (('gt', False), ('sim', True)):
             started = time.time()
-            result = score_windows(track.array, windows, contextl, classifier,
+            result = score_windows(track.array, windows, SCORE_CONTEXTL, classifier,
                                    simulated=simulated, n_workers=n_workers)
             positive = int((result['behavior'] > 0).sum())
             total = int(result['scored'].sum())
@@ -825,16 +838,17 @@ def window_reach(classifier) -> int:
     return reach
 
 
-def window_segment(gt_array: np.ndarray, window: dict, contextl: int,
+def window_segment(gt_array: np.ndarray, window: dict, score_contextl: int,
                    tracklets: np.ndarray | None) -> np.ndarray:
     """Assemble the keypoint track for one cached simulation window.
 
-    The segment runs from contextl frames before the simulation starts to the end of the
-    simulated stretch. Every agent is taken from the ground truth; when tracklets are
-    given, the simulated agents are replaced by them over the whole segment. Each cached
-    tracklet holds the real prompt in its leading contextl frames -- checked against the
-    ground truth by verify_window_prompts -- so the segment is continuous across the
-    prompt-to-simulation join.
+    The segment runs from score_contextl frames before the simulation starts to the end
+    of the simulated stretch. Every agent is taken from the ground truth; when tracklets
+    are given, they replace the simulated agents over the segment's last
+    contextl + sim_len frames, i.e. the whole segment when the model's prompt is
+    score_contextl long. Each cached tracklet holds the real prompt in its leading
+    contextl frames -- checked against the ground truth by verify_window_prompts -- so
+    the segment is continuous across the real-to-tracklet and prompt-to-simulation joins.
 
     Scoring this segment on its own, rather than scoring a track with every window
     spliced in, is what avoids the discontinuity between neighbouring windows: the
@@ -844,26 +858,35 @@ def window_segment(gt_array: np.ndarray, window: dict, contextl: int,
     Args:
         gt_array: (n_agents, n_frames, 2, n_keypoints) float mm ground-truth keypoints.
         window: one entry from parse_windows().
-        contextl: prompt length in frames.
+        score_contextl: real frames before the first simulated frame (SCORE_CONTEXTL);
+            at least the model's prompt length contextl.
         tracklets: (len(window['agents']), contextl + sim_len, 2, n_keypoints), one
             tracklet per simulated agent (real prompt, then predictions), or None to build
             the ground-truth counterpart of the same segment.
 
     Returns:
-        (n_agents, contextl + sim_len, 2, n_keypoints) float mm keypoints.
+        (n_agents, score_contextl + sim_len, 2, n_keypoints) float mm keypoints.
+
+    Raises:
+        ValueError: if the tracklets are longer than the segment.
     """
-    start = window['start_frame'] - contextl
+    start = window['start_frame'] - score_contextl
     stop = window['start_frame'] + window['sim_len']
     segment = gt_array[:, start:stop].astype(float, copy=True)
     if tracklets is not None:
-        segment[window['agents']] = tracklets
+        tracklet_len = tracklets.shape[1]   # contextl + sim_len
+        if tracklet_len > segment.shape[1]:
+            raise ValueError(f"{window['path']}: tracklets hold {tracklet_len} frames, "
+                             f"more than the {segment.shape[1]}-frame scored segment; "
+                             f"score_contextl must be at least the prompt length")
+        segment[window['agents'], -tracklet_len:] = tracklets
     return segment
 
 
 # Set before a parallel window run and inherited by forked workers, as for the blocks.
 _WINDOW_TRACK = None
 _WINDOW_LIST = None
-_WINDOW_CONTEXTL = None
+_WINDOW_SCORE_CONTEXTL = None
 _WINDOW_SIMULATED = None
 
 
@@ -871,7 +894,7 @@ def _score_one_window(index: int) -> tuple:
     """Score one cached window in a worker process; returns per-tracklet results."""
     window = _WINDOW_LIST[index]
     tracklets = np.load(window['path']) if _WINDOW_SIMULATED else None
-    segment = window_segment(_WINDOW_TRACK, window, _WINDOW_CONTEXTL, tracklets)
+    segment = window_segment(_WINDOW_TRACK, window, _WINDOW_SCORE_CONTEXTL, tracklets)
     result = jaaba_detect_from_track(segment, _SCORING_CLASSIFIER,
                                      pxpermm=_SCORING_PXPERMM, fps=_SCORING_FPS,
                                      first_frame=1, verbose=False)
@@ -879,31 +902,35 @@ def _score_one_window(index: int) -> tuple:
                    'scores': result['scores'], 'postprocessed': result['postprocessed']}
 
 
-def score_windows(gt_array: np.ndarray, windows: list[dict], contextl: int,
+def score_windows(gt_array: np.ndarray, windows: list[dict], score_contextl: int,
                   classifier, *, simulated: bool, pxpermm: float = PXPERMM,
                   fps: float = FPS, n_workers: int = 1) -> dict:
     """Score one classifier over every cached window, ground truth or simulated.
 
-    Each window is scored as its own trajectory: the real prompt concatenated with the
-    simulated stretch, contextl + sim_len frames (512 + 512 for most models, 64 + 512
-    for 'short'). That is what keeps the trajectory
-    continuous -- the windows tile at stride sim_len and each was simulated
-    independently from its own real starting state, so a track with all of them spliced
-    in jumps at every window boundary.
+    Each window is scored as its own trajectory: score_contextl frames of real history
+    followed by the simulated stretch, score_contextl + sim_len frames (512 + 512 for
+    every model). For the simulated side, the simulated agents' tracklets fill the end
+    of that trajectory; for a model whose prompt is shorter than score_contextl
+    ('short', 64 frames) the frames before its prompt stay real. Scoring each window on
+    its own is what keeps the trajectory continuous -- the windows tile at stride sim_len
+    and each was simulated independently from its own real starting state, so a track
+    with all of them spliced in jumps at every window boundary.
 
-    Only the simulated stretch is recorded; the prompt frames are context for the window
-    features, not results. Ground truth is scored over identical segments so the two
-    sides see the same sequence structure.
+    Only the simulated stretch is recorded; the frames before it are context for the
+    window features, not results. Ground truth is scored over identical segments so the
+    two sides see the same sequence structure.
 
     Note that JAABA's 'relative' transform takes its percentile bins from the whole
     scored trajectory, so for the simulated side those bins come from a sequence that is
     half real. Ground truth's come from an all-real sequence. This is a deliberate
-    choice to give the early simulated frames genuine context.
+    choice to give the early simulated frames genuine context. Using the same
+    score_contextl for every model makes the ground-truth scores the same for any two
+    models that share windows.
 
     Args:
         gt_array: (n_agents, n_frames, 2, n_keypoints) float mm ground-truth keypoints.
         windows: entries from parse_windows() that fit inside the track.
-        contextl: prompt length in frames.
+        score_contextl: real frames before each first simulated frame (SCORE_CONTEXTL).
         classifier: a loaded jab_io.Classifier.
         simulated: True to substitute the cached predictions, False for ground truth.
         pxpermm: pixels per mm for the APT social distance features.
@@ -914,7 +941,7 @@ def score_windows(gt_array: np.ndarray, windows: list[dict], contextl: int,
         dict with (n_agents, n_frames) arrays 'scores' (NaN where not scored),
         'behavior' (1.0 where the behavior is on, else 0.0) and 'scored' (bool).
     """
-    global _WINDOW_TRACK, _WINDOW_LIST, _WINDOW_CONTEXTL, _WINDOW_SIMULATED
+    global _WINDOW_TRACK, _WINDOW_LIST, _WINDOW_SCORE_CONTEXTL, _WINDOW_SIMULATED
     global _SCORING_CLASSIFIER, _SCORING_PXPERMM, _SCORING_FPS
 
     n_agents, n_frames = gt_array.shape[:2]
@@ -929,10 +956,10 @@ def score_windows(gt_array: np.ndarray, windows: list[dict], contextl: int,
             tracklet_scores = np.asarray(result['scores'][tracklet], dtype=np.float32)
             tracklet_behavior = (
                 np.asarray(result['postprocessed'][tracklet], dtype=np.float32) > 0)
-            # tStart is 1-based within the segment; shifting by contextl puts it in the
-            # simulated stretch, where out-of-range means prompt or past the end.
+            # tStart is 1-based within the segment; shifting by score_contextl puts it in
+            # the simulated stretch, where out-of-range means context or past the end.
             offset = int(result['tStart'][tracklet]) - 1
-            simulated_index = np.arange(tracklet_scores.size) + offset - contextl
+            simulated_index = np.arange(tracklet_scores.size) + offset - score_contextl
             keep = (simulated_index >= 0) & (simulated_index < window['sim_len'])
             frames = window['start_frame'] + simulated_index[keep]
             scores[agent, frames] = tracklet_scores[keep]
@@ -945,13 +972,13 @@ def score_windows(gt_array: np.ndarray, windows: list[dict], contextl: int,
     if n_workers <= 1:
         for index, window in enumerate(windows):
             tracklets = np.load(window['path']) if simulated else None
-            segment = window_segment(gt_array, window, contextl, tracklets)
+            segment = window_segment(gt_array, window, score_contextl, tracklets)
             place(index, jaaba_detect_from_track(segment, classifier, pxpermm=pxpermm,
                                                  fps=fps, first_frame=1, verbose=False))
     else:
         _WINDOW_TRACK = gt_array
         _WINDOW_LIST = windows
-        _WINDOW_CONTEXTL = contextl
+        _WINDOW_SCORE_CONTEXTL = score_contextl
         _WINDOW_SIMULATED = simulated
         context = multiprocessing.get_context('fork')
         with context.Pool(min(n_workers, len(windows))) as pool:
@@ -964,11 +991,21 @@ def score_windows(gt_array: np.ndarray, windows: list[dict], contextl: int,
 
 
 def usable_windows(windows: list[dict], n_agents: int, n_frames: int,
-                   contextl: int) -> list[dict]:
-    """Keep the windows that address agents and frames the loaded track actually has."""
+                   context_frames: int) -> list[dict]:
+    """Keep the windows that address agents and frames the loaded track actually has.
+
+    Args:
+        windows: entries from parse_windows().
+        n_agents, n_frames: size of the loaded ground-truth track.
+        context_frames: real frames each window needs before its first simulated frame.
+
+    Returns:
+        The windows whose agents exist and whose context and simulated stretch lie inside
+        the track, in their original order.
+    """
     return [w for w in windows
             if max(w['agents']) < n_agents
-            and w['start_frame'] - contextl >= 0
+            and w['start_frame'] - context_frames >= 0
             and w['start_frame'] + w['sim_len'] <= n_frames]
 
 

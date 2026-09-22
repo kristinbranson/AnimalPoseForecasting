@@ -12,7 +12,8 @@ simulation runs further from its real prompt.
 
 ## Files
 
-In `/nrs/branson/AnimalPoseForecasting/jaaba_scores/`, generated 2026-09-21:
+In `/nrs/branson/AnimalPoseForecasting/jaaba_scores/`, generated 2026-09-21 (short
+regenerated 2026-09-22 with the 512-frame scoring context):
 
 | file | model | simulation windows | prompt frames | flies simulated per window | frames on the frame axis | simulated fly-frames |
 |---|---|---|---|---|---|---|
@@ -81,8 +82,8 @@ throughout. The windows never overlap in time, so every fly-frame comes from at 
 window.
 
 - **Only the 512 predicted frames of each window are stored**, for every fly in the
-  arena. The prompt frames are scored too, as context for JAABA's windowed features, but
-  not stored.
+  arena. The 512 frames before them are scored too, as context for JAABA's windowed
+  features, but not stored.
 - **Within a stored stretch:**
   - the flies the model simulated have `sim_frame` 1–512;
   - the other flies have `sim_frame == 0`. They are real on both sides, but their
@@ -107,10 +108,13 @@ Fly identities, video names and video frame numbers are **not** stored. To map a
 
 ## How the scores were computed
 
-- **Segments.** For each window, the segment `[start_frame − prompt, start_frame + 512)`
-  of every agent is taken from the real track: 1024 frames, or 576 for `short`.
-  - **Simulated side:** the simulated agents are replaced by their tracklets from the
-    window file, whose prompt frames equal the real prompt (verified for every window).
+- **Segments.** For each window, the segment `[start_frame − 512, start_frame + 512)` of
+  every agent is taken from the real track: 1024 frames for every model, whatever its
+  prompt length.
+  - **Simulated side:** each simulated agent's last `prompt + 512` frames are replaced by
+    its tracklet from the window file, whose prompt frames equal the real prompt
+    (verified for every window). For `short`, whose prompt is 64 frames, the 448 frames
+    before the prompt stay real.
   - **Real side:** the same segment, all real.
   - Each segment is scored as its own trajectory with all agents together, using the
     Python port of `JAABADetect` in `jaaba_detect`. That port reproduces MATLAB JAABA's
@@ -126,8 +130,10 @@ Fly identities, video names and video frame numbers are **not** stored. To map a
     - b = 0.3445 × left–right front-thorax distance + 0.0008 mm (quarter axes)
   - Pixels per mm = 18.9, frame rate = 150 fps.
 - **Relative features.** JAABA's `relative` window features take their percentile bins
-  from each scored segment. On the simulated side that segment is half real (the
-  prompt).
+  from each scored segment. The segment is the same length for every model so that the
+  real side does not depend on the model: models with the same windows get identical
+  real-side scores. On the simulated side the segment is half real (the 512 frames
+  before the predictions).
 
 ## Classifiers (`r5nowingtip`)
 
@@ -186,7 +192,7 @@ Results on simulated fly-frames (simulated rate ÷ real rate):
 
 | model | chase | wingext | courtship |
 |---|---|---|---|
-| short | 0.75 | 2.43 | 0.94 |
+| short | 0.73 | 2.49 | 0.88 |
 | ref | 0.38 | 1.98 | 0.63 |
 | alldata | 0.48 | 3.67 | 0.59 |
 | bodycentric | 0.48 | 0.52 | 0.54 |
