@@ -58,7 +58,7 @@ LOG.info('isnotebook: ' + str(ISNOTEBOOK))
 #configfile = 'configs/config_fly_llm_predvel_optimalbinning_20251113.json'
 configfile = '/groups/branson/bransonlab/taylora/apf2/config_fly_llm_predvel_optimalbinning_20251113_female.json'
 outfigdirname = 'flyllm-figs'
-debug_uselessdata = True  # False for real runs
+debug_uselessdata = False  # False for real runs
 
 # path to config file based on code directory
 flyllmdir = flyllm.__path__[0]
@@ -99,7 +99,7 @@ if False:
 # extracting velocity, pose, and masking arrays needed for binning.
 overrideconfig = {}
 # use all data
-overrideconfig['categories'] = ['courtship']
+#overrideconfig['categories'] = ['courtship']
 config = init_config(configfile=configfile,overrideconfig=overrideconfig)['config']
 # don't actually need most of this stuff... 
 train_dataset, flyids, track, pose, velocity, sensory, dataset_params, isdata, isstart, useoutputmask = \
