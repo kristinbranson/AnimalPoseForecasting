@@ -50,6 +50,7 @@ def train(
         start_epoch: int = 0,
         savefilestr: str | None = None,
         save_epoch: int | None = None,
+        max_nonfinite_steps: int = 100,
 ) -> tuple[TransformerModel, TransformerModel, dict]:
     """ Trains a model on train_dataloader, using val_dataloader to select the best_model.
 
@@ -75,6 +76,9 @@ def train(
         start_epoch: If resuming training, the epoch to start from. Defaults to 0.
         savefilestr: Saves the model to this file every save_epoch epochs. Defaults to None.
         save_epoch: Number of epochs between saving the model. If None, does not save. Defaults to None.
+        max_nonfinite_steps: Training steps whose prediction, loss, or gradient norm is non-finite are skipped
+            (no optimizer step) and logged. Raises RuntimeError once more than this many steps have been
+            skipped in total. Defaults to 100.
 
     Returns:
         model: Model after training on all epochs
@@ -129,6 +133,7 @@ def train(
     best_model = model
     best_epoch = None
     best_val_loss = 10000
+    n_nonfinite_steps = 0
         
     for epoch in range(start_epoch, num_train_epochs):
         model.train()
@@ -140,10 +145,40 @@ def train(
         for step, example in enumerate(train_dataloader):
 
             pred = model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal)
-            loss, loss_discrete, loss_continuous = criterion(
-                example, pred, weight_discrete=weight_discrete, extraout=True
-            )
-            loss.backward()
+            # check the prediction first, since the criterion asserts on nans
+            nonfinite_reason = None
+            if not all(torch.isfinite(v).all().item() for v in pred.values() if torch.is_tensor(v)):
+                nonfinite_reason = 'prediction'
+            else:
+                loss, loss_discrete, loss_continuous = criterion(
+                    example, pred, weight_discrete=weight_discrete, extraout=True
+                )
+                if not torch.isfinite(loss).item():
+                    nonfinite_reason = 'loss'
+                else:
+                    loss.backward()
+                    # gradient clipping; a non-finite norm would turn all gradients (and then weights) into nans
+                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                    if not torch.isfinite(grad_norm).item():
+                        nonfinite_reason = f'gradient norm ({grad_norm.item()})'
+
+            if nonfinite_reason is not None:
+                n_nonfinite_steps += 1
+                metadata = {k: [int(x) for x in v]
+                            for k, v in example.get('metadata', {}).items() if k in ('start_frame', 'agent_id')}
+                LOG.warning(f'Skipping step {step} of epoch {epoch}: non-finite {nonfinite_reason} '
+                            f'({n_nonfinite_steps} skipped so far). Batch chunks: {metadata}')
+                # free the autograd graph now, rather than holding it through the next forward pass
+                del pred
+                if nonfinite_reason == 'loss':
+                    del loss, loss_discrete, loss_continuous
+                model.zero_grad()
+                # keep the learning rate schedule aligned with the step count
+                lr_scheduler.step()
+                if n_nonfinite_steps > max_nonfinite_steps:
+                    raise RuntimeError(f'More than {max_nonfinite_steps} training steps had non-finite '
+                                       f'{nonfinite_reason}; aborting')
+                continue
 
             # how many timepoints are in this batch for normalization
             nmask_train += example['useoutputmask'].sum().detach()
@@ -153,8 +188,6 @@ def train(
             tr_loss_discrete += loss_discrete.detach()
             tr_loss_continuous += loss_continuous.detach()
 
-            # gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             optimizer.step()
             lr_scheduler.step()
             model.zero_grad()
@@ -186,7 +219,8 @@ def train(
 
         if last_val_loss < best_val_loss:
             best_model = copy.deepcopy(model)
-            best_epoch = epoch            
+            best_epoch = epoch
+            best_val_loss = last_val_loss
             
         if ((epoch + 1) % save_epoch == 0) or (epoch == num_train_epochs - 1):
             savefile = f'{savefilestr}_epoch{epoch + 1}.pth'
