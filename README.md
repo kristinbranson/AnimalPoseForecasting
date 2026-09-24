@@ -20,12 +20,10 @@ For each variant, the flow diagram (left) shows how data is transformed, and the
 |:---:|:---:|
 | <img src="images/flow_reference.png" height="640" alt="Flow diagram for ref variant"> | <img src="images/simulation_samples_ref.gif" height="640" alt="Simulation from ref variant"> |
 | <img src="images/flow_keypoints.png" height="640" alt="Flow diagram for rawkp variant"> | <img src="images/simulation_samples_rawkp.gif" height="640" alt="Simulation from rawkp variant"> |
-| <img src="images/flow_nohandcraft.png" height="640" alt="Flow diagram for bodycentric variant"> | <img src="images/simulation_samples_bodycentric.gif" height="640" alt="Simulation from 
-bodycentric variant"> |
+| <img src="images/flow_nohandcraft.png" height="640" alt="Flow diagram for bodycentric variant"> | <img src="images/simulation_samples_bodycentric.gif" height="640" alt="Simulation from bodycentric variant"> |
 | <img src="images/flow_discreteall.png" height="640" alt="Flow diagram for binall variant"> | <img src="images/simulation_samples_binall.gif" height="640" alt="Simulation from binall variant"> |
 | <img src="images/flow_nodiscrete.png" height="640" alt="Flow diagram for nobin variant"> | <img src="images/simulation_samples_nobin.gif" height="640" alt="Simulation from nobin variant"> |
-| <img src="images/flow_staticlocal.png" height="640" alt="Flow diagram for predpose variant"> | <img src="images/simulation_samples_predpose.gif" height="640" alt="Simulation from predpose 
-variant"> |
+| <img src="images/flow_staticlocal.png" height="640" alt="Flow diagram for predpose variant"> | <img src="images/simulation_samples_predpose.gif" height="640" alt="Simulation from predpose variant"> |
 | <img src="images/flow_short.png" height="640" alt="Flow diagram for short variant"> | <img src="images/simulation_samples_short.gif" height="640" alt="Simulation from short variant"> |
 
 ## Credits
