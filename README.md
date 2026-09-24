@@ -2,7 +2,7 @@
 
 | **Real trajectories** | **Agent-centric simulation** |
 |:---:|:---:|
-| ![Trajectories of real flies](images/simulation_samples_gt.gif) | ![Simulated trajectories from agent-centric model](images/simulation_samples_ref.gif) |
+| ![Trajectories of real flies](images/male_female_real_samples.gif) | ![Simulated trajectories from agent-centric model](images/male_female_simulation_samples.gif) |
 
 > 🚧👷‍♀️ **Under construction** — this library and its documentation are a work in progress. 🏗️🚧
 
