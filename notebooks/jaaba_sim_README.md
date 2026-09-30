@@ -13,7 +13,7 @@ simulation runs further from its real prompt.
 ## Files
 
 In `/nrs/branson/AnimalPoseForecasting/jaaba_scores/`, generated 2026-09-21 (short
-regenerated 2026-09-22 with the 512-frame scoring context):
+regenerated 2026-09-22 with the 512-frame scoring context; rawkp added 2026-09-22):
 
 | file | model | simulation windows | prompt frames | flies simulated per window | frames on the frame axis | simulated fly-frames |
 |---|---|---|---|---|---|---|
@@ -23,21 +23,53 @@ regenerated 2026-09-22 with the 512-frame scoring context):
 | `jaaba_scores_bodycentric_r5nowingtip.npz` | bodycentric | 1476 | 512 | 3–7 | 810,158 | 3,834,368 |
 | `jaaba_scores_nobin_r5nowingtip.npz` | nobin | 1476 | 512 | 3–7 | 810,158 | 3,834,368 |
 | `jaaba_scores_predpose_r5nowingtip.npz` | predpose | 1476 | 512 | 3–7 | 810,158 | 3,834,368 |
+| `jaaba_scores_rawkp_r5nowingtip.npz` | rawkp | 1152 | 512 | 3–6 | 810,158 | 2,847,232 |
 | `jaaba_scores_short_r5nowingtip.npz` | short | 1476 | **64** | 3–7 | 810,158 | 3,834,368 |
 
-Every model predicts 512 frames per window.
+Every model predicts 512 frames per window. Every model except alldata also has a
+`jaaba_walk_<model>.npz` holding walking on the same fly-frames (see *Walking* below).
 
-- **rawkp is missing.** Its model was trained, and its simulations generated, with at
-  most 10 flies per arena, via a fly-elimination step in `experiments/flyllm.py` that is
-  currently disabled (`if False:`). Loading its ground truth today gives 11 flies and an
-  input width (380) that does not match the checkpoint's normalization (342), so loading
-  fails.
+- **rawkp has 10 agent slots and fewer windows.** Its model was trained, and its
+  simulations generated, with at most 10 flies per arena: when `use_raw_kp` is set,
+  `experiments/flyllm.py` drops agent slot 10 and marks videos with more than 10 flies
+  invalid. Its arrays are `(10, n_frames)`, and its 1152 windows are the ones among ref's
+  1476 outside those videos, with identical agents and start frames. On those fly-frames
+  its real side equals ref's exactly, but because it covers fewer videos its real rates
+  differ from the other models'; compare it through sim/real ratios, or restrict another
+  model to rawkp's fly-frames.
 - alldata's config covers all flies rather than courting males, so its real behavior
   rates are much lower than the other models'; compare it through sim/real ratios.
 
+### Walking
+
+`jaaba_walk_<model>.npz`, one per model variant except alldata, written by
+`jaaba_sim.py walk`. Walking is not a JAABA classifier but the heuristic detector from
+`apf/evaluation.py detect_walk`: a fly is walking where the speed of its thorax keypoint
+stays above one pixel per frame for more than 20 consecutive frames. It is computed over
+the same window segments as the JAABA behaviors, so the four behaviors share one frame
+set and can go in one table.
+
+| key | type | value at `[agent, frame]` |
+|---|---|---|
+| `sim_frame` | float32 | as in the score files, and checked against them |
+| `gt_behavior_walking`, `sim_behavior_walking` | float32 | `1.0` where the real / simulated fly is walking |
+| `gt_scored_walking`, `sim_scored_walking` | bool | `True` where the fly has a tracked thorax keypoint inside a window |
+
+The arrays have 11 agent slots, the reference track's count, so rawkp's file carries one
+unused row; index them `[:n_agents]` against that model's score file.
+
+Two details worth knowing:
+
+- The detector uses `flyllm.config.PXPERMM` (19.02), not the 18.9 the classifiers use,
+  since its one-pixel-per-frame threshold was chosen with the former.
+- A bout is measured over the whole 1024-frame segment, so one that starts in the real
+  context counts from its first frame in the simulated stretch. A bout still running at
+  the end of the stretch is cut there, and is dropped if fewer than 21 of its frames fall
+  inside. Both sides are treated identically.
+
 ## What each file holds
 
-Every array is indexed `[agent, frame]`: 11 agent slots, one per fly in the arena, by
+Every array is indexed `[agent, frame]`: 11 agent slots (10 for rawkp), one per fly in the arena, by
 every frame of the model's evaluation track (see *Axes* below). `<b>` stands for one of
 the three behaviors: `jaaba_chase`, `jaaba_wingext`, `jaaba_courtship`.
 
@@ -188,20 +220,40 @@ for b in ("jaaba_chase", "jaaba_wingext", "jaaba_courtship"):
               f"  sim {100 * (z[f'sim_behavior_{b}'][m] > 0).mean():5.2f}%")
 ```
 
-Results on simulated fly-frames (simulated rate ÷ real rate):
+Fraction of time the behavior is on, over all 512 predicted frames of every simulated
+fly-frame. The first row is the real fraction; the rest are each model's simulated
+fraction. Walking comes from the `jaaba_walk_*` files, which alldata does not have.
 
-| model | chase | wingext | courtship |
-|---|---|---|---|
-| short | 0.73 | 2.49 | 0.88 |
-| ref | 0.38 | 1.98 | 0.63 |
-| alldata | 0.48 | 3.67 | 0.59 |
-| bodycentric | 0.48 | 0.52 | 0.54 |
-| predpose | 0.34 | 0.50 | 0.54 |
-| binall | 0.43 | 1.40 | 0.43 |
-| nobin | 0.17 | 0.49 | 0.52 |
+| model | walking | chase | wingext | courtship |
+|---|---|---|---|---|
+| real | 0.21 | 0.21 | 0.06 | 0.24 |
+| short | 0.25 | 0.15 | 0.15 | 0.21 |
+| ref | 0.19 | 0.08 | 0.12 | 0.15 |
+| bodycentric | 0.21 | 0.10 | 0.03 | 0.13 |
+| binall | 0.61 | 0.09 | 0.09 | 0.11 |
+| predpose | 0.08 | 0.07 | 0.03 | 0.13 |
+| nobin | 0.08 | 0.04 | 0.03 | 0.13 |
+| rawkp | 0.06 | 0.02 | 0.03 | 0.10 |
 
-In the first few frames after the prompt, simulated and real rates agree to within a few
-percent, and 93–97% of frames get the same label. Chase and courtship then decline the
+The real row is measured on ref's fly-frames. Because the models' windows differ, so do
+their real fractions, but only for two of them:
+
+| frames | walking | chase | wingext | courtship |
+|---|---|---|---|---|
+| ref, short, nobin, predpose, bodycentric | 0.208 | 0.211 | 0.061 | 0.242 |
+| binall | 0.211 | 0.214 | 0.062 | 0.243 |
+| rawkp | 0.260 | 0.269 | 0.079 | 0.284 |
+
+alldata is left out of both tables: its config covers all flies rather than courting
+males, so its real fractions are chase 0.041, wingext 0.009, courtship 0.037, against
+simulated 0.020, 0.033 and 0.022.
+
+`jaaba_behavior_tables.py` draws these as figures, and defaults to the first 64 predicted
+frames rather than all 512.
+
+In the first four frames after the prompt, simulated rates are within about 2 percentage
+points of real ones for most models (binall's chase and rawkp's courtship start 4.5–4.7
+points low), and 91–99.5% of frames get the same label. Chase and courtship then decline the
 longer a simulation runs, while real rates stay flat.
 
 ## Running jaaba_sim.py
@@ -214,10 +266,17 @@ cd /groups/branson/home/bransonk/behavioranalysis/code/APF_main/notebooks
 
 python jaaba_sim.py describe <model>                 # track and window statistics
 python jaaba_sim.py score <model> --workers 20        # write jaaba_scores_<model>_<set>.npz
+python jaaba_sim.py walk <model> [<model> ...]        # write jaaba_walk_<model>.npz
 python jaaba_sim.py validate ref --classifiers r5nowingtipsplit --workers 24
+python jaaba_behavior_tables.py                       # fraction-of-time tables
 ```
 
 - **`score`** uses the `r5nowingtip` set by default (`--classifiers` to change it).
+- **`walk`** takes several models at once: the real track is the same data for every
+  variant, so one ground-truth load serves all of them, and each model's prompts are
+  re-checked against it. Seven models take about 25 minutes in total.
+- **`jaaba_behavior_tables.py`** draws the fraction-of-time tables (walking, chasing, wing
+  extension, courtship) from the score and walk files, one row per model variant.
 - **`validate`** scores the real test1+test2 tracks and reports balanced accuracy against
   the dataset's labels, pooled over both splits. Use the held-out (`*split`) sets for a
   held-out measure. `--all-keypoints` scores with the real outer wing tips (21

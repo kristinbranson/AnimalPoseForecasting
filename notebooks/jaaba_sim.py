@@ -149,6 +149,19 @@ FPS = 150.0
 # Note flyllm.config.PXPERMM is 19.02, computed as a median arena radius instead.
 PXPERMM = 18.9
 
+# The heuristic walking detector, ported from apf.evaluation.detect_walk so it can run on
+# the same window segments the JAABA classifiers do. A fly is walking where the speed of
+# one keypoint exceeds the threshold for a long enough stretch. The threshold is on
+# log speed in pixels per frame, so log 0 means one pixel per frame, and the pixel scale
+# is flyllm.config.PXPERMM (19.02) rather than the 18.9 the classifiers use, since that is
+# what the threshold was chosen with.
+WALK_KEYPOINT = 7
+WALK_PXPERMM = 19.02
+WALK_LOG_SPEED_THRESHOLD = 0.0
+WALK_MIN_BOUT_FRAMES = 20
+# Guards log(0) where a fly does not move at all between two frames, as in detect_walk.
+WALK_SPEED_EPSILON = 0.00001
+
 
 # Root holding one subdirectory of cached simulation windows per model, each named
 # "<configname>_<modelname>" where the names are the config/checkpoint basenames with
@@ -161,10 +174,10 @@ BRANSONK_CODE_DIR = "/groups/branson/home/bransonk/behavioranalysis/code/AnimalP
 
 # The 8 models with cached simulations, as (config file, checkpoint file). Nicknames and
 # the first seven entries follow load_sim_data.ipynb; 'alldata' has cached simulations but
-# does not appear there. 'rawkp' cannot currently be loaded: it was trained and simulated
-# with at most 10 flies per arena, via a fly-elimination step in experiments/flyllm.py
-# that is now disabled, so its inputs come out wider (380) than its checkpoint's
-# normalization (342). 'short' uses a 64-frame prompt; the others use 512.
+# does not appear there. 'rawkp' was trained and simulated with at most 10 flies per
+# arena: with use_raw_kp set, experiments/flyllm.py drops agent slot 10 and marks videos
+# with more than 10 flies invalid, so its track has 10 agent slots and its windows are a
+# subset of the others'. 'short' uses a 64-frame prompt; the others use 512.
 EXPERIMENTS = {
     'ref': (
         f"{BRANSONK_CODE_DIR}/flyllm/configs/config_fly_llm_predvel_optimalbinning_20251113.json",
@@ -1040,6 +1053,172 @@ def verify_window_prompts(gt_array: np.ndarray, windows: list[dict],
     return len(windows)
 
 
+def tracklet_contextl(window: dict) -> int:
+    """Return the prompt length in frames of one cached window, read from the file.
+
+    Args:
+        window: one entry from parse_windows().
+
+    Returns:
+        The number of real frames preceding the predictions in that window's tracklets,
+        i.e. the model's contextl.
+    """
+    return int(np.load(window['path'], mmap_mode='r').shape[1]) - window['sim_len']
+
+
+def long_runs(mask: np.ndarray, min_frames: int) -> np.ndarray:
+    """Keep only the runs of True longer than min_frames along the frame axis.
+
+    Args:
+        mask: (n_agents, n_frames) bool.
+        min_frames: a run is kept when it is strictly longer than this many frames.
+
+    Returns:
+        (n_agents, n_frames) bool, True inside the runs that are long enough.
+    """
+    kept = np.zeros_like(mask)
+    padded = np.zeros((mask.shape[0], mask.shape[1] + 2), dtype=bool)
+    padded[:, 1:-1] = mask
+    # +1 where a run starts, -1 one frame past where it ends, both in mask coordinates.
+    edges = np.diff(padded.astype(np.int8), axis=1)
+    for agent in range(mask.shape[0]):
+        starts = np.flatnonzero(edges[agent] > 0)
+        stops = np.flatnonzero(edges[agent] < 0)
+        for start, stop in zip(starts, stops):
+            if stop - start > min_frames:
+                kept[agent, start:stop] = True
+    return kept
+
+
+def walking_from_segment(segment: np.ndarray, pxpermm: float = WALK_PXPERMM) -> np.ndarray:
+    """Label walking frames in one window segment, as apf.evaluation.detect_walk does.
+
+    A fly is walking where the speed of keypoint WALK_KEYPOINT stays above
+    WALK_LOG_SPEED_THRESHOLD, in log pixels per frame, for more than WALK_MIN_BOUT_FRAMES
+    consecutive frames. Speed is that keypoint's frame-to-frame displacement; the first
+    frame of the segment has no predecessor and so is never walking.
+
+    The rule is applied to the whole segment, so a bout that begins in the real context
+    carries into the simulated stretch. A bout still running at the last frame is cut
+    there, and is dropped if the part inside the segment is too short. Frames where the
+    keypoint is missing are not walking.
+
+    Args:
+        segment: (n_agents, n_frames, 2, n_keypoints) float mm keypoints, as built by
+            window_segment().
+        pxpermm: pixels per mm, converting the mm track to the detector's units.
+
+    Returns:
+        (n_agents, n_frames) bool, True where that agent is walking.
+    """
+    positions = segment[:, :, :, WALK_KEYPOINT] * pxpermm    # (n_agents, n_frames, 2) px
+    speed = np.zeros(segment.shape[:2])                      # (n_agents, n_frames) px/frame
+    speed[:, 1:] = np.linalg.norm(np.diff(positions, axis=1), axis=2)
+    with np.errstate(invalid='ignore'):   # missing keypoints give NaN, which is not fast
+        fast = np.log(np.abs(speed) + WALK_SPEED_EPSILON) > WALK_LOG_SPEED_THRESHOLD
+    return long_runs(fast, WALK_MIN_BOUT_FRAMES)
+
+
+def walk_windows(gt_array: np.ndarray, windows: list[dict], score_contextl: int, *,
+                 simulated: bool, pxpermm: float = WALK_PXPERMM) -> dict:
+    """Run the walking detector over every cached window, ground truth or simulated.
+
+    Mirrors score_windows: each window is handled as its own segment, score_contextl real
+    frames followed by the simulated stretch, and only the simulated stretch is recorded.
+    Scoring walking here rather than over the whole track keeps it on exactly the frames
+    the JAABA classifiers scored, so the two can be put in one table.
+
+    Args:
+        gt_array: (n_agents, n_frames, 2, n_keypoints) float mm ground-truth keypoints.
+        windows: entries from parse_windows() that fit inside the track.
+        score_contextl: real frames before each first simulated frame (SCORE_CONTEXTL).
+        simulated: True to substitute the cached predictions, False for ground truth.
+        pxpermm: pixels per mm for the walking detector.
+
+    Returns:
+        dict with (n_agents, n_frames) arrays 'behavior' (1.0 where walking, else 0.0) and
+        'scored' (bool, True where the agent has a tracked keypoint in a window).
+    """
+    n_agents, n_frames = gt_array.shape[:2]
+    behavior = np.zeros((n_agents, n_frames), dtype=np.float32)
+    scored = np.zeros((n_agents, n_frames), dtype=bool)
+    for window in windows:
+        tracklets = np.load(window['path']) if simulated else None
+        segment = window_segment(gt_array, window, score_contextl, tracklets)
+        walking = walking_from_segment(segment, pxpermm=pxpermm)
+        start = window['start_frame']
+        stop = start + window['sim_len']
+        behavior[:, start:stop] = walking[:, score_contextl:]
+        scored[:, start:stop] = ~np.isnan(segment[:, score_contextl:, 0, WALK_KEYPOINT])
+    return {'behavior': behavior, 'scored': scored}
+
+
+def _walk(nicknames: list[str], out_dir: str, reference: str = 'ref') -> None:
+    """Detect walking on the cached windows of one or more experiments.
+
+    The ground-truth keypoint track is the same data for every experiment, so it is loaded
+    once, from the reference experiment, and reused: the real side of each window is a
+    slice of it and the simulated side comes from that experiment's cached window files.
+    Every experiment's prompts are checked against this track, which fails loudly if that
+    assumption does not hold for some experiment.
+
+    Args:
+        nicknames: experiments to process, keys of EXPERIMENTS.
+        out_dir: directory for jaaba_walk_<nickname>.npz.
+        reference: experiment whose ground truth is loaded, normally 'ref'.
+
+    Side effects:
+        Writes one jaaba_walk_<nickname>.npz per experiment, holding (n_agents, n_frames)
+        arrays sim_frame, {gt,sim}_behavior_walking and {gt,sim}_scored_walking, matching
+        the arrays in the jaaba_scores files. Loading the ground truth needs ~100 GB.
+    """
+    ground_truth = load_ground_truth(*EXPERIMENTS[reference])
+    track = ground_truth['track']
+    n_agents, n_frames = track.array.shape[:2]
+    print(f"ground truth from {reference}: track {track.array.shape}", flush=True)
+
+    for nickname in nicknames:
+        savedir = sim_dir(*EXPERIMENTS[nickname])
+        windows = parse_windows(savedir)
+        # The prompt length is read off a cached tracklet rather than the config, since
+        # only the file itself says how many real frames precede its predictions.
+        contextl = tracklet_contextl(windows[0])
+        print(f"=== {nickname} (prompt {contextl} frames) ===", flush=True)
+
+        windows = usable_windows(windows, n_agents, n_frames,
+                                 max(contextl, SCORE_CONTEXTL))
+        print(f"  {len(windows)} usable windows of {len(parse_windows(savedir))}",
+              flush=True)
+        started = time.time()
+        print(f"  verified {verify_window_prompts(track.array, windows, contextl)} prompts "
+              f"against the {reference} ground truth in {time.time() - started:.1f}s",
+              flush=True)
+
+        sim_frame = np.zeros((n_agents, n_frames), dtype=np.float32)
+        for window in windows:
+            stop = window['start_frame'] + window['sim_len']
+            sim_frame[window['agents'], window['start_frame']:stop] = (
+                np.arange(window['sim_len'], dtype=np.float32) + 1)[None, :]
+
+        arrays = {'sim_frame': sim_frame}
+        for label, simulated in (('gt', False), ('sim', True)):
+            started = time.time()
+            result = walk_windows(track.array, windows, SCORE_CONTEXTL,
+                                  simulated=simulated)
+            positive = int((result['behavior'] > 0).sum())
+            total = int(result['scored'].sum())
+            print(f"    walking {label:<4} {time.time() - started:6.1f}s  "
+                  f"{positive}/{total} frames positive "
+                  f"({100.0 * positive / max(total, 1):.3f}%)", flush=True)
+            arrays[f"{label}_behavior_walking"] = result['behavior']
+            arrays[f"{label}_scored_walking"] = result['scored']
+
+        os.makedirs(out_dir, exist_ok=True)
+        outpath = os.path.join(out_dir, f"jaaba_walk_{nickname}.npz")
+        np.savez_compressed(outpath, **arrays)
+        print(f"  wrote {outpath}", flush=True)
+
+
 def _describe(nickname: str) -> None:
     """Load one experiment's ground truth and simulations and print a summary."""
     configfile, modelfile = EXPERIMENTS[nickname]
@@ -1097,6 +1276,15 @@ def main() -> None:
     score.add_argument('--out-dir', default=RESULTS_PARENT_DIR,
                        help=f"output directory (default {RESULTS_PARENT_DIR})")
 
+    walk = subparsers.add_parser(
+        'walk', help="detect walking on the same windows the classifiers scored")
+    walk.add_argument('nicknames', nargs='+', choices=sorted(EXPERIMENTS), metavar='MODEL',
+                      help="experiments to process; one ground-truth load serves all")
+    walk.add_argument('--reference', default='ref', choices=sorted(EXPERIMENTS),
+                      help="experiment whose ground-truth track is loaded (default ref)")
+    walk.add_argument('--out-dir', default=RESULTS_PARENT_DIR,
+                      help=f"output directory (default {RESULTS_PARENT_DIR})")
+
     validate = subparsers.add_parser(
         'validate',
         help="score the real track and compare against the dataset's own annotations")
@@ -1120,6 +1308,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == 'describe':
         _describe(args.nickname)
+    elif args.command == 'walk':
+        _walk(args.nicknames, args.out_dir, reference=args.reference)
     elif args.command == 'validate':
         _validate(args.nickname, args.max_blocks, args.classifiers, args.splits,
                   args.workers, all_keypoints=args.all_keypoints)
