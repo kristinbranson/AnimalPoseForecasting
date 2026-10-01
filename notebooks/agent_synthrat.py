@@ -35,6 +35,7 @@
 # %matplotlib inline
 
 import os
+import pickle
 import time
 import logging
 
@@ -48,12 +49,13 @@ import tqdm.auto as tqdm
 import apf.dataset
 import apf.models
 import apf.utils as utils
-from apf.io import read_config, get_modeltype_str, save_model, load_model, parse_modelfile
+from apf.io import get_modeltype_str, save_model, load_model, parse_modelfile
 from apf.models import initialize_model, initialize_loss
 from apf.training import train, init_optimizer
 
 import experiments.synthrat as synthrat_exp
-from synthrat.config import read_config_kwargs, DEFAULTCONFIGFILE
+from synthrat import generate_data
+from synthrat.config import read_config, DEFAULTCONFIGFILE
 from synthrat.sensory import rehydrate_data
 from synthrat.plotting import plot_episode
 
@@ -88,7 +90,7 @@ if outfigdir is not None and not os.path.exists(outfigdir):
 # ## Load config and set up run state
 
 # %%
-config = read_config(configfile, **read_config_kwargs)
+config = read_config(configfile)
 config['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 np.random.seed(config['numpy_seed'])
@@ -374,6 +376,59 @@ fig.suptitle('Forecast trajectories', fontsize=16)
 if outfigdir is not None:
     fig.savefig(os.path.join(outfigdir, f'synthrat_pred_traj_{timestamp}.png'), dpi=300)
     fig.savefig(os.path.join(outfigdir, f'synthrat_pred_traj_{timestamp}.pdf'), dpi=300)
+plt.show()
+
+
+# %% [markdown]
+# ## Compare against the policy that generated the data
+#
+# The same plot for the original RatInABox value-function policy: from each episode's
+# burn-in, run it `nsamples` times and draw where it goes. This is the reference the
+# model's rollouts should be judged against — it shows how much of the spread above is
+# the policy's own stochasticity rather than the model's error.
+#
+# The policy needs the place cells and value neuron, which the dataset cache does not
+# keep, so they are rebuilt from the raw validation pickle.
+
+# %%
+with open(config['invalfile'], 'rb') as f:
+    val_state = pickle.load(f)
+policy = generate_data.rehydrate_policy(val_state)
+print(f"rebuilt policy: {sorted(k for k in policy if policy[k] is not None)}")
+
+# %%
+# Seeds are spaced per episode so no two episodes share a sample seed.
+RATINABOX_BASE_SEED = 1000
+SEED_STRIDE_PER_EPISODE = 10000
+
+pred_pose_ratinabox = []
+with tqdm.tqdm(total=nepisodes) as pbar:
+    for epi in range(nepisodes):
+        t0 = idxstart[epi] + val_dataset.context_length
+        t1 = idxstart[epi + 1]
+        # The burn-in is the context the model also saw, [t0 - contextl, t0).
+        burn_in_pose = val_data['pose'].array[agentspred[0],
+                                              t0 - val_dataset.context_length:t0]
+        samples = generate_data.run_policy_from_burn_in(
+            policy, burn_in_pose=burn_in_pose,
+            n_frames=gt_pose[epi].shape[1] - burn_in_pose.shape[0],
+            n_samples=nsamples,
+            base_seed=RATINABOX_BASE_SEED + SEED_STRIDE_PER_EPISODE * epi)
+        # plot_example_episode_samples indexes [episode][sample][agent].
+        pred_pose_ratinabox.append([sample[None, ...] for sample in samples])
+        pbar.update(1)
+
+for epi in range(nepisodes):
+    lengths = {sample.shape[1] for sample in pred_pose_ratinabox[epi]}
+    assert lengths == {gt_pose[epi].shape[1]}, \
+        f'episode {epi}: policy samples are {lengths} frames, ground truth is {gt_pose[epi].shape[1]}'
+
+# %%
+fig, ax = plot_example_episode_samples(pred_pose_ratinabox, gt_pose)
+fig.suptitle('RatInABox trajectories from the same initial conditions', fontsize=16)
+if outfigdir is not None:
+    fig.savefig(os.path.join(outfigdir, f'synthrat_ratinabox_traj_{timestamp}.png'), dpi=300)
+    fig.savefig(os.path.join(outfigdir, f'synthrat_ratinabox_traj_{timestamp}.pdf'), dpi=300)
 plt.show()
 
 

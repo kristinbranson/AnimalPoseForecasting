@@ -1,14 +1,14 @@
 {
     
-    "datadir": "/groups/branson/home/bransonk/behavioranalysis/code/AnimalPoseForecasting/synthrat/data",
-    "_comment_datadir": "parent directory of data",
+    "datadir": "synthrat/data",
+    "_comment_datadir": "where the generated trajectories live; a relative path is resolved against the repository by synthrat.config.read_config",
     
     "_comment_trainfilestr": "names of files containing training and validation data",
     "intrainfilestr": "ratinabox_rl_traindata_20260423.pkl",
     "invalfilestr": "ratinabox_rl_valdata_20260423.pkl",
 
     "_comment_savedir": "where to save output",
-    "savedir": "synthrat_models",
+    "savedir": "synthrat/models",
 
     "_comment_savedir": "how often to save trained models",
     "save_epoch": 5,

@@ -575,3 +575,80 @@ def rect_polar_grid(distance_range, angle_range, n_angles,
     sigma_d     = (dd * dtheta).ravel()                 # tangential, ring-touching
     sigma_theta = (resolutions[:, None] / dd).ravel()   # radial, Hartley-touching
     return mu_d, mu_theta, sigma_d, sigma_theta
+
+
+def rehydrate_placecells(Ag, pc_info):
+    """Reconstruct a `PlaceCells` population from the dict saved by
+    `get_placecell_info`.
+
+    Forwards any key that is a valid PlaceCells params key (walking the
+    full class inheritance via `ratinabox.utils.collect_all_params`), then
+    restores `place_cell_widths` exactly (bypassing the `widths * ones(n)`
+    derivation in `__init__`) and any custom attributes like
+    `episode_end_time`.
+
+    Parameters
+    ----------
+    Ag : ratinabox Agent
+        The agent this population attaches to.
+    pc_info : dict
+        Produced by `get_placecell_info`. `widths` is expected to hold the
+        live per-cell widths array (as `get_placecell_info` stores it).
+
+    Returns
+    -------
+    pc : the reconstructed PlaceCells.
+    """
+    valid_keys = set(ratinabox.utils.collect_all_params(
+        ratinabox.PlaceCells
+    ).keys())
+    params = {k: v for k, v in pc_info.items() if k in valid_keys}
+    pc = ratinabox.PlaceCells(Ag, params=params)
+
+    # Ensure per-cell widths exactly match the saved array (not just
+    # element-wise equal via `widths * np.ones(n)` inside __init__).
+    if "widths" in pc_info:
+        pc.place_cell_widths = np.asarray(pc_info["widths"]).copy()
+
+    # Restore custom (non-params) attributes:
+    if "episode_end_time" in pc_info:
+        pc.episode_end_time = pc_info["episode_end_time"]
+
+    return pc
+
+
+def rehydrate_value_neuron(Ag, valneur_info, input_layers):
+    """Reconstruct a `ValueNeuron` from a `get_value_neuron_info` snapshot.
+
+    Parameters
+    ----------
+    Ag : ratinabox Agent
+        The (already rehydrated or live) agent this ValueNeuron attaches to.
+    valneur_info : dict
+        Produced by `get_value_neuron_info`.
+    input_layers : list of ratinabox Neurons
+        The input populations this ValueNeuron sums over. Must be live
+        objects (e.g. your rehydrated Inputs). Order and names should
+        match the snapshot's `valneur_info["inputs"]` dict keys; weights
+        are restored by name.
+
+    Returns
+    -------
+    ValNeur : the reconstructed ValueNeuron with learned weights restored.
+    """
+    VN_cls = ratinabox.contribs.ValueNeuron
+    valid_keys = set(ratinabox.utils.collect_all_params(VN_cls).keys())
+    params = {k: v for k, v in valneur_info.items()
+              if k in valid_keys and k != "input_layers"}
+    params["input_layers"] = input_layers
+    ValNeur = VN_cls(Ag, params=params)
+
+    # Restore learned weights by layer name.
+    for name, saved in valneur_info.get("inputs", {}).items():
+        if name in ValNeur.inputs:
+            ValNeur.inputs[name]["w"] = np.asarray(saved["w"]).copy()
+
+    if "max_value" in valneur_info:
+        ValNeur.max_value = valneur_info["max_value"]
+
+    return ValNeur

@@ -140,7 +140,12 @@ dmypy.json
 flyllm/.playfmfrc.mat
 
 # Trained model checkpoints. Large (multi-GB each) and reproducible from configs.
-notebooks/synthrat_models/
+synthrat/models
+
+# Generated trajectories and the quality-control figures drawn from them. Both are
+# reproducible with synthrat/generate_data.py and synthrat/inspect_synthrat_data.py.
+synthrat/data
+synthrat/figs
 
 # Full-resolution animated gifs, too large for GitHub's 100 MB per-file limit.
 # The downscaled versions used in the README are tracked.
