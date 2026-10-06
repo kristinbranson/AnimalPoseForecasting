@@ -50,15 +50,14 @@ import matplotlib.pyplot as plt
 from dataclasses import dataclass
 import tqdm.auto as tqdm
 
-import ratinabox.utils
 
 import apf.dataset
 import apf.models
 import apf.utils
 
 from synthrat.sensory import (
-    compute_sensory, get_all_feature_names, rehydrate_agent, rehydrate_env,
-    rehydrate_sensory,
+    ORIENTATION_CONVENTION, compute_sensory, get_all_feature_names, head_direction_from_orientation,
+    orientation_from_head_direction, rehydrate_agent, rehydrate_env, rehydrate_sensory,
 )
 from synthrat.plotting import visualize_sensory
 
@@ -83,7 +82,8 @@ class Sensory(apf.dataset.Operation):
         """ Computes sensory features from keypoints.
 
         Args:
-            X: (x, y, orientation, vel_x, vel_y) position of the agents, (n_agents,  n_frames, 5) float array
+            X: (x, y, orientation, vel_x, vel_y) position of the agents, (n_agents,  n_frames, 5) float array.
+                Orientation follows the fly convention, heading - pi/2 (see synthrat.sensory.ORIENTATION_OFFSET).
             isdata: indicates whether there is data for a given frame or agent, only used to speed up computation, 
             (n_frames, n_agents) bool array
 
@@ -112,14 +112,14 @@ class Sensory(apf.dataset.Operation):
         for ratid in range(X.shape[0]):
             if isdata is not None:
                 isdatacurr = isdata[ratid]
-                head_direction = np.stack([np.cos(X[ratid,isdatacurr,2]), np.sin(X[ratid,isdatacurr,2])], axis=-1)
+                head_direction = head_direction_from_orientation(X[ratid,isdatacurr,2])
                 track = {
                     'pos': X[ratid,isdatacurr,0:2],
                     'head_direction': head_direction
                 }
             else:
                 isdatacurr = None
-                head_direction = np.stack([np.cos(X[ratid,:,2]), np.sin(X[ratid,:,2])], axis=-1)
+                head_direction = head_direction_from_orientation(X[ratid,:,2])
                 track = {
                     'pos': X[ratid,:,0:2],
                     'head_direction': head_direction
@@ -249,7 +249,8 @@ def make_dataset(
     isstart[np.cumsum(episode_lengths)[:-1]] = True
     pos = np.concatenate([ep['pos'] for ep in data['track']], axis=0)
     head_direction = np.concatenate([ep['head_direction'] for ep in data['track']], axis=0)
-    orientation = apf.utils.modrange(ratinabox.utils.get_angle(head_direction,is_array=True),-np.pi, np.pi)
+    # fly convention (heading - pi/2), so that GlobalVelocity's first feature is forward movement
+    orientation = orientation_from_head_direction(head_direction)
     # vel can be computed from np.diff(pos,axis=0)/dt, except for first time point
     vel = np.concatenate([ep['vel'] for ep in data['track']], axis=0)
     X = np.concatenate([pos,orientation[:,None]],axis=-1)
@@ -667,6 +668,33 @@ def make_dataset_cache_wrapper(input_file, config, debug_uselessdata=False):
     if not debug_uselessdata:
         save_cache(cache_path, data)
     return dataset, data, ratinabox_info
+
+
+def check_orientation_convention(checkpoint: dict) -> None:
+    """Refuses a saved synthrat model trained with a different orientation convention.
+
+    Synthrat orientation follows the fly convention (heading - pi/2; synthrat.sensory), so the
+    velocity features are (forward, sideways, turn). Models trained before that convention was
+    adopted used orientation = heading, which puts lateral movement in feature 0 and forward
+    movement in feature 1; with the current code such a model would receive inputs and predict
+    labels in a different order from the one it learned, without any error. Pass this function
+    as apf.io.load_model(..., check_state=check_orientation_convention).
+
+    Args:
+        checkpoint: dict loaded from a model file written by apf.io.save_model; its 'config'
+            entry is the config the model was trained with.
+
+    Raises:
+        ValueError: if the saved config's 'orientation_convention' is missing or differs from
+            synthrat.sensory.ORIENTATION_CONVENTION.
+    """
+    saved = (checkpoint.get('config') or {}).get('orientation_convention')
+    if saved != ORIENTATION_CONVENTION:
+        raise ValueError(
+            f"This synthrat model was trained with orientation convention {saved!r}, but the current "
+            f"code uses {ORIENTATION_CONVENTION!r} (orientation = heading - pi/2). Models saved before "
+            "the convention was adopted have none recorded; their velocity features 0 and 1 are "
+            "swapped relative to the current data, so the model must be retrained.")
 
 
 def simulate(

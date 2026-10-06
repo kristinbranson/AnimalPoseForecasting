@@ -879,6 +879,11 @@ def compute_sensory_wrapper(Xkp, flynum, theta_main=None, returnall=False, retur
         yeye_main = Xkp[kpeye, 1, :, flynum]
         
         Xkp_other = Xkp[:, :, :, idxother]
+        if Xkp_other.shape[-1] == 0:
+            # A fly alone: give it one untracked companion (NaN keypoints). Untracked flies count as
+            # infinitely far away, so its other-fly vision and touch features take their
+            # maximum-distance value.
+            Xkp_other = np.full(Xkp.shape[:-1] + (1,), np.nan)
         
         xtouch_main = Xkp[kptouch, 0, :, flynum]
         ytouch_main = Xkp[kptouch, 1, :, flynum]

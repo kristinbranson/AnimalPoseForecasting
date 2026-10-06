@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import ratinabox
 import ratinabox.utils
 
-from synthrat.sensory import CELL_VECTOR_CLASSES
+from synthrat.sensory import CELL_VECTOR_CLASSES, head_direction_from_orientation
 
 def plot_episode(track_curr,Env,axcurr=None,**kwargs):
     """Plot one episode's trajectory on top of the environment.
@@ -53,12 +53,11 @@ def plot_episode(track_curr,Env,axcurr=None,**kwargs):
         head_direction = track_curr['head_direction']
     elif hasattr(track_curr,'shape'):
         trajectory = track_curr[..., :2]
-        # last dim is an angle (radians); convert to a unit direction vector
-        # so downstream code (get_bearing) sees a consistent (T, 2) shape.
-        angle = track_curr[..., 2]
-        head_direction = np.stack([np.cos(angle), np.sin(angle)], axis=-1)
+        # last dim is the orientation (radians, fly convention); convert to a unit heading
+        # vector so downstream code (get_bearing) sees a consistent (T, 2) shape.
+        head_direction = head_direction_from_orientation(track_curr[..., 2])
     else:
-        raise ValueError("track_curr must be a dict with 'pos' and 'head_direction' keys, or an array with shape (..., 3) where the last dimension is (x, y, head_direction).")
+        raise ValueError("track_curr must be a dict with 'pos' and 'head_direction' keys, or an array with shape (..., 3) where the last dimension is (x, y, orientation).")
     _, _ = Env.plot_environment(fig=fig, ax=axcurr, autosave=False)
     htraj = axcurr.scatter(
         trajectory[:-1, 0],
@@ -292,8 +291,7 @@ def visualize_sensory(track_curr, sensory_curr, t, Env, Sensory, fig=None, ax=No
     else:
         track_curr = np.asarray(track_curr)
         pos = track_curr[..., :2]
-        angle = track_curr[..., 2]
-        head_dir = np.stack([np.cos(angle), np.sin(angle)], axis=-1)
+        head_dir = head_direction_from_orientation(track_curr[..., 2])   # theta is the orientation, fly convention
         vel = None
 
     # Split populations into "vector" (overlaid on trajectory) vs "other"

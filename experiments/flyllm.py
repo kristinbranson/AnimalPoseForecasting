@@ -41,12 +41,23 @@ class Sensory(Operation):
         """ Computes sensory features from keypoints.
 
         Args:
-            Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array
-            isdata: indicates whether there is data for a given frame or agent, only used to speed up computation, (n_frames, n_agents) bool array
+            Xkp: (x, y) position of the agents' keypoints, (n_agents, n_frames, 2, n_keypoints) float
+                array, or (n_frames, 2, n_keypoints) for a single agent, which is then alone in the arena:
+                its other-fly features take their maximum-distance value.
+            isdata: indicates whether there is data for a given frame or agent, only used to speed up computation,
+                (n_frames, n_agents) bool array, or (n_frames,) for a single agent
 
         Returns:
-            sensory_data: (n_agents,  n_frames, n_sensory_features) float array
+            sensory_data: (n_agents,  n_frames, n_sensory_features) float array, or (n_frames,
+                n_sensory_features) for a single agent
         """
+        ismultiagent = Xkp.ndim == 4
+        # Single agent: add an agent axis (to Xkp, and to isdata as an (n_frames, 1) column), compute,
+        # remove it at the end.
+        if not ismultiagent:
+            Xkp = Xkp[None, ...]                                 # (1, n_frames, 2, n_keypoints)
+            if isdata is not None:
+                isdata = np.asarray(isdata).reshape((-1, 1))
         feats = []
         for flyid in range(Xkp.shape[0]):
             if DOTIME:
@@ -60,7 +71,10 @@ class Sensory(Operation):
             if DOTIME:
                 LOG.info(f"Sensory computation for fly {flyid} took {utils.toc(start_time):.2f} seconds")
         self.idxinfo = idxinfo
-        return np.array(feats)
+        sensory_data = np.array(feats)                           # (n_agents, n_frames, n_sensory_features)
+        if not ismultiagent:
+            sensory_data = sensory_data[0]
+        return sensory_data
 
     def invert(self, sensory: np.ndarray) -> None:
         LOG.error(f"Operation {self} is not invertible")
@@ -71,46 +85,92 @@ class Sensory(Operation):
 class Pose(Operation):
     """ Computes fly pose from keypoints.
     Attributes:
-        scale_perfly: Scale of each unique individual in the data. (n_individuals, n_scales) float array
+        scale_perfly: Scale of each unique individual in the data. (n_scales, n_individuals) float array
     """
     localattrs = ['scale_perfly']
     scale_perfly: np.ndarray | None = None
+
+    @staticmethod
+    def _single_agent_per_frame(value, n_frames: int):
+        """ Puts a single agent's per-frame argument (flyid or isdata) in (n_frames, 1) form.
+
+        kp2feat and feat2kp take these as (n_frames, n_agents), with agents on the last axis.
+
+        Args:
+            value: None, a scalar (the same for every frame, e.g. one fly's identity), or an
+                (n_frames,) array.
+            n_frames: number of frames.
+
+        Returns:
+            None, or an (n_frames, 1) array.
+        """
+        if value is None:
+            return None
+        value = np.asarray(value)
+        if value.ndim == 0:
+            return np.full((n_frames, 1), value)
+        return value.reshape((n_frames, 1))
 
     def apply(self, Xkp: np.ndarray, scale_perfly: np.ndarray | None = None, flyid: np.ndarray | None = None, isdata: np.ndarray | None = None) -> np.ndarray:
         """ Computes pose features from keypoints.
 
         Args:
-            Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array or (n_frames, n_keypoints, 2) float array
-            scale_perfly: Scale of each unique individual in the data. (n_individuals, n_scales) float array or (n_scales,) float array
-            flyid: Identity of fly corresponding to Xkp, (n_frames, n_agents) int array or (n_frames,) int array
+            Xkp: (x, y) position of the agents' keypoints, (n_agents, n_frames, 2, n_keypoints) float
+                array, or (n_frames, 2, n_keypoints) for a single agent.
+            scale_perfly: Scale of each unique individual in the data. (n_scales, n_individuals) float array
+            flyid: Identity of the fly at each frame, (n_frames, n_agents) int array; for a single agent,
+                an (n_frames,) int array or one int.
+            isdata: Whether each frame has data, (n_frames, n_agents) bool array; for a single agent,
+                (n_frames,).
 
         Returns:
-            pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
+            pose: (n_agents, n_frames, n_pose_features) float array, or (n_frames, n_pose_features) for
+                a single agent.
         """
         if scale_perfly is not None:
             self.scale_perfly = scale_perfly
-        return kp2feat(Xkp=Xkp.T, scale_perfly=scale_perfly, flyid=flyid, isdata=isdata).T
+        ismultiagent = Xkp.ndim == 4
+        # Single agent: add an agent axis (to Xkp, and to flyid and isdata as (n_frames, 1)
+        # columns), compute, remove it at the end.
+        if not ismultiagent:
+            Xkp = Xkp[None, ...]                                 # (1, n_frames, 2, n_keypoints)
+            flyid = self._single_agent_per_frame(flyid, Xkp.shape[1])
+            isdata = self._single_agent_per_frame(isdata, Xkp.shape[1])
+        pose = kp2feat(Xkp=Xkp.T, scale_perfly=scale_perfly, flyid=flyid, isdata=isdata).T   # (n_agents, n_frames, n_pose_features)
+        if not ismultiagent:
+            pose = pose[0]
+        return pose
 
     def invert(self, pose: np.ndarray, flyid: np.ndarray | int = None):
         """ Computes keypoints from pose features.
 
         Args:
-            pose:  (n_agents,  n_frames, n_pose_features) float array
-            flyid: Identity of fly corresponding to pose.
-                If pose has a single agent, flyid is an int.
-                If it has multiple agents, it as a (n_frames, n_agents) int array.
+            pose: (n_agents, n_frames, n_pose_features) float array, or (n_frames, n_pose_features)
+                for a single agent.
+            flyid: Identity of the fly at each frame, (n_frames, n_agents) int array; for a single agent,
+                an (n_frames,) int array or one int.
 
         Returns:
-            Xkp: (x, y) pixel position of the agents, (n_agents,  n_frames, n_keypoints, 2) float array
+            Xkp: (x, y) position of the agents' keypoints, (n_agents, n_frames, 2, n_keypoints) float
+                array, or (n_frames, 2, n_keypoints) for a single agent.
         """
-        return feat2kp(pose.T, scale_perfly=self.scale_perfly, flyid=flyid).T
+        ismultiagent = pose.ndim == 3
+        # Single agent: add an agent axis (to pose, and to flyid as an (n_frames, 1) column),
+        # compute, remove it at the end.
+        if not ismultiagent:
+            pose = pose[None, ...]                               # (1, n_frames, n_pose_features)
+            flyid = self._single_agent_per_frame(flyid, pose.shape[1])
+        Xkp = feat2kp(pose.T, scale_perfly=self.scale_perfly, flyid=flyid).T   # (n_agents, n_frames, 2, n_keypoints)
+        if not ismultiagent:
+            Xkp = Xkp[0]
+        return Xkp
 
 
 def load_data(
         config: dict,
         filename: str,
         debug: bool = False
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """ Loads the data and computes scale per fly.
 
     Args:
@@ -119,12 +179,14 @@ def load_data(
         debug: Whether to use less data for debugging
 
     Returns:
-        X: (2, n_keypoints, n_frames, n_agents) float array
+        X: (x, y) keypoint positions, (n_keypoints, 2, n_frames, n_agents) float array
         flyids: Identity of fly individuals (n_frames, n_agents) int array
         isstart: indicates whether a new track starts at a give frame for each fly, (n_frames, n_agents) bool array
         isdata: indicates whether data should be used, (n_frames, n_agents) bool array
             Data can be unused because it is invalid (nans) or because it was filtered on fly type.
-        scale_perfly: Scale of each unique individual in the data. (n_individuals, n_scales) float array
+        scale_perfly: Scale of each unique individual in the data. (n_scales, n_individuals) float array
+        useoutputmask: whether each frame's output may be used for the loss, (n_frames, n_agents) bool
+            array. Frames are excluded when the fly is not in config['output_categories'].
     """
     data, scale_perfly = load_and_filter_data(
         filename,

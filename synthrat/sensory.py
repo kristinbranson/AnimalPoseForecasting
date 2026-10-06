@@ -38,6 +38,8 @@ import numpy as np
 import ratinabox
 import ratinabox.utils
 
+import apf.utils
+
 # NB: `ratinabox/__init__.py` does `from .Neurons import *`, `.Environment
 # import *`, `.Agent import *`, and `from . import contribs`. After that, at the
 # top level:
@@ -57,6 +59,44 @@ _CELL_TYPES = {
 }
 
 CELL_VECTOR_CLASSES = {"BoundaryVectorCells", "ObjectVectorCells", "FieldOfViewBVCs", "FieldOfViewOVCs"}
+
+# Orientation follows the fly convention used throughout APF: it is measured with the animal facing
+# +y in its own frame (flyllm.features.body_centric_kp rotates the thorax to point "up"), so
+# orientation = heading angle - pi/2. apf.dataset.GlobalVelocity relies on this to put forward
+# movement in its first feature (forward_velocity) and sideways movement in its second. RatInABox
+# instead records the heading as a unit vector, head_direction = (cos(heading), sin(heading)).
+ORIENTATION_OFFSET = np.pi / 2
+# Name of this convention. It is stored in the synthrat config (orientation_convention), so it is
+# saved with every trained model, and experiments.synthrat.check_orientation_convention refuses
+# models saved with any other value, including models from before the convention was adopted.
+ORIENTATION_CONVENTION = 'heading_minus_pi_over_2'
+
+
+def orientation_from_head_direction(head_direction: np.ndarray) -> np.ndarray:
+    """Converts RatInABox head-direction vectors to APF orientations (fly convention).
+
+    Args:
+        head_direction: (..., 2) float array of unit vectors (cos(heading), sin(heading)).
+
+    Returns:
+        orientation: (...,) float array, heading angle - ORIENTATION_OFFSET, in [-pi, pi), radians.
+    """
+    head_direction = np.asarray(head_direction)
+    heading = np.arctan2(head_direction[..., 1], head_direction[..., 0])
+    return apf.utils.modrange(heading - ORIENTATION_OFFSET, -np.pi, np.pi)
+
+
+def head_direction_from_orientation(orientation: np.ndarray) -> np.ndarray:
+    """Converts APF orientations (fly convention) to RatInABox head-direction vectors.
+
+    Args:
+        orientation: (...,) float array, radians (heading angle - ORIENTATION_OFFSET).
+
+    Returns:
+        head_direction: (..., 2) float array of unit vectors (cos(heading), sin(heading)).
+    """
+    heading = np.asarray(orientation) + ORIENTATION_OFFSET
+    return np.stack([np.cos(heading), np.sin(heading)], axis=-1)
 
 def rehydrate_env(env_info):
     """Reconstruct an `Environment` from the `env_info` dict saved alongside

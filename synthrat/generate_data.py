@@ -44,9 +44,9 @@ import tqdm.auto as tqdm
 
 import apf.utils
 
-from synthrat.sensory import (compute_sensory, init_sensory, rehydrate_agent,
-                              rehydrate_data, rehydrate_env, rehydrate_placecells,
-                              rehydrate_value_neuron)
+from synthrat.sensory import (compute_sensory, head_direction_from_orientation, init_sensory,
+                              orientation_from_head_direction, rehydrate_agent, rehydrate_data,
+                              rehydrate_env, rehydrate_placecells, rehydrate_value_neuron)
 
 # Set in each worker process by _init_worker and read by _run_one_episode, so the
 # rebuilt RatInABox objects are made once per worker rather than per episode.
@@ -626,15 +626,16 @@ def run_policy_from_burn_in(rehydrated: dict, burn_in_pose: np.ndarray, n_frames
         rehydrated: live objects from rehydrate_policy(): 'Ag', 'Inputs', 'Reward',
             'ValNeur'.
         burn_in_pose: (n_burn_in, 3) float (x, y, theta) of the frames to replay, in the
-            environment's units and radians.
+            environment's units and radians, with theta in the fly convention (heading - pi/2,
+            synthrat.sensory.ORIENTATION_OFFSET) used by the dataset poses.
         n_frames: frames to run after the burn-in.
         n_samples: independent continuations to run.
         base_seed: seed of the first sample; sample k uses base_seed + k.
         exploit_explore_ratio: how strongly the agent follows the value gradient.
 
     Returns:
-        A list of n_samples (n_burn_in + T, 3) float arrays of (x, y, theta), each
-        beginning with burn_in_pose so every sample and the ground truth align frame for
+        A list of n_samples (n_burn_in + T, 3) float arrays of (x, y, theta), theta in the
+        same convention as burn_in_pose, each beginning with burn_in_pose so every sample and the ground truth align frame for
         frame.
 
     Side effects:
@@ -648,8 +649,7 @@ def run_policy_from_burn_in(rehydrated: dict, burn_in_pose: np.ndarray, n_frames
     burn_in_pose = np.asarray(burn_in_pose, dtype=float)
     n_burn_in = burn_in_pose.shape[0]
     burn_in_positions = burn_in_pose[:, :2]
-    burn_in_head_direction = np.stack([np.cos(burn_in_pose[:, 2]),
-                                       np.sin(burn_in_pose[:, 2])], axis=1)
+    burn_in_head_direction = head_direction_from_orientation(burn_in_pose[:, 2])   # (n_burn_in, 2)
 
     # One repeated final frame, so the last burn-in update stays inside the imported
     # trajectory's time range and does not wrap around to its start.
@@ -694,7 +694,7 @@ def run_policy_from_burn_in(rehydrated: dict, burn_in_pose: np.ndarray, n_frames
 
             track, _ = collect_episode(agent, value_neuron, reward,
                                        framerate=1.0 / agent.dt)
-            theta = ratinabox.utils.get_angle(track['head_direction'], is_array=True)
+            theta = orientation_from_head_direction(track['head_direction'])
             pose = np.concatenate([track['pos'], theta[:, None]], axis=1)   # (T, 3)
             samples.append(np.vstack([burn_in_pose, pose]))
     finally:

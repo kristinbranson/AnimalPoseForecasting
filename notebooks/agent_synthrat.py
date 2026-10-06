@@ -56,7 +56,7 @@ from apf.training import train, init_optimizer
 import experiments.synthrat as synthrat_exp
 from synthrat import generate_data
 from synthrat.config import read_config, DEFAULTCONFIGFILE
-from synthrat.sensory import rehydrate_data
+from synthrat.sensory import head_direction_from_orientation, rehydrate_data
 from synthrat.plotting import plot_episode
 
 logging.basicConfig(level=logging.INFO)
@@ -155,12 +155,15 @@ optimizer, lr_scheduler = init_optimizer(num_training_steps, model, config['opti
 
 if loadmodelfile is not None:
     modeltype_str, savetime = parse_modelfile(loadmodelfile)
-    loss_epoch = load_model(loadmodelfile, model, device)
+    # refuses models trained before synthrat adopted the fly orientation convention
+    loss_epoch = load_model(loadmodelfile, model, device,
+                            check_state=synthrat_exp.check_orientation_convention)
     epoch = config['num_train_epochs']
 elif restartmodelfile is not None:
     savetime = timestamp
     loss_epoch = load_model(restartmodelfile, model, device,
-                            lr_optimizer=optimizer, scheduler=lr_scheduler)
+                            lr_optimizer=optimizer, scheduler=lr_scheduler,
+                            check_state=synthrat_exp.check_orientation_convention)
     epoch = int(np.sum(~np.isnan(loss_epoch['train'].cpu().numpy())))
 else:
     savetime = timestamp
@@ -458,14 +461,14 @@ def make_episode_animation(pred_pose, gt_pose, out):
         dot = ax.scatter([pose0[0, 0]], [pose0[0, 1]], s=60,
                          c=color_per_sample[samplei], alpha=0.9, zorder=4, linewidth=0)
         pred_dots.append(dot)
-        head = ax.quiver(pose0[0, 0], pose0[0, 1], np.cos(pose0[0, 2]), np.sin(pose0[0, 2]),
+        head = ax.quiver(pose0[0, 0], pose0[0, 1], *head_direction_from_orientation(pose0[0, 2]),
                          color=color_per_sample[samplei], alpha=0.9, zorder=4,
                          scale=15, width=0.008)
         pred_headings.append(head)
 
     gt_scatter = ax.scatter([], [], s=15, alpha=1, c='k', linewidth=0)
     gt_dot = ax.scatter([gt_traj[0, 0]], [gt_traj[0, 1]], s=80, c='C3', zorder=5, linewidth=0)
-    gt_heading = ax.quiver(gt_traj[0, 0], gt_traj[0, 1], np.cos(gt_traj[0, 2]), np.sin(gt_traj[0, 2]),
+    gt_heading = ax.quiver(gt_traj[0, 0], gt_traj[0, 1], *head_direction_from_orientation(gt_traj[0, 2]),
                            color='C3', zorder=5, scale=15, width=0.012)
 
     def update(t):
@@ -476,12 +479,12 @@ def make_episode_animation(pred_pose, gt_pose, out):
             pred_scatters[samplei].set_array(np.arange(t + 1))
             pred_dots[samplei].set_offsets(pose[t:t + 1, :2])
             pred_headings[samplei].set_offsets(pose[t:t + 1, :2])
-            pred_headings[samplei].set_UVC(np.cos(pose[t, 2]), np.sin(pose[t, 2]))
+            pred_headings[samplei].set_UVC(*head_direction_from_orientation(pose[t, 2]))
             artists.extend([pred_scatters[samplei], pred_dots[samplei], pred_headings[samplei]])
         gt_scatter.set_offsets(gt_traj[:t + 1, :2])
         gt_dot.set_offsets(gt_traj[t:t + 1, :2])
         gt_heading.set_offsets(gt_traj[t:t + 1, :2])
-        gt_heading.set_UVC(np.cos(gt_traj[t, 2]), np.sin(gt_traj[t, 2]))
+        gt_heading.set_UVC(*head_direction_from_orientation(gt_traj[t, 2]))
         artists.extend([gt_scatter, gt_dot, gt_heading])
         return artists
 

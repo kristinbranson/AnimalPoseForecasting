@@ -10,6 +10,9 @@
     "_comment_savedir": "where to save output",
     "savedir": "synthrat/models",
 
+    "_comment_orientation_convention": "how pose orientation is defined; saved with every model, and loading a model saved with a different value (or none, as before the fly convention was adopted) raises an error. Must match synthrat.sensory.ORIENTATION_CONVENTION.",
+    "orientation_convention": "heading_minus_pi_over_2",
+
     "_comment_savedir": "how often to save trained models",
     "save_epoch": 5,
 

@@ -207,13 +207,16 @@ class Zscore(Operation):
 
         Args:
             data: (n_agents,  n_frames, n_features) float array
+            or (n_frames, n_features) float array
 
         Returns:
-            zscored: data with zero mean and std of 1, (n_agents,  n_frames, n_features) float array
+            zscored: data with zero mean and std of 1, same shape as data
         """
         if self.mean is None:
             self.compute(data)
-        return (data - self.mean[None, None, :]) / self.std[None, None, :]
+        # mean and std are (n_features,), so they broadcast over any leading axes, with or without an
+        # agent axis
+        return (data - self.mean) / self.std
 
     def invert(self, data: np.ndarray) -> np.ndarray:
         """ Applies the inverse zscoring to data.
@@ -567,22 +570,15 @@ class Fusion(Operation):
             fused: (n_agents,  n_frames, n_fused_features) float array or 
             (n_frames, n_fused_features) float array
         """
-        ismultiagent = data.ndim == 3
-        if not ismultiagent:
-            data = data[None, ...]
-
         if kwargs_per_op is None:
             kwargs_per_op = [{} for _ in self.operations]
-        elif ~isinstance(kwargs_per_op, list):
+        elif not isinstance(kwargs_per_op, list):
             kwargs_per_op = [kwargs_per_op for _ in self.operations]
+        # No agent axis is added here: each operation handles a single agent's array itself, on its
+        # data and on the per-agent arguments it knows about (e.g. isstart), so both are passed as given.
         processed = [op.apply(data[..., indices], **kwargs) for op, indices, kwargs in zip(self.operations, self.indices_per_op, kwargs_per_op)]
         self.dims_per_op = [proc.shape[-1] for proc in processed]
-        fused = np.concatenate(processed, axis=-1)
-        
-        if not ismultiagent:
-            fused = fused[0]
-
-        return fused
+        return np.concatenate(processed, axis=-1)
 
     def invert(self, data: np.ndarray, kwargs_per_op=None) -> np.ndarray:
         """ Inverts subsets of the processed data using the operation inverses.
@@ -595,27 +591,19 @@ class Fusion(Operation):
             unfused: (n_agents,  n_frames, n_features) float array
             or (n_frames, n_features) float array
         """
-        ismultiagent = data.ndim == 3
-        if not ismultiagent:
-            data = data[None, ...]
-            kwargs_per_op = [{k: v[None, ...] for k, v in kwargs.items()} for kwargs in kwargs_per_op] if kwargs_per_op is not None else None
-        
         if kwargs_per_op is None:
             kwargs_per_op = [{} for _ in self.operations]
         elif not isinstance(kwargs_per_op, list):
             kwargs_per_op = [kwargs_per_op for _ in self.operations]
-        n_agents, n_frames = data.shape[:2]
         n_feat = sum([len(indices) for indices in self.indices_per_op])
 
-        inverted = np.zeros((n_agents, n_frames, n_feat))
+        # As in apply, each operation handles a single agent itself (e.g. x0), so arguments are passed as given.
+        inverted = np.zeros(data.shape[:-1] + (n_feat,))          # (..., n_frames, n_features)
         count = 0
         for i, indices in enumerate(self.indices_per_op):
             n_dims = self.dims_per_op[i]
             inverted[..., indices] = self.operations[i].invert(data[..., count:count + n_dims], **kwargs_per_op[i])
             count += n_dims
-            
-        if not ismultiagent:
-            inverted = inverted[0]
 
         return inverted
     
@@ -725,7 +713,8 @@ class LocalVelocity(Operation):
         if not ismultiagent:
             pose = pose[None, ...]
             if isstart is not None:
-                isstart = isstart[None, ...]
+                # isstart keeps agents on its last axis, (n_frames, n_agents), as set_invalid_ends expects
+                isstart = isstart[:, None]
         
         pose_velocity = np.moveaxis(compute_relpose_velocity(pose.T, is_angle=self.is_angle), 2, 0)
         if isstart is not None:
@@ -796,7 +785,8 @@ class GlobalVelocity(Operation):
         if not ismultiagent:
             position = position[None, ...]
             if isstart is not None:
-                isstart = isstart[None, ...]
+                # isstart keeps agents on its last axis, (n_frames, n_agents), as set_invalid_ends expects
+                isstart = isstart[:, None]
         
         Xorigin = position[..., :2].T
         Xtheta = position[..., 2].T
@@ -896,28 +886,46 @@ class Velocity(Operation):
         Returns:
             velocity: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
-        return self.fusion.apply(pose, kwargs_per_op={'isstart': isstart})
+        ismultiagent = pose.ndim == 3
+        # Single agent: add an agent axis (to isstart on its last axis), compute, remove it at the end.
+        if not ismultiagent:
+            pose = pose[None, ...]                               # (1, n_frames, n_pose_features)
+            if isstart is not None:
+                isstart = isstart[:, None]                       # (n_frames, 1)
+        velocity = self.fusion.apply(pose, kwargs_per_op={'isstart': isstart})
+        if not ismultiagent:
+            velocity = velocity[0]
+        return velocity
 
     def invert(self, velocity: np.ndarray, x0: np.ndarray | None = None):
         """ Compute pose from pose velocity and an initial pose.
 
         Args:
             velocity: Delta pose (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
-            x0: Initial pose (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
+            x0: Initial pose, (n_agents, n_pose_features) float array or (n_pose_features,) for a single
+                agent. A pose for every frame, (n_agents, n_frames, n_pose_features) or (n_frames,
+                n_pose_features), is also accepted; then each agent's first frame is used.
 
         Returns:
             pose: (n_agents,  n_frames, n_pose_features) float array or (n_frames, n_pose_features) float array
         """
+        ismultiagent = velocity.ndim == 3
+        # Single agent: add an agent axis (to velocity and x0), compute, remove it at the end.
+        if not ismultiagent:
+            velocity = velocity[None, ...]                       # (1, n_frames, n_pose_features)
+            if x0 is not None:
+                x0 = x0[None, ...]                               # (1, [n_frames,] n_pose_features)
         if x0 is not None:
-            
-            # if has a value for every frame, just take the first frame
+            # a pose for every frame: use each agent's first frame
             if x0.ndim == velocity.ndim:
-                x0 = x0[0]
-            
+                x0 = x0[:, 0]                                    # (n_agents, n_pose_features)
             kwargs_per_op = [{'x0': x0[..., self.global_inds]}, {'x0': x0[..., self.local_inds]}]
         else:
             kwargs_per_op = None
-        return self.fusion.invert(velocity, kwargs_per_op)
+        pose = self.fusion.invert(velocity, kwargs_per_op)
+        if not ismultiagent:
+            pose = pose[0]
+        return pose
 
 
 @dataclass(frozen=True)
@@ -1283,13 +1291,18 @@ def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict[str, Data]) ->
     This is useful for building a validation set from a training set, or for applying operations with the right
     parameters to data during simulation.
 
-    Which operations still need applying is determined from the last operation already
-    applied to each entry of datas, so the dict key does not need to match the name of the
-    operation that produced it.
+    Which operations still need applying depends on what each entry of datas records:
+    - Data object with operations: everything after the last operation it has already had applied,
+      so the dict key does not need to match the name of the operation that produced it.
+    - Data object with no operations: every reference operation.
+    - Raw np.ndarray / torch.Tensor: everything after the operation named by the dict key,
+      since a raw array records nothing about how it was made. apf/simulation.py relies on
+      this, passing already-computed velocity, pose and sensory arrays under those keys.
+    If the operation is not found in the reference, all reference operations are applied.
 
     Params:
         datas_ref: Dictionary of data (e.g. train_dataset.inputs) from which to copy post processing operations.
-        datas: Dictionary of raw data to which post processing operations should be applied to.
+        datas: Dictionary of Data or raw arrays to which post processing operations should be applied.
 
     Returns:
         Post processed datas.
@@ -1298,23 +1311,24 @@ def apply_opers_from_data(datas_ref: dict[str, Data], datas: dict[str, Data]) ->
     processed_data = {}
     for key in datas_ref.keys():
         assert key in datas, "Expect both data to have all of the same keys"
-        # Resolve the operation suffix from the last operation already applied to the
-        # incoming data, rather than from the dict key. The key only matches the
-        # operation name by convention (e.g. Velocity under 'velocity'); an operation
-        # such as GlobalVelocity under a 'velocity' key would otherwise not be found,
-        # and the whole chain would be re-applied to already-processed data.
-        if isinstance(datas[key], (np.ndarray, torch.Tensor)) or not datas[key].operations:
-            # Nothing applied yet, so every reference operation still needs applying.
-            opers = datas_ref[key].operations
+        operations_ref = datas_ref[key].operations
+        # Name of the last operation already applied to datas[key], or None if none has been.
+        if isinstance(datas[key], (np.ndarray, torch.Tensor)):
+            # key names the last operation applied
+            last_applied = key
+        elif datas[key].operations:
+            # Use the recorded operation
+            last_applied = datas[key].operations[-1].name
         else:
-            _, idx = get_operation(datas_ref[key].operations,
-                                   datas[key].operations[-1].name, return_idx=True)
-            if idx is None:
-                LOG.warning(f"Did not find operation '{datas[key].operations[-1].name}' "
-                            f"for '{key}', applying all operations")
-                opers = datas_ref[key].operations
-            else:
-                opers = datas_ref[key].operations[idx + 1:]
+            last_applied = None
+
+        if last_applied is None:
+            opers = operations_ref
+        else:
+            opers = get_post_operations(operations_ref, last_applied)
+            if opers is None:
+                LOG.warning(f"Did not find operation '{last_applied}' for '{key}', applying all operations")
+                opers = operations_ref
         processed_data[key] = apply_operations(datas[key], opers)
     return processed_data
 

@@ -52,9 +52,26 @@ def modernize_model_file(loadfile,dataset,config,device):
     return state    
     
 
-def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, config=None):
+def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, config=None, check_state=None):
+    """Restores a model, and optionally its optimizer, scheduler and config, from a saved checkpoint.
+
+    Args:
+        loadfile: path to a checkpoint written by save_model.
+        model: torch module to load the weights into, or None to skip.
+        device: torch device to map the saved tensors to.
+        lr_optimizer, scheduler: optional optimizer and learning-rate scheduler to restore.
+        config: optional config dict, updated in place from the config saved with the model.
+        check_state: optional function called with the loaded checkpoint dict before anything is
+            restored; it should raise if the checkpoint must not be used (e.g. it was trained
+            with a different data convention).
+
+    Returns:
+        loss: dict with 'train' and 'val' loss histories saved with the model, or None entries.
+    """
     LOG.info(f'Loading model from file {loadfile}...')
     state = torch.load(loadfile, map_location=device, weights_only=False)
+    if check_state is not None:
+        check_state(state)
     if model is not None:
         model.load_state_dict(state['model'])
     if lr_optimizer is not None and ('lr_optimizer' in state):
@@ -436,15 +453,17 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
     if DOTIME:
         LOG.info(f"data condensing took {toc(start_time):.2f} seconds")
 
+    # Some data files carry extra keypoints after the ones the code uses (the v3 files append the
+    # outer wing points). Drop them, so that keypoints rebuilt from pose (19, from feat2kp) can be
+    # written back into the same arrays, as simulation does.
+    if keypointnames is not None and len(keypointnames) < data['X'].shape[0]:
+        n_kpts = len(keypointnames)
+        LOG.warning(f"Removing last {data['X'].shape[0] - n_kpts} keypoints from the data")
+        data['X'] = data['X'][:n_kpts]
+
     # augment by flipping
     if 'augment_flip' in config and config['augment_flip']:
         assert keypointnames is not None, "Need keypointnames to perform flip augmentation"
-
-        # there are some extra keypoints added, remove them to match keypointnames
-        n_kpts = len(keypointnames)
-        if n_kpts < data['X'].shape[0]:
-            LOG.warning(f"Removing last {data['X'].shape[0] - n_kpts} keypoints from the data")
-            data['X'] = data['X'][:n_kpts]
 
         LOG.info('augmenting data by flipping...')
         if DOTIME:
