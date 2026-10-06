@@ -150,4 +150,5 @@ synthrat/figs
 # Full-resolution animated gifs, too large for GitHub's 100 MB per-file limit.
 # The downscaled versions used in the README are tracked.
 images/*.gif
-!images/*_640p.gif
+!images/simulation_samples_*.gif
+!images/male_female_*.gif

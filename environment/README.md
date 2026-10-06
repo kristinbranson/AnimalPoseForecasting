@@ -12,6 +12,7 @@
 ## 20251124
 
 Updated to torch 2.9.1 and python 3.13
+
 # RatInABox (synthrat experiment only)
 
 The synthetic-rat code (`synthrat/`, `experiments/synthrat.py`) needs a patched
