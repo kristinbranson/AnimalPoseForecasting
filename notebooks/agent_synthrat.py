@@ -158,17 +158,16 @@ if loadmodelfile is not None:
     # refuses models trained before synthrat adopted the fly orientation convention
     loss_epoch = load_model(loadmodelfile, model, device,
                             check_state=synthrat_exp.check_orientation_convention)
-    epoch = config['num_train_epochs']
 elif restartmodelfile is not None:
     savetime = timestamp
     loss_epoch = load_model(restartmodelfile, model, device,
                             lr_optimizer=optimizer, scheduler=lr_scheduler,
                             check_state=synthrat_exp.check_orientation_convention)
-    epoch = int(np.sum(~np.isnan(loss_epoch['train'].cpu().numpy())))
 else:
     savetime = timestamp
     loss_epoch = initialize_loss(train_dataset, config)
-    epoch = 0
+# epochs trained so far: the filled-in entries of the loss history (untrained epochs are NaN)
+epoch = int(np.sum(~np.isnan(loss_epoch['train'].cpu().numpy())))
 
 savefilestr = os.path.join(config['savedir'], f'synthrat_{modeltype_str}_{savetime}')
 os.makedirs(config['savedir'], exist_ok=True)
@@ -305,7 +304,8 @@ fig.tight_layout()
 plt.show()
 
 if loss_epoch.get('val') is not None:
-    best = int(torch.argmin(loss_epoch['val']).item())
+    # epochs not (yet) trained are NaN in the loss history, so skip them
+    best = int(np.nanargmin(loss_epoch['val'].cpu().numpy()))
     print(f'best val loss {loss_epoch["val"][best].item():.4f} at epoch {best}')
 
 # %%
@@ -409,9 +409,10 @@ with tqdm.tqdm(total=nepisodes) as pbar:
     for epi in range(nepisodes):
         t0 = idxstart[epi] + val_dataset.context_length
         t1 = idxstart[epi + 1]
-        # The burn-in is the context the model also saw, [t0 - contextl, t0).
+        # The burn-in is the context the model also saw: simulate's ground truth starts at
+        # start_frame=t0 and its first context_length frames, [t0, t0 + contextl), are the burn-in.
         burn_in_pose = val_data['pose'].array[agentspred[0],
-                                              t0 - val_dataset.context_length:t0]
+                                              t0:t0 + val_dataset.context_length]
         samples = generate_data.run_policy_from_burn_in(
             policy, burn_in_pose=burn_in_pose,
             n_frames=gt_pose[epi].shape[1] - burn_in_pose.shape[0],

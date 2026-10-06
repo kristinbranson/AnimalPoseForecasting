@@ -720,7 +720,9 @@ def simulate(
         burn_in: How many frames to use for the initialization.
         max_contextl: Max number of frames to feed as input to the model. If None, uses the full history.
         agent_ids: Which agents to simulate. If None, simulates all the agents.
-        start_frame: Which start frame to use for the initialization.
+        start_frame: First frame of the burn-in. The returned tracks cover frames
+            [start_frame, start_frame + track_len); their first burn_in frames are real data, and
+            prediction starts at frame start_frame + burn_in.
 
     Returns:
         gt_track: ground truth 2d track at each frame. Used for first burn_in frames.

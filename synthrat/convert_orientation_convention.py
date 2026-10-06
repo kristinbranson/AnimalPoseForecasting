@@ -26,6 +26,8 @@ converted file starts a fresh optimizer.
 
 Usage:
     python -m synthrat.convert_orientation_convention <old.pth> <new.pth>
+Keep the new name ending in epoch<N>, e.g. <modeltype>_<savetime>_flyorientation_bestepoch100.pth,
+so that apf.io.parse_modelfile still recovers the model type and save time from it.
 """
 import argparse
 import copy

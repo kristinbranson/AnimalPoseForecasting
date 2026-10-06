@@ -123,7 +123,7 @@ under negation; for the real model's training data they agree to 1e-6 (the old `
 
 Converted: `AnimalPoseForecasting/notebooks/synthrat_models/synthratdefault_20260430T003318_bestepoch100.pth`
 (the full-data model; the July checkpoints in `synthrat/models` are short test runs on a few
-episodes) → `synthrat/models/synthratdefault_20260430T003318_bestepoch100_flyorientation.pth`. Checked
+episodes) → `synthrat/models/synthratdefault_20260430T003318_flyorientation_bestepoch100.pth`. Checked
 end to end on 16 validation chunks: the old model on inputs built by the old code, and the converted
 model on the same chunks built by the new code. The velocity inputs equal the old ones rearranged
 (to 7e-6) and the firing-rate inputs match (6e-6); the predicted bin probabilities equal the old ones
@@ -255,6 +255,66 @@ own position and heading.
 - As a result, the "true" keypoints in the debug plots are decoded by random sampling.
 - With the `Fusion` fix, passing the argument through `Fusion` instead
   (`{'fusion': {'kwargs_per_op': [...]}}`) now works for one chunk.
+
+## Issue: the synthrat evaluation's comparison with the true policy
+
+`synthrat/generate_data.py:run_policy_from_burn_in`, `notebooks/agent_synthrat.py`,
+`experiments/synthrat.py:simulate`, `apf/simulation.py:simulate`
+
+`notebooks/agent_synthrat.py` compares the model's rollouts with continuations of the policy that
+generated the data, run from the same burn-in by `run_policy_from_burn_in`. Running the notebook's
+evaluation end to end (the smoke test below) found three problems.
+
+**Continuations one frame short.**
+
+- `run_policy_from_burn_in` lets `do_episode` run until the elapsed time, a running sum of `dt`,
+  reaches `max_t = n_frames * dt`. `collect_episode` then leaves out the episode's last step:
+  RatInABox's `get_history_slice` ends its slice before the final recorded time.
+- For short continuations the running sum falls just below `max_t` after n steps, so one extra step
+  is taken and n frames remain. Past about 200 frames the rounding goes the other way: `do_episode`
+  stops after n steps and n − 1 remain.
+- The validation episodes need about 200 frames after the burn-in, so the notebook's length check
+  stopped the evaluation (`policy samples are {266} frames, ground truth is 267`).
+
+**Fix**: `max_t = (n_frames + 0.5) * dt`, so `do_episode` always runs n_frames + 1 steps and n_frames
+remain after collection, plus an assert on the length. Asked for 10, 50, 100, 202 and 203 frames, it
+returns exactly that many.
+
+**Burn-in from the wrong window.**
+
+- `simulate` returns the ground truth from `start_frame = t0` on, and its first `context_length`
+  frames are the burn-in, so the model starts predicting at t0 + 65.
+- The notebook replayed frames [t0 − 65, t0) to the policy, so each true-policy sample ran free from
+  t0, 65 frames (3.25 s) before the model's rollouts, and the comparison figure was offset by that
+  much.
+
+**Fix**: the policy's burn-in is [t0, t0 + context_length), the frames the model also sees. The
+`start_frame` docstrings of both `simulate` functions (synthrat and fly) now say that it is the first
+burn-in frame and that prediction starts `burn_in` frames later.
+
+**Best epoch NaN.** The loss history has one slot per configured epoch, NaN for epochs not trained,
+and `torch.argmin` returned a NaN slot ("best val loss nan at epoch 100"). **Fix**: `np.nanargmin`.
+For a loaded model, the notebook's "starting from epoch" now also counts the trained epochs from the
+loss history, as it already did when resuming training.
+
+**Smoke test.** The notebook's evaluation, in test mode with the full-data model converted to the
+new orientation convention (`synthrat/models/synthratdefault_20260430T003318_flyorientation_bestepoch100.pth`;
+its name ends in `epoch<N>` so that `apf.io.parse_modelfile` reads the model type and save time):
+
+- The training and validation datasets build from the sensory caches, and the model loads through
+  `check_orientation_convention`.
+- On 3 validation episodes, 10 model rollouts and 10 true-policy continuations each run, and the
+  trajectory figures and animations are written.
+- Both kinds of trajectory move like the ground truth in the rat's own frame (`GlobalVelocity` on
+  the poses): forward on 96–100% of frames, median forward step 6.6–7.7 mm, median |sideways| step
+  1.1–1.3 mm, against 91–100%, 6.2–7.2 mm and 1.0–1.4 mm for the ground truth. So the orientation
+  convention holds through `simulate` and through `run_policy_from_burn_in`.
+- The true-policy samples replay exactly the model's burn-in (difference 0) and have the ground
+  truth's length.
+- Their heading changes by at most 0.14 rad across the end of the burn-in, within the ground truth's
+  per-frame turns (99th percentile 0.36–0.52 rad).
+
+**Not run with this code:** generating episodes with `generate_data`, and training a model.
 
 ## Added unit tests
 

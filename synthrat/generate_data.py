@@ -634,7 +634,7 @@ def run_policy_from_burn_in(rehydrated: dict, burn_in_pose: np.ndarray, n_frames
         exploit_explore_ratio: how strongly the agent follows the value gradient.
 
     Returns:
-        A list of n_samples (n_burn_in + T, 3) float arrays of (x, y, theta), theta in the
+        A list of n_samples (n_burn_in + n_frames, 3) float arrays of (x, y, theta), theta in the
         same convention as burn_in_pose, each beginning with burn_in_pose so every sample and the ground truth align frame for
         frame.
 
@@ -660,7 +660,11 @@ def run_policy_from_burn_in(rehydrated: dict, burn_in_pose: np.ndarray, n_frames
     # must run for a fixed number of frames instead, so that is disabled and restored.
     saved_episode_end_time = reward.episode_end_time
     reward.episode_end_time = float('inf')
-    max_t = n_frames * agent.dt          # seconds after the burn-in
+    # do_episode stops at the first step whose elapsed time, a running sum of dt, reaches max_t,
+    # and collect_episode leaves out the episode's last step (RatInABox's get_history_slice ends
+    # its slice before the final recorded time). The half step makes do_episode run exactly
+    # n_frames + 1 steps whatever the rounding of that sum, so n_frames remain after collection.
+    max_t = (n_frames + 0.5) * agent.dt  # seconds after the burn-in
 
     samples = []
     try:
@@ -695,7 +699,9 @@ def run_policy_from_burn_in(rehydrated: dict, burn_in_pose: np.ndarray, n_frames
             track, _ = collect_episode(agent, value_neuron, reward,
                                        framerate=1.0 / agent.dt)
             theta = orientation_from_head_direction(track['head_direction'])
-            pose = np.concatenate([track['pos'], theta[:, None]], axis=1)   # (T, 3)
+            pose = np.concatenate([track['pos'], theta[:, None]], axis=1)   # (n_frames, 3)
+            assert pose.shape[0] == n_frames, \
+                f'policy continuation has {pose.shape[0]} frames, expected {n_frames}'
             samples.append(np.vstack([burn_in_pose, pose]))
     finally:
         reward.episode_end_time = saved_episode_end_time
