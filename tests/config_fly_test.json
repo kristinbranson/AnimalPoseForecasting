@@ -1,0 +1,8 @@
+{
+    "_comment": "Overrides of flyllm/config_fly_llm_default.json for tests/test_fly.py. The data are small extracts of the v3 MABe files (first 5 videos x 2000 frames of usertrain_v3.npz and testtrain_v3.npz); datadir is relative to the repository. No filtering by fly category. Flip augmentation is on, as in the configs used for training.",
+    "datadir": "tests/data",
+    "intrainfilestr": "small_usertrain_v3.npz",
+    "invalfilestr": "small_testtrain_v3.npz",
+    "categories": [],
+    "augment_flip": true
+}

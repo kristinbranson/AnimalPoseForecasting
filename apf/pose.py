@@ -7,7 +7,7 @@ import typing
 #     from apf.dataset import AgentLLMDataset
 
 from apf.data import weighted_sample, discretize_labels
-from apf.utils import len_wrapper, dict_convert_torch_to_numpy, zscore, unzscore, pre_tile_array, pad_axis_array, get_cuda_device
+from apf.utils import len_wrapper, convert_torch_to_numpy, zscore, unzscore, pre_tile_array, pad_axis_array, get_cuda_device
 
 class AgentParams:
     
@@ -3440,7 +3440,7 @@ class AgentExample:
         
         if is_train_example:
             # concatenate inits if train example
-            example_in = dict_convert_torch_to_numpy(example_in)
+            example_in = convert_torch_to_numpy(example_in)
             # if we offset the example, adjust back metadata
             if ('metadata' in example_in) and \
                 (example_in['metadata'] is not None) and \
