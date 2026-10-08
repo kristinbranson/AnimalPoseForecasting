@@ -245,7 +245,7 @@ class Zscore(Operation):
     def invert_feature_names(self, input_feature_names):
         if input_feature_names is None:
             return None
-        return [name.replace('_zscored', '') for name in input_feature_names]
+        return [name.removesuffix('_zscored') for name in input_feature_names]
 
 @dataclass
 class OddRoot(Operation):
@@ -529,7 +529,7 @@ class Discretize(Operation):
         if input_feature_names is None:
             return None
         nfeat = len(input_feature_names) // self.nbins
-        return [input_feature_names[i * self.nbins].replace('_bin0', '') for i in range(nfeat)]
+        return [input_feature_names[i * self.nbins].removesuffix('_bin0') for i in range(nfeat)]
 
 
 @dataclass
@@ -684,7 +684,7 @@ class Roll(Operation):
     def invert_feature_names(self, input_feature_names):
         if input_feature_names is None:
             return None
-        return [name.replace(f'_rolled{self.dt}', '') for name in input_feature_names]
+        return [name.removesuffix(f'_rolled{self.dt}') for name in input_feature_names]
 
 
 @dataclass
