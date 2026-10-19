@@ -1505,16 +1505,14 @@ def initialize_loss_plots(loss_epoch):
 
 
 def update_loss_plots(hloss, loss_epoch):
-    hloss['train'].set_ydata(loss_epoch['train'].cpu())
-    hloss['val'].set_ydata(loss_epoch['val'].cpu())
-    if 'train_continuous' in loss_epoch:
-        hloss['train_continuous'].set_ydata(loss_epoch['train_continuous'].cpu())
-    if 'train_discrete' in loss_epoch:
-        hloss['train_discrete'].set_ydata(loss_epoch['train_discrete'].cpu())
-    if 'val_continuous' in loss_epoch:
-        hloss['val_continuous'].set_ydata(loss_epoch['val_continuous'].cpu())
-    if 'val_discrete' in loss_epoch:
-        hloss['val_discrete'].set_ydata(loss_epoch['val_discrete'].cpu())
+    # plot only the epochs with a value, so that a loss computed only every few epochs (e.g. validation
+    # with val_epoch > 1) is drawn as a connected line rather than isolated points
+    for k in ['train', 'val', 'train_continuous', 'train_discrete', 'val_continuous', 'val_discrete']:
+        if k not in loss_epoch or k not in hloss:
+            continue
+        y = loss_epoch[k].cpu()
+        isfinite = torch.isfinite(y)
+        hloss[k].set_data(torch.nonzero(isfinite).flatten(), y[isfinite])
     for l in hloss['ax']:
         l.relim()
         l.autoscale()

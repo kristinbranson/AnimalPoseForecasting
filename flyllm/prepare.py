@@ -106,6 +106,12 @@ def init_state(config=None,seedrandom=True,res={}):
     device = torch.device(config['device'])
     if device.type == 'cuda':
         assert torch.cuda.is_available(), 'CUDA is not available'
+
+    # float32 matmul precision: 'highest' is full fp32 (the PyTorch default), 'high' allows TF32 on
+    # Ampere and newer GPUs, which is much faster and has a negligible effect on training
+    matmul_precision = config.get('float32_matmul_precision', 'highest')
+    torch.set_float32_matmul_precision(matmul_precision)
+    LOG.info(f'float32 matmul precision: {matmul_precision}')
         
     res['device'] = device
     
@@ -270,6 +276,18 @@ def init_process_data(config=None,data=None,scale_perfly=None,
     
     return res
 
+def _dataloader_worker_args(config):
+    """
+    Keyword arguments for DataLoader controlling background worker processes, from config['num_workers'].
+    Workers are forked, so they share the in-memory data arrays with the main process copy-on-write.
+    Workers are deliberately not persistent: the training dataset re-tiles its chunks at the end of each
+    epoch (recompute_chunk_indices), and fresh workers forked at the start of each epoch see the new tiling.
+    """
+    num_workers = config.get('num_workers', 0)
+    if num_workers <= 0:
+        return {}
+    return {'num_workers': num_workers, 'persistent_workers': False, 'multiprocessing_context': 'fork'}
+
 def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idct_m=None,debug_uselessdata=False,res={}):
     """
     res = init_datasets(config=None,X=None,valX=None,traindataprocess='chunk',
@@ -318,7 +336,8 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
         res['dataset_params'] = res['config']['dataset_params']
         
         # create dataloader
-        res['train_dataloader'] = DataLoader(res['train_dataset'], batch_size=config['batch_size'], shuffle=True, pin_memory=True)
+        res['train_dataloader'] = DataLoader(res['train_dataset'], batch_size=config['batch_size'], shuffle=True,
+                                             pin_memory=True, **_dataloader_worker_args(config))
         
         res['ntrain_batches'] = len(res['train_dataloader'])
         
@@ -333,7 +352,10 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
         res['dataset_params'] = res['config']['dataset_params']
 
         # create dataloader
-        res['val_dataloader'] = DataLoader(res['val_dataset'], batch_size=config['batch_size'], shuffle=False, pin_memory=True)
+        # validation needs no gradients, so it can use the (typically larger) test batch size
+        val_batch_size = config.get('test_batch_size', config['batch_size'])
+        res['val_dataloader'] = DataLoader(res['val_dataset'], batch_size=val_batch_size, shuffle=False,
+                                           pin_memory=True, **_dataloader_worker_args(config))
         res['nval_batches'] = len(res['val_dataloader'])
     return res
 

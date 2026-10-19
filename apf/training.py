@@ -12,6 +12,7 @@ from apf.models import (
     sanity_check_temporal_dep,
     compute_loss_mixed,
     mixed_causal_criterion,
+    pred_to_float32,
     TransformerModel,
 )
 from apf.io import save_model
@@ -51,6 +52,8 @@ def train(
         savefilestr: str | None = None,
         save_epoch: int | None = None,
         max_nonfinite_steps: int = 100,
+        autocast_dtype: str | torch.dtype | None = None,
+        val_epoch: int = 1,
 ) -> tuple[TransformerModel, TransformerModel, dict]:
     """ Trains a model on train_dataloader, using val_dataloader to select the best_model.
 
@@ -79,6 +82,12 @@ def train(
         max_nonfinite_steps: Training steps whose prediction, loss, or gradient norm is non-finite are skipped
             (no optimizer step) and logged. Raises RuntimeError once more than this many steps have been
             skipped in total. Defaults to 100.
+        autocast_dtype: If not None, e.g. 'bfloat16', runs model forward passes (training and validation)
+            under torch.autocast with this dtype. This is much faster on recent GPUs. Weights, gradients,
+            optimizer state, and losses stay float32. Defaults to None (no autocast).
+        val_epoch: Computes the validation loss every val_epoch epochs, and always after the last epoch.
+            Validation losses for other epochs are left as nan, and the best model is selected among the
+            epochs that were validated. Defaults to 1.
 
     Returns:
         model: Model after training on all epochs
@@ -86,6 +95,14 @@ def train(
         losses: Stores losses per epoch for continuous, discrete, and combined objectives for training and validation.
     """
     device = next(model.parameters()).device
+
+    if isinstance(autocast_dtype, str):
+        autocast_dtype = getattr(torch, autocast_dtype)
+    use_autocast = autocast_dtype is not None
+    if use_autocast:
+        LOG.info(f'Using autocast with dtype {autocast_dtype}')
+    if val_epoch is None or val_epoch < 1:
+        val_epoch = 1
 
     # Optimizer
     num_training_steps = num_train_epochs * len(train_dataloader)
@@ -144,7 +161,10 @@ def train(
         nmask_train = 0
         for step, example in enumerate(train_dataloader):
 
-            pred = model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal)
+            with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=use_autocast):
+                pred = model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal)
+            # compute the loss in float32
+            pred = pred_to_float32(pred)
             # check the prediction first, since the criterion asserts on nans
             nonfinite_reason = None
             if not all(torch.isfinite(v).all().item() for v in pred.values() if torch.is_tensor(v)):
@@ -209,15 +229,18 @@ def train(
         loss_epoch['train_discrete'][epoch] = tr_loss_discrete.item() / nmask_train
         loss_epoch['train_continuous'][epoch] = tr_loss_continuous.item() / nmask_train
 
-        # compute validation loss after this epoch
-        loss_epoch['val'][epoch], loss_epoch['val_discrete'][epoch], loss_epoch['val_continuous'][epoch] = \
-            compute_loss_mixed(model, val_dataloader, device, train_src_mask, weight_discrete=weight_discrete)
-        last_val_loss = loss_epoch['val'][epoch].item()
+        # compute validation loss after this epoch, every val_epoch epochs
+        do_val = ((epoch + 1) % val_epoch == 0) or (epoch == num_train_epochs - 1)
+        if do_val:
+            loss_epoch['val'][epoch], loss_epoch['val_discrete'][epoch], loss_epoch['val_continuous'][epoch] = \
+                compute_loss_mixed(model, val_dataloader, device, train_src_mask, weight_discrete=weight_discrete,
+                                   autocast_dtype=autocast_dtype)
+            last_val_loss = loss_epoch['val'][epoch].item()
         
         if end_epoch_hook is not None:
             end_epoch_hook(model=model, epoch=epoch, loss_epoch=loss_epoch)
 
-        if last_val_loss < best_val_loss:
+        if do_val and last_val_loss < best_val_loss:
             best_model = copy.deepcopy(model)
             best_epoch = epoch
             best_val_loss = last_val_loss

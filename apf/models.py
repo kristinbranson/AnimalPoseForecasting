@@ -968,6 +968,36 @@ class ResNet2d(torch.nn.Module):
             self.avg_pool = None
             self.fc = torch.nn.Conv2d(channels[-1], d_output, 1)
 
+    def _fc_as_linear(self, x):
+        """ Computes self.fc(x) with F.linear when self.fc is a Conv2d whose kernel spans exactly one full
+        input dimension and is 1 along the other, e.g. kernel (1, 72) on input (N, C, T, 72). cuDNN picks a
+        very slow kernel for the backward pass of such a convolution, while the equivalent matrix multiply is
+        fast. The parameters stay those of the Conv2d, so saved model files are unaffected.
+
+        Returns None if the shortcut does not apply, in which case the caller should use self.fc(x).
+        """
+        fc = self.fc
+        if not isinstance(fc, torch.nn.Conv2d) or self.collapse_dim not in ([-1], [-2]):
+            return None
+        if fc.stride != (1, 1) or fc.dilation != (1, 1) or fc.groups != 1 or fc.padding not in ('valid', (0, 0)):
+            return None
+        N, C, H, W = x.shape
+        d_out = fc.out_channels
+        if self.collapse_dim == [-1]:
+            if fc.kernel_size != (1, W):
+                return None
+            # (N, C, H, W) -> (N, H, C*W) @ (C*W, d_out) -> (N, d_out, H, 1)
+            y = torch.nn.functional.linear(x.permute(0, 2, 1, 3).reshape(N, H, C * W),
+                                           fc.weight.reshape(d_out, C * W), fc.bias)
+            return y.permute(0, 2, 1).unsqueeze(-1)
+        else:
+            if fc.kernel_size != (H, 1):
+                return None
+            # (N, C, H, W) -> (N, W, C*H) @ (C*H, d_out) -> (N, d_out, 1, W)
+            y = torch.nn.functional.linear(x.permute(0, 3, 1, 2).reshape(N, W, C * H),
+                                           fc.weight.reshape(d_out, C * H), fc.bias)
+            return y.permute(0, 2, 1).unsqueeze(-2)
+
     def forward(self, x):
 
         if self.transpose and not self.no_input_channels:
@@ -992,7 +1022,8 @@ class ResNet2d(torch.nn.Module):
             dimout = -1
         else:
             dimout = -3
-        x = self.fc(x)
+        y = self._fc_as_linear(x) if self.avg_pool is None else None
+        x = self.fc(x) if y is None else y
         x = x.reshape(sz0[:dim] + x.shape[dimout:])
         dim_channel = len(sz0[:dim])
         x = torch.squeeze(x, self.collapse_dim)
@@ -1197,7 +1228,12 @@ def compute_loss(model, dataloader, dataset, device, mask, criterion, config):
             return loss
 
 
-def compute_loss_mixed(model, dataloader, device, mask, weight_discrete):
+def compute_loss_mixed(model, dataloader, device, mask, weight_discrete, autocast_dtype=None):
+    """ Average loss of model over all examples in dataloader, in eval mode.
+
+    autocast_dtype: if not None (e.g. torch.bfloat16), runs the model forward pass under torch.autocast
+    with this dtype. The loss itself is always computed in float32.
+    """
     model.eval()
     with torch.no_grad():
         all_loss = torch.zeros(len(dataloader), device=device)
@@ -1206,7 +1242,9 @@ def compute_loss_mixed(model, dataloader, device, mask, weight_discrete):
         loss_continuous = torch.tensor(0.0).to(device)
         nmask = 0
         for i, example in enumerate(dataloader):
-            pred = model(example['input'].to(device=device), mask=mask, is_causal=True)
+            with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=autocast_dtype is not None):
+                pred = model(example['input'].to(device=device), mask=mask, is_causal=True)
+            pred = pred_to_float32(pred)
             loss_curr, loss_discrete_curr, loss_continuous_curr = mixed_causal_criterion(
                 example, pred, weight_discrete=weight_discrete, extraout=True
             )
@@ -1220,6 +1258,15 @@ def compute_loss_mixed(model, dataloader, device, mask, weight_discrete):
         loss_discrete = loss_discrete.item() / nmask
         loss_continuous = loss_continuous.item() / nmask
         return loss, loss_discrete, loss_continuous
+
+
+def pred_to_float32(pred):
+    """ Casts floating-point tensors in a model prediction (dict or tensor) to float32, e.g. after an
+    autocast forward pass, so that losses are computed in full precision.
+    """
+    def tofloat(v):
+        return v.float() if torch.is_tensor(v) and v.is_floating_point() else v
+    return pred_apply_fun(pred, tofloat)
 
 
 def update_loss_nepochs(loss_epoch, nepochs):
