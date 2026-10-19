@@ -5,9 +5,9 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.18.1
+#       jupytext_version: 1.16.2
 #   kernelspec:
-#     display_name: transformer
+#     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
@@ -29,7 +29,7 @@ import apf.utils as utils
 
 import flyllm
 from flyllm import optimal_binning
-from tests.flyllm import debug_optimal_binning
+# from tests.flyllm import debug_optimal_binning
 
 from flyllm.prepare import init_config
 from experiments.flyllm import make_dataset
@@ -53,13 +53,27 @@ LOG.info('isnotebook: ' + str(ISNOTEBOOK))
 
 
 # %%
-configfile = 'configs/config_fly_llm_predvel_optimalbinning_20251113.json'
+import sys
+# import os
+
+# Append the path to your module directory
+# sys.path.append('groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/tests')
+# from tests.flyllm import debug_optimal_binning
+
+
+# %%
+# configfile = 'configs/config_fly_llm_predvel_optimalbinning_20251113.json'
+# configfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/config_fly_llm_predvel_optimalbinning_globalvel_20260430.json"
+# configfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/config_fly_llm_predvel_optimalbinning_20251113_binall.json"
+# configfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/config_fly_llm_predvel_optimalbinning_20251113_alldata.json"
+configfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/config_fly_llm_predvel_optimalbinning_20251113_binall_flattened_male.json"
+# configfile = "/groups/branson/home/eyjolfsdottire/code/AnimalPoseForecasting/config_fly_llm_predvel_optimalbinning_20251113_binall_flattened_female.json"
 outfigdir = 'figs'
 debug_uselessdata = False
 
 # path to config file based on code directory
 flyllmdir = flyllm.__path__[0]
-configfile = os.path.join(flyllmdir,configfile)
+# configfile = os.path.join(flyllmdir,configfile)
 outfigdir = os.path.join(flyllmdir,outfigdir)
 assert os.path.exists(configfile), f'Config file {configfile} does not exist!'
 
@@ -88,17 +102,33 @@ if False:
 # %%
 overrideconfig = {}
 # use all data
-overrideconfig['categories'] = 'courtship'
+# overrideconfig['categories'] = ['courtship']
 config = init_config(configfile=configfile,overrideconfig=overrideconfig)['config']
+
+# %%
+# config['discreteidx'] = np.arange(29)
+config['discreteidx']
+
+# %%
+# config['bin_edges_absolute'] = None
+# config['discretize_epsilon'] = np.ones(29) * 0.0015
+# config['discretize_epsilon'][[0, 1, 2, 27, 28]] = np.array([0.0013222 , 0.0013496 , 0.00174533, 0.00174533, 0.00174533])
+
+# %%
 # don't actually need most of this stuff... 
-train_dataset, flyids, track, pose, velocity, sensory, dataset_params, isdata, isstart, useoutputmask = \
+train_dataset, flyids, track, pose, velocity, sensory, dataset_params, isdata, isstart, useoutputmask, labels, categories = \
     make_dataset(config,'intrainfile',return_all=True,debug=debug_uselessdata)
+
+# %%
+tmp = 0
 
 # %%
 from apf.io import get_modeltype_str
 modeltype_str = get_modeltype_str(config)
 savefilestr = f"flyllm_binning_{modeltype_str}_{timestamp}"
 print(f'Save file string: {savefilestr}')
+
+# %%
 
 # %%
 debug_optimal_binning.debug_synthetic()
@@ -147,7 +177,7 @@ fig.tight_layout()
 
 
 # %%
-config = init_config(configfile=configfile,overrideconfig=overrideconfig)['config']
+# config = init_config(configfile=configfile,overrideconfig=overrideconfig)['config']
 K = config['discretize_nbins']
 
 allbininfo = []
@@ -240,6 +270,10 @@ for idx,featidx in enumerate(config['discreteidx']):
 
 
 # %%
+config['savedir'] = '/groups/branson/home/eyjolfsdottire/AnimalPoseForecastingData/flyllm_models'
+# savefilestr
+
+# %%
 # save results to file
 savefile = os.path.join(config['savedir'],f'{savefilestr}_bininfo.npz')
 LOG.info(f'Saving binning info to {savefile}')
@@ -254,3 +288,5 @@ np.savez_compressed(savefile,bininfo=allbininfo)
 for i,featidx in enumerate(config['discreteidx']):
     edges = allbininfo[i]['edges']
     print(f"{featidx}: {np.array2string(edges,separator=', ')}")
+
+# %%

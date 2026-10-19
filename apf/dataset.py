@@ -353,10 +353,7 @@ class Discretize(Operation):
         self.bin_centers = bin_centers
         self.bin_samples = bin_samples
 
-        # If bin_centers is None, then when we call apply bin_edges and bin_centers are recomputed, so this
-        # cannot be removed. (Alternatively we could enforce bin_centers be provided when bin_edges are)
-        if self.bin_edges is not None and self.bin_centers is None:
-            self.bin_centers = (self.bin_edges[:, 1:] + self.bin_edges[:, :-1]) / 2
+        # assert (self.bin_samples is None) == (self.bin_edges is None) == (self.bin_centers is None)
 
         if fit_discretize_data_args is None:
             self.fit_discretize_data_args = kwargs
@@ -399,7 +396,7 @@ class Discretize(Operation):
         """
         
         if self.bin_edges is None or self.bin_centers is None or self.bin_samples is None:
-            self.compute(data,**compute_args)
+            self.compute(data, **compute_args)
         sz_rest = data.shape[:-1]
         n_feat = data.shape[-1]
         data_flat = data.reshape((-1, n_feat))
@@ -500,8 +497,9 @@ class Fusion(Operation):
 
         if kwargs_per_op is None:
             kwargs_per_op = [{} for _ in self.operations]
-        elif ~isinstance(kwargs_per_op, list):
+        elif not isinstance(kwargs_per_op, list):
             kwargs_per_op = [kwargs_per_op for _ in self.operations]
+
         processed = [op.apply(data[..., indices], **kwargs) for op, indices, kwargs in zip(self.operations, self.indices_per_op, kwargs_per_op)]
         self.dims_per_op = [proc.shape[-1] for proc in processed]
         fused = np.concatenate(processed, axis=-1)

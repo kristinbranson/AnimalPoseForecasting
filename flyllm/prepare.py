@@ -26,14 +26,13 @@ from flyllm.plotting import (
 )
 from apf.models import (
     initialize_model, 
-    initialize_loss, 
-    compute_loss,
-    generate_square_full_mask, 
+    initialize_loss,
     sanity_check_temporal_dep,
-    criterion_wrapper,
     update_loss_nepochs,
-    stack_batch_list,
+    generate_square_full_mask,
+    criterion_wrapper
 )
+# from apf.models_unused import compute_loss, stack_batch_list
 from apf.dataset import Dataset, DataLoader
 from apf.training import init_optimizer
 from experiments.flyllm import make_dataset
@@ -76,7 +75,7 @@ def init_config(configfile=None,config=None,mode='train',loadmodelfile=None,over
         if (loadmodelfile is None) and ('loadmodelfile' in config):
             loadmodelfile = config['loadmodelfile']
         assert loadmodelfile is not None, "No model file provided"
-        load_config_from_model_file(loadmodelfile=loadmodelfile,config=config)
+        load_config_from_model_file(loadmodelfile=loadmodelfile,config=config, weights_only=False)
         assert 'dataset_params' in config, 'dataset_params not in config'
         
     res['config'] = config
@@ -252,7 +251,7 @@ def init_process_data(config=None,data=None,scale_perfly=None,
             raise ValueError(f'traindataprocess {traindataprocess} not recognized')
         res['X'] = X
         res['train_chunk_data_params'] = train_chunk_data_params
-        LOG.info(f'{len(X)} training ids, total of {sum([x['input'].shape[0] for x in X])} time points')
+        LOG.info(f"{len(X)} training ids, total of {sum([x['input'].shape[0] for x in X])} time points")
         
     if valdata is not None:
         LOG.info('Processing val data...')
@@ -266,7 +265,7 @@ def init_process_data(config=None,data=None,scale_perfly=None,
             raise ValueError(f'valdataprocess {valdataprocess} not recognized')
         res['valX'] = valX
         res['val_chunk_data_params'] = val_chunk_data_params
-        LOG.info(f' {len(valX)} val ids, total of {sum([x['input'].shape[0] for x in valX])} time points')
+        LOG.info(f" {len(valX)} val ids, total of {sum([x['input'].shape[0] for x in valX])} time points")
     
     return res
 
@@ -313,12 +312,13 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
         res['train_data'] = {}
         res['train_dataset'], res['train_data']['flyids'], res['train_data']['track'], res['train_data']['pose'], \
             res['train_data']['velocity'], res['train_data']['sensory'], res['config']['dataset_params'], \
-            res['train_data']['isdata'], res['train_data']['isstart'], res['train_data']['useoutputmask'] = \
+            res['train_data']['isdata'], res['train_data']['isstart'], res['train_data']['useoutputmask'], \
+            res['train_data']['labels'], res['train_data']['categories'] = \
             make_dataset(config,'intrainfile',return_all=True,debug=debug_uselessdata)
         res['dataset_params'] = res['config']['dataset_params']
         
         # create dataloader
-        res['train_dataloader'] = DataLoader(res['train_dataset'], batch_size=config['batch_size'], shuffle=True, pin_memory=True)
+        res['train_dataloader'] = DataLoader(res['train_dataset'], batch_size=config['batch_size'], shuffle=True, pin_memory=True, num_workers=4)
         
         res['ntrain_batches'] = len(res['train_dataloader'])
         
@@ -328,14 +328,16 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
         res['val_data'] = {}
         res['val_dataset'], res['val_data']['flyids'], res['val_data']['track'], res['val_data']['pose'], \
             res['val_data']['velocity'], res['val_data']['sensory'], res['config']['dataset_params'], \
-            res['val_data']['isdata'], res['val_data']['isstart'], res['val_data']['useoutputmask'] = \
+            res['val_data']['isdata'], res['val_data']['isstart'], res['val_data']['useoutputmask'], \
+            res['val_data']['labels'], res['val_data']['categories'] = \
             make_dataset(config,'invalfile',return_all=True,debug=debug_uselessdata)
         res['dataset_params'] = res['config']['dataset_params']
 
         # create dataloader
-        res['val_dataloader'] = DataLoader(res['val_dataset'], batch_size=config['batch_size'], shuffle=False, pin_memory=True)
+        res['val_dataloader'] = DataLoader(res['val_dataset'], batch_size=config['batch_size'], shuffle=False, pin_memory=True, num_workers=4)
         res['nval_batches'] = len(res['val_dataloader'])
     return res
+
 
 def init_model(config=None,somedataset=None,somedataloader=None,device=None,loadmodelfile=None,
                restartmodelfile=None,mode='train',res={}, optimizer=None, lr_scheduler=None,

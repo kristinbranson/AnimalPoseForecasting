@@ -40,6 +40,7 @@ def save_model(savefile, model, lr_optimizer=None, scheduler=None, loss=None, co
     torch.save(tosave, savefile)
     return
 
+
 def modernize_model_file(loadfile,dataset,config,device):
     LOG.info(f'Loading model from file {loadfile}...')
     state = torch.load(loadfile, map_location=device, weights_only=False)
@@ -62,7 +63,7 @@ def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, confi
     if scheduler is not None and ('scheduler' in state):
         scheduler.load_state_dict(state['scheduler'])
     if config is not None:
-        load_config_from_model_file(config=config, state=state)
+        load_config_from_model_file(config=config, state=state, weights_only=False)
 
     loss = {'train': None, 'val': None}
     if 'loss' in state:
@@ -76,11 +77,11 @@ def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, confi
     return loss
 
 
-def load_config_from_model_file(loadmodelfile=None, config=None, state=None, no_overwrite=(), sensory_params=None):
+def load_config_from_model_file(loadmodelfile=None, config=None, state=None, no_overwrite=(), sensory_params=None, weights_only=True):
     if state is None:
         assert loadmodelfile is not None
         LOG.info(f'Loading config from file {loadmodelfile}...')
-        state = torch.load(loadmodelfile)
+        state = torch.load(loadmodelfile, weights_only=weights_only)
     if config is not None and 'config' in state:
         overwrite_config(config, state['config'], no_overwrite=no_overwrite)
     else:
@@ -394,7 +395,7 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
             LOG.info(f"filtering by categories took {toc(start_time):.2f} seconds")
         assert nidspost > 0, "No valid agents remain after filtering by categories"
         assert nframespost > 0, "No valid data remains after filtering by categories"
-        
+
     # set useoutputmask
     if ('output_categories' in config) and (config['output_categories'] is not None) and (len(config['output_categories']) > 0):
         fn = 'useoutputmask'

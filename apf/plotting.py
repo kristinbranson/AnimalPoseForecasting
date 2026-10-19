@@ -221,3 +221,57 @@ def fig_to_numpy(fig):
 def distinct_colors(n, cmap="rainbow"):
     cmap = plt.get_cmap(cmap)
     return np.array([cmap(i / n) for i in range(n)])  # shape: (n, 4), RGBA
+
+
+def plot_array_as_table(data, row_labels, col_labels, title='Data Table', pdf=None):
+    """
+    Save a 2D array as a table in the PDF.
+
+    Parameters:
+    - pdf: PdfPages object
+    - data: 2D numpy array or list of lists
+    - row_labels: list of labels for rows
+    - col_labels: list of labels for columns
+    - title: title for the figure
+    """
+    fig, ax = plt.subplots(figsize=(8, 6))
+    fig.suptitle(title, fontsize=16, fontweight='bold')
+    ax.axis('tight')
+    ax.axis('off')
+
+    # Convert data to list of lists if it's a numpy array
+    if hasattr(data, 'tolist'):
+        table_data = data.tolist()
+    else:
+        table_data = data
+
+    # Add row labels to the left of each row
+    table_data_with_labels = [[row_labels[i]] + row for i, row in enumerate(table_data)]
+
+    # Add column labels as the first row
+    full_table = [[''] + col_labels] + table_data_with_labels
+
+    # Create the table
+    table = ax.table(cellText=full_table, cellLoc='center', loc='center',
+                     bbox=[0, 0, 1, 1])
+
+    # Style the table
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1, 2)
+
+    # Make header row bold
+    for i in range(len(full_table[0])):
+        table[(0, i)].set_facecolor('#4CAF50')
+        table[(0, i)].set_text_props(weight='bold', color='white')
+
+    # Make first column (row labels) bold
+    for i in range(1, len(full_table)):
+        table[(i, 0)].set_facecolor('#E8E8E8')
+        table[(i, 0)].set_text_props(weight='bold')
+
+    if pdf is not None:
+        pdf.savefig(fig)
+        plt.close()
+    else:
+        plt.show()

@@ -7,6 +7,7 @@ import logging
 from typing import Callable
 import os
 import time
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from apf.models import (
     sanity_check_temporal_dep,
@@ -50,6 +51,7 @@ def train(
         start_epoch: int = 0,
         savefilestr: str | None = None,
         save_epoch: int | None = None,
+        input_gt: bool = False,
 ) -> tuple[TransformerModel, TransformerModel, dict]:
     """ Trains a model on train_dataloader, using val_dataloader to select the best_model.
 
@@ -82,6 +84,9 @@ def train(
         losses: Stores losses per epoch for continuous, discrete, and combined objectives for training and validation.
     """
     device = next(model.parameters()).device
+
+    # Allow TF32 tensor-core matmuls (large speedup on Ampere+ GPUs, negligible accuracy impact)
+    torch.set_float32_matmul_precision('high')
 
     # Optimizer
     num_training_steps = num_train_epochs * len(train_dataloader)
@@ -118,7 +123,8 @@ def train(
 
     # Sanity check on temporal dependencies
     # TODO: Does tmess=300 make sense when contextl is < 300?
-    sanity_check_temporal_dep(train_dataloader, device, train_src_mask, is_causal, model, tmess=300)
+    if not input_gt:
+        sanity_check_temporal_dep(train_dataloader, device, train_src_mask, is_causal, model, tmess=300)
 
     # Train
     d_discrete = train_dataloader.dataset.d_output_discrete
@@ -129,75 +135,82 @@ def train(
     best_model = model
     best_epoch = None
     best_val_loss = 10000
-        
-    for epoch in range(start_epoch, num_train_epochs):
-        model.train()
-        tr_loss = torch.tensor(0.0).to(device)
-        tr_loss_discrete = torch.tensor(0.0).to(device)
-        tr_loss_continuous = torch.tensor(0.0).to(device)
 
-        nmask_train = 0
-        for step, example in enumerate(train_dataloader):
+    with sdpa_kernel(SDPBackend.MATH):
+    # with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):
+        for epoch in range(start_epoch, num_train_epochs):
+            model.train()
+            tr_loss = torch.tensor(0.0).to(device)
+            tr_loss_discrete = torch.tensor(0.0).to(device)
+            tr_loss_continuous = torch.tensor(0.0).to(device)
 
-            pred = model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal)
-            loss, loss_discrete, loss_continuous = criterion(
-                example, pred, weight_discrete=weight_discrete, extraout=True
-            )
-            loss.backward()
+            nmask_train = 0
+            for step, example in enumerate(train_dataloader):
 
-            # how many timepoints are in this batch for normalization
-            nmask_train += example['useoutputmask'].sum().detach()
+                if input_gt:
+                    pred = model(example['input'].to(device=device, non_blocking=True), mask=train_src_mask, is_causal=is_causal,
+                                 gt=example['labels_discrete'].to(device=device))
+                else:
+                    pred = model(example['input'].to(device=device, non_blocking=True), mask=train_src_mask, is_causal=is_causal)
+                loss, loss_discrete, loss_continuous = criterion(
+                    example, pred, weight_discrete=weight_discrete, extraout=True
+                )
+                loss.backward()
 
-            tr_loss_step = loss.detach()
-            tr_loss += tr_loss_step
-            tr_loss_discrete += loss_discrete.detach()
-            tr_loss_continuous += loss_continuous.detach()
+                # how many timepoints are in this batch for normalization
+                nmask_train += example['useoutputmask'].sum().detach()
 
-            # gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-            optimizer.step()
-            lr_scheduler.step()
-            model.zero_grad()
-            
-            if end_iter_hook is not None:
-                end_iter_hook(model=model, step=step, example=example, 
-                            predfn=lambda input: model.output(input, mask=train_src_mask, is_causal=is_causal))
+                tr_loss_step = loss.detach()
+                tr_loss += tr_loss_step
+                tr_loss_discrete += loss_discrete.detach()
+                tr_loss_continuous += loss_continuous.detach()
 
-        # update progress bar
-        stat = {'train loss': tr_loss.item() / nmask_train, 'last val loss': last_val_loss, 'epoch': epoch}
-        stat['train loss discrete'] = tr_loss_discrete.item() / nmask_train
-        stat['train loss continuous'] = tr_loss_continuous.item() / nmask_train
-        progress_bar.set_postfix(stat)
-            # progress_bar.update(1)
-        progress_bar.update(len(train_dataloader))
+                # gradient clipping
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                optimizer.step()
+                lr_scheduler.step()
+                model.zero_grad()
 
-        # training epoch complete
-        loss_epoch['train'][epoch] = tr_loss.item() / nmask_train
-        loss_epoch['train_discrete'][epoch] = tr_loss_discrete.item() / nmask_train
-        loss_epoch['train_continuous'][epoch] = tr_loss_continuous.item() / nmask_train
+                if end_iter_hook is not None:
+                    end_iter_hook(model=model, step=step, example=example,
+                                predfn=lambda input: model.output(input, mask=train_src_mask, is_causal=is_causal))
 
-        # compute validation loss after this epoch
-        loss_epoch['val'][epoch], loss_epoch['val_discrete'][epoch], loss_epoch['val_continuous'][epoch] = \
-            compute_loss_mixed(model, val_dataloader, device, train_src_mask, weight_discrete=weight_discrete)
-        last_val_loss = loss_epoch['val'][epoch].item()
-        
-        if end_epoch_hook is not None:
-            end_epoch_hook(model=model, epoch=epoch, loss_epoch=loss_epoch)
+            # update progress bar
+            stat = {'train loss': tr_loss.item() / nmask_train, 'last val loss': last_val_loss, 'epoch': epoch}
+            stat['train loss discrete'] = tr_loss_discrete.item() / nmask_train
+            stat['train loss continuous'] = tr_loss_continuous.item() / nmask_train
+            progress_bar.set_postfix(stat)
+                # progress_bar.update(1)
+            progress_bar.update(len(train_dataloader))
 
-        if last_val_loss < best_val_loss:
-            best_model = copy.deepcopy(model)
-            best_epoch = epoch            
-            
-        if ((epoch + 1) % save_epoch == 0) or (epoch == num_train_epochs - 1):
-            savefile = f'{savefilestr}_epoch{epoch + 1}.pth'
-            print(f'Saving to file {savefile}')
-            save_model(savefile, model,
-                        lr_optimizer=optimizer,
-                        scheduler=lr_scheduler,
-                        loss=loss_epoch)
+            # training epoch complete
+            loss_epoch['train'][epoch] = tr_loss.item() / nmask_train
+            loss_epoch['train_discrete'][epoch] = tr_loss_discrete.item() / nmask_train
+            loss_epoch['train_continuous'][epoch] = tr_loss_continuous.item() / nmask_train
 
-        # if np.mod(epoch + 1, 5) == 0:
-        train_dataloader.dataset.recompute_chunk_indices()
+            # compute validation loss after this epoch
+            loss_epoch['val'][epoch], loss_epoch['val_discrete'][epoch], loss_epoch['val_continuous'][epoch] = \
+                compute_loss_mixed(model, val_dataloader, device, train_src_mask, weight_discrete=weight_discrete, input_gt=input_gt)
+            last_val_loss = loss_epoch['val'][epoch].item()
+
+            if end_epoch_hook is not None:
+                end_epoch_hook(model=model, epoch=epoch, loss_epoch=loss_epoch)
+
+            if last_val_loss < best_val_loss:
+                best_model = copy.deepcopy(model)
+                best_epoch = epoch
+                best_val_loss = best_val_loss
+
+            if ((epoch + 1) % save_epoch == 0) or (epoch == num_train_epochs - 1):
+                savefile = f'{savefilestr}_epoch{epoch + 1}.pth'
+                print(f'Saving to file {savefile}')
+                save_model(savefile, model,
+                            lr_optimizer=optimizer,
+                            scheduler=lr_scheduler,
+                            loss=loss_epoch)
+
+            # if np.mod(epoch + 1, 5) == 0:
+            train_dataloader.dataset.recompute_chunk_indices()
 
     # save best model
     if best_epoch is not None:
