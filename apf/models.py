@@ -995,8 +995,8 @@ class TransformerModel(torch.nn.Module):
         elif decoder_type == 'diffusion':
             # This assumes all outputs are continuous
             # .forward requires ground truth output at train time
-            n_timesteps=100,
-            decoder_channels=(512, 256, 128, 64),
+            n_timesteps=100
+            decoder_channels=(512, 256, 128, 64)
             time_embed_dim=256
             self.decoder = DiffusionDecoder(d_model, d_output, n_timesteps, decoder_channels, time_embed_dim)
         elif decoder_type == 'vae':
