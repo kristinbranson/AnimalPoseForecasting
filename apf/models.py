@@ -1,3 +1,4 @@
+import contextlib
 import numpy as np
 import math
 import typing
@@ -497,6 +498,11 @@ class myTransformerEncoderLayer(torch.nn.TransformerEncoderLayer):
 
 class TransformerModel(torch.nn.Module):
 
+    # Under torch.autocast, the input embedding and this many initial transformer layers are computed in
+    # float32. The embedding is scaled by sqrt(d_model) before the first layer, which makes that layer's
+    # attention logits very large (~1e4), so bf16 rounding there badly distorts the attention and gradients.
+    n_float32_layers_under_autocast = 1
+
     def __init__(self, d_input: int, d_output: int,
                  d_model: int = 2048, nhead: int = 8, d_hid: int = 512,
                  nlayers: int = 12, dropout: float = 0.1,
@@ -567,17 +573,38 @@ class TransformerModel(torch.nn.Module):
       output Tensor of shape [seq_len, batch_size, ntoken]
     """
 
-        # project input into d_model space, multiple by sqrt(d_model) for reasons?
-        src = self.encoder(src) * math.sqrt(self.d_model)
+        autocast_on = torch.is_autocast_enabled(src.device.type)
+        nfp32 = self.n_float32_layers_under_autocast if autocast_on else 0
 
-        # add in the positional encoding of where in the sentence the words occur
-        # it is weird to me that these are added, but I guess it would be almost
-        # the same to have these be combined in a single linear layer
-        src = self.pos_encoder(src)
+        with torch.autocast(device_type=src.device.type, enabled=False) if autocast_on else contextlib.nullcontext():
+            if autocast_on:
+                src = src.float()
+
+            # project input into d_model space, multiple by sqrt(d_model) for reasons?
+            src = self.encoder(src) * math.sqrt(self.d_model)
+
+            # add in the positional encoding of where in the sentence the words occur
+            # it is weird to me that these are added, but I guess it would be almost
+            # the same to have these be combined in a single linear layer
+            src = self.pos_encoder(src)
+
+            if return_hidden:
+                hidden_states = []
+            for layer in self.transformer_encoder.layers[:nfp32]:
+                src = layer(src, src_mask=mask, is_causal=is_causal)
+                if return_hidden:
+                    hidden_states.append(src.detach().cpu().numpy())
 
         # main transformer layers
-        if return_hidden:
-            hidden_states = []
+        if nfp32 > 0:
+            # remaining layers under autocast; the encoder has no final norm, so this matches transformer_encoder
+            assert self.transformer_encoder.norm is None
+            output = src
+            for layer in self.transformer_encoder.layers[nfp32:]:
+                output = layer(output, src_mask=mask, is_causal=is_causal)
+                if return_hidden:
+                    hidden_states.append(output.detach().float().cpu().numpy())
+        elif return_hidden:
             output = src
             for layer in self.transformer_encoder.layers:
                 output = layer(
