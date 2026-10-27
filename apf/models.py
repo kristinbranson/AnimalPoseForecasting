@@ -652,7 +652,7 @@ class FlattenedDecoderSimple(torch.nn.Module):
                 out_i = gt_[:, :, i]
             else:
                 # shape of out[i] is (batch_size, seq_len, n_bins)
-                # shape of sampels is (batch_size, seq_len), with entries corresonding to the selected bin
+                # shape of samples is (batch_size, seq_len), with entries corresonding to the selected bin
                 samples = weighted_sample(torch.softmax(out[:, :, i], dim=-1), 1)[0]
                 cols, rows = np.indices(samples.shape)
                 out_i = torch.zeros_like(out[:, :, i])
@@ -1008,7 +1008,7 @@ class TransformerModel(torch.nn.Module):
             # self.decoder = FlattenedDecoder(d_model, d_output_discrete, nbins)
             # self.decoder = FlattenedDecoder(d_model, d_output_discrete, nbins, nhead, nlayers_decoder, d_hid, dropout)
             self.decoder = HybridFeatureDecoder(d_model, d_output_discrete, nbins,
-                                                d_dec=d_model, #d_dec=256,
+                                                d_dec=512, #d_dec=d_model,
                                                 nhead=nhead, nlayers=nlayers_decoder, d_hid=d_hid, dropout=0.1)
         else:
             assert False, f"Decoder type '{decoder_type}' is not supported"
@@ -1251,7 +1251,9 @@ def mixed_causal_criterion(tgt, pred, weight_discrete=.5, extraout=False):
     if iscontinuous:
         n = np.prod(tgt_continuous.shape[:-1])
     else:
-        n = np.prod(tgt_discrete.shape[:-2])
+        # Note that tgt_discrete stores bins and features flattened, but pred_discrete does not.
+        # TODO: Modify this to be consistent.
+        n = np.prod(pred_discrete.shape[:-2])
     assert n > 0, 'no examples in batch'
     if iscontinuous:
         err_continuous = lossfcn_continuous(pred_continuous, tgt_continuous.to(device=pred_continuous.device)) * n
