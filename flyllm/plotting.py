@@ -845,7 +845,7 @@ def debug_plot_pose(examplein, train_dataset=None, predin=None, data=None,
             flynum = examplecurr.metadata['flynum']
         else:
             Xkp_true = apf.dataset.apply_inverse_operations(examplecurr['labels']['velocity'],extraargs=invert_args)
-            Xkp_true = Xkp_true[0].transpose(0,2,1)
+            Xkp_true = Xkp_true.transpose(0,2,1)   # one example: (n_frames, 2, n_keypoints) -> (n_frames, n_keypoints, 2)
             t0 = examplecurr['metadata']['start_frame']
             flynum = examplecurr['metadata']['agent_id']
         if predin is not None:
@@ -855,7 +855,7 @@ def debug_plot_pose(examplein, train_dataset=None, predin=None, data=None,
                 Xkp_pred = predcurr.labels.get_next_keypoints(**pred_args)
             else:
                 Xkp_pred = apf.dataset.apply_inverse_operations(predcurr['labels']['velocity'],extraargs=invert_args)
-                Xkp_pred = Xkp_pred[0].transpose(0,2,1)
+                Xkp_pred = Xkp_pred.transpose(0,2,1)   # (n_frames, 2, n_keypoints) -> (n_frames, n_keypoints, 2)
             namepred = 'Pred'
         elif data is not None:
             if isflymlm:
