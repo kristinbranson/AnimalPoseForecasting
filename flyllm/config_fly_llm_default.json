@@ -136,8 +136,11 @@
     "_comment_float32_matmul_precision": "float32 matmul precision passed to torch.set_float32_matmul_precision: 'highest' is full fp32, 'high' allows TF32 on Ampere and newer GPUs (much faster)",
     "float32_matmul_precision": "highest",
 
-    "_comment_autocast_dtype": "if not null, e.g. 'bfloat16', run model forward passes during training and validation under torch.autocast with this dtype (much faster); weights, optimizer state, and losses stay float32",
-    "autocast_dtype": null,
+    "_comment_use_autocast": "whether to run model forward passes during training and validation under torch.autocast with dtype autocast_dtype (much faster); weights, optimizer state, and losses stay float32",
+    "use_autocast": false,
+
+    "_comment_autocast_dtype": "dtype used for autocast if use_autocast is true, e.g. 'bfloat16'; ignored otherwise",
+    "autocast_dtype": "bfloat16",
 
     "_comment_val_epoch": "compute the validation loss every val_epoch epochs (and always after the last epoch)",
     "val_epoch": 1,

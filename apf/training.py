@@ -52,7 +52,8 @@ def train(
         savefilestr: str | None = None,
         save_epoch: int | None = None,
         max_nonfinite_steps: int = 100,
-        autocast_dtype: str | torch.dtype | None = None,
+        use_autocast: bool = False,
+        autocast_dtype: str | torch.dtype = 'bfloat16',
         val_epoch: int = 1,
 ) -> tuple[TransformerModel, TransformerModel, dict]:
     """ Trains a model on train_dataloader, using val_dataloader to select the best_model.
@@ -82,9 +83,11 @@ def train(
         max_nonfinite_steps: Training steps whose prediction, loss, or gradient norm is non-finite are skipped
             (no optimizer step) and logged. Raises RuntimeError once more than this many steps have been
             skipped in total. Defaults to 100.
-        autocast_dtype: If not None, e.g. 'bfloat16', runs model forward passes (training and validation)
-            under torch.autocast with this dtype. This is much faster on recent GPUs. Weights, gradients,
-            optimizer state, and losses stay float32. Defaults to None (no autocast).
+        use_autocast: If True, runs model forward passes (training and validation) under torch.autocast with
+            dtype autocast_dtype. This is much faster on recent GPUs. Weights, gradients, optimizer state, and
+            losses stay float32. Defaults to False.
+        autocast_dtype: dtype used for autocast if use_autocast is True, e.g. 'bfloat16'. Ignored if
+            use_autocast is False. Defaults to 'bfloat16'.
         val_epoch: Computes the validation loss every val_epoch epochs, and always after the last epoch.
             Validation losses for other epochs are left as nan, and the best model is selected among the
             epochs that were validated. Defaults to 1.
@@ -96,11 +99,15 @@ def train(
     """
     device = next(model.parameters()).device
 
-    if isinstance(autocast_dtype, str):
-        autocast_dtype = getattr(torch, autocast_dtype)
-    use_autocast = autocast_dtype is not None
     if use_autocast:
+        if autocast_dtype is None:
+            raise ValueError('use_autocast is True, but autocast_dtype is None')
+        if isinstance(autocast_dtype, str):
+            autocast_dtype = getattr(torch, autocast_dtype)
         LOG.info(f'Using autocast with dtype {autocast_dtype}')
+    else:
+        # compute_loss_mixed uses autocast iff autocast_dtype is not None
+        autocast_dtype = None
     if val_epoch is None or val_epoch < 1:
         val_epoch = 1
 
