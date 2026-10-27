@@ -56,17 +56,16 @@ LOG.info('isnotebook: ' + str(ISNOTEBOOK))
 # %%
 # Resolve paths: locate the female-specific config file and set up the output figure directory.
 #configfile = 'configs/config_fly_llm_predvel_optimalbinning_20251113.json'
-configfile = '/groups/branson/bransonlab/taylora/apf2/config_fly_llm_predvel_optimalbinning_20251113_female.json'
+configfilename = 'config_fly_llm_predvel_optimalbinning_20251113_female.json'
+configfile = os.path.join(os.getcwd(),configfilename)
 outfigdirname = 'flyllm-figs'
 debug_uselessdata = True  # False for real runs
 
-# path to config file based on code directory
 flyllmdir = flyllm.__path__[0]
-configfile = os.path.join(flyllmdir,configfile)
-assert os.path.exists(configfile), f'Config file {configfile} does not exist!'
-
 # all outputs go under the working directory, never into the source tree
 outrootdir = os.getcwd()
+assert os.path.exists(configfile), f'Config file {configfile} does not exist!'
+
 # assert not os.path.abspath(outrootdir).startswith(os.path.abspath(flyllmdir)), \
 #     f'Working directory {outrootdir} is inside the source tree {flyllmdir}; cd elsewhere before running.'
 outfigdir = os.path.join(outrootdir,outfigdirname)
@@ -265,7 +264,7 @@ for idx,featidx in enumerate(config['discreteidx']):
 # savedir = config['savedir']
 # if not os.path.isabs(savedir):
 #     savedir = os.path.join(outrootdir,savedir)
-savedir = outrootdir
+savedir = os.path.join(outrootdir, 'bins')
 savefile = os.path.join(savedir,f'{savefilestr}_bininfo.npz')
 
 # make directory if it doesn't exist
