@@ -2,6 +2,7 @@ import numpy as np
 import math
 import typing
 import torch
+from apf.data import weighted_sample
 
 def CrossEntropyLossEps(eps=1e-8,**kwargs):
     ce = torch.nn.CrossEntropyLoss(**kwargs)
@@ -59,7 +60,9 @@ def mixed_causal_criterion(tgt, pred, weight_discrete=.5, extraout=False):
     if iscontinuous:
         n = np.prod(tgt_continuous.shape[:-1])
     else:
-        n = np.prod(tgt_discrete.shape[:-2])
+        # Note that tgt_discrete stores bins and features flattened, but pred_discrete does not.
+        # TODO: Modify upstream pred to be flattened or target to not be flattened for consistency?
+        n = np.prod(pred_discrete.shape[:-2])
     assert n > 0, 'no examples in batch'
     if iscontinuous:
         err_continuous = lossfcn_continuous(pred_continuous, tgt_continuous.to(device=pred_continuous.device)) * n
@@ -494,8 +497,6 @@ class myTransformerEncoderLayer(torch.nn.TransformerEncoderLayer):
     def set_need_weights(self, need_weights):
         self.need_weights = need_weights
 
-
-from apf.data import weighted_sample
 
 class FlattenedDecoderSimple(torch.nn.Module):
     # This assumes all outputs are discretized
@@ -1354,7 +1355,7 @@ def compute_loss(model, dataloader, dataset, device, mask, criterion, config):
             return loss
 
 
-def compute_loss_mixed(model, dataloader, device, mask, weight_discrete):
+def compute_loss_mixed(model, dataloader, device, mask, weight_discrete, input_gt=False):
     model.eval()
     with torch.no_grad():
         all_loss = torch.zeros(len(dataloader), device=device)
@@ -1363,7 +1364,11 @@ def compute_loss_mixed(model, dataloader, device, mask, weight_discrete):
         loss_continuous = torch.tensor(0.0).to(device)
         nmask = 0
         for i, example in enumerate(dataloader):
-            pred = model(example['input'].to(device=device), mask=mask, is_causal=True)
+            if input_gt:
+                pred = model(example['input'].to(device=device), mask=mask, is_causal=True,
+                             gt=example['labels_discrete'].to(device=device))
+            else:
+                pred = model(example['input'].to(device=device), mask=mask, is_causal=True)
             loss_curr, loss_discrete_curr, loss_continuous_curr = mixed_causal_criterion(
                 example, pred, weight_discrete=weight_discrete, extraout=True
             )
