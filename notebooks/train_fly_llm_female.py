@@ -102,7 +102,8 @@ os.makedirs(outmodeldir, exist_ok=True)
 # Prints a summary of each returned object's type and size, then unpacks everything
 # into named variables for use in the rest of the notebook.
 res = init_flyllm(configfile=configfile,mode='train',restartmodelfile=restartmodelfile,
-                debug_uselessdata=debug_uselessdata)
+                debug_uselessdata=debug_uselessdata,
+                overrideconfig={'num_train_epochs': 10})
 
 for key in res:
     s = f'{key}: {type(res[key])}'
