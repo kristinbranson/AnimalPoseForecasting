@@ -59,29 +59,29 @@ LOG.info('isnotebook: ' + str(ISNOTEBOOK))
 # Generate a unique timestamp string used later to name saved model checkpoint files,
 # so that each training run produces distinctly named outputs.
 timestamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
-print('Timestamp: ' + timestamp)
+LOG.info('Timestamp: ' + timestamp)
 
 # %% [markdown]
 # ### Set parameters
 
 # %%
-# Point to the female-specific JSON config file (looked up in the current working directory),
+# Point to the female-specific JSON config file (looked up in the working directory),
 # set optional restart checkpoint to None (start fresh), specify the figure and model
 # checkpoint output directories,
 # and set debug_uselessdata=True to run quickly on a small data subset during development
 # (set False for real training).  All outputs go under outrootdir (= PWD), never into the
 # source tree.
 # configfile = 'configs/config_fly_llm_predvel_optimalbinning_20251113.json'
-configfile = 'config_fly_llm_predvel_optimalbinning_20251113_female.json'
+configfilename = 'config_fly_llm_predvel_optimalbinning_20251113_female.json'
+configfile = os.path.join(os.getcwd(),configfilename)
 restartmodelfile = None
 outfigdirname = 'figs'
 outmodeldirname = 'models'
-debug_uselessdata = False   # full training run
+debug_uselessdata = False   # should be False for 'real' runs
 
-flyllmdir = flyllm.__path__[0]
-# all outputs (and the config file) are resolved against the working directory
+# flyllmdir = flyllm.__path__[0]
+# all outputs are resolved against the working directory
 outrootdir = os.getcwd()
-configfile = os.path.join(outrootdir, configfile)
 assert os.path.exists(configfile), f'Config file {configfile} does not exist!'
 
 outfigdir = os.path.join(outrootdir, outfigdirname)
