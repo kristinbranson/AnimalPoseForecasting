@@ -145,6 +145,9 @@
     "_comment_val_epoch": "compute the validation loss every val_epoch epochs (and always after the last epoch)",
     "val_epoch": 1,
 
+    "_comment_use_compile": "whether to run model forward passes during training and validation through torch.compile (faster per step, but compiling takes about a minute at the start of training)",
+    "use_compile": false,
+
     "_comment_num_workers": "number of background worker processes for the training and validation DataLoaders (0 = load in the main process)",
     "num_workers": 0
 }

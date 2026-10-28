@@ -55,6 +55,7 @@ def train(
         use_autocast: bool = False,
         autocast_dtype: str | torch.dtype = 'bfloat16',
         val_epoch: int = 1,
+        use_compile: bool = False,
 ) -> tuple[TransformerModel, TransformerModel, dict]:
     """ Trains a model on train_dataloader, using val_dataloader to select the best_model.
 
@@ -91,6 +92,10 @@ def train(
         val_epoch: Computes the validation loss every val_epoch epochs, and always after the last epoch.
             Validation losses for other epochs are left as nan, and the best model is selected among the
             epochs that were validated. Defaults to 1.
+        use_compile: If True, runs model forward passes (training and validation) through torch.compile(model).
+            This is faster per step, but the first step (and the first validation pass) takes about a minute
+            to compile. Saved models, best_model, and the hooks use the uncompiled model, which shares the
+            compiled model's weights. Defaults to False.
 
     Returns:
         model: Model after training on all epochs
@@ -110,6 +115,13 @@ def train(
         autocast_dtype = None
     if val_epoch is None or val_epoch < 1:
         val_epoch = 1
+
+    # compiled wrapper sharing model's parameters, used only for forward passes
+    if use_compile:
+        LOG.info('Using torch.compile')
+        fwd_model = torch.compile(model)
+    else:
+        fwd_model = model
 
     # Optimizer
     num_training_steps = num_train_epochs * len(train_dataloader)
@@ -160,7 +172,8 @@ def train(
     n_nonfinite_steps = 0
         
     for epoch in range(start_epoch, num_train_epochs):
-        model.train()
+        # sets both fwd_model and model, since model is a submodule of fwd_model
+        fwd_model.train()
         tr_loss = torch.tensor(0.0).to(device)
         tr_loss_discrete = torch.tensor(0.0).to(device)
         tr_loss_continuous = torch.tensor(0.0).to(device)
@@ -169,7 +182,7 @@ def train(
         for step, example in enumerate(train_dataloader):
 
             with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=use_autocast):
-                pred = model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal)
+                pred = fwd_model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal)
             # compute the loss in float32
             pred = pred_to_float32(pred)
             # check the prediction first, since the criterion asserts on nans
@@ -240,7 +253,7 @@ def train(
         do_val = ((epoch + 1) % val_epoch == 0) or (epoch == num_train_epochs - 1)
         if do_val:
             loss_epoch['val'][epoch], loss_epoch['val_discrete'][epoch], loss_epoch['val_continuous'][epoch] = \
-                compute_loss_mixed(model, val_dataloader, device, train_src_mask, weight_discrete=weight_discrete,
+                compute_loss_mixed(fwd_model, val_dataloader, device, train_src_mask, weight_discrete=weight_discrete,
                                    autocast_dtype=autocast_dtype)
             last_val_loss = loss_epoch['val'][epoch].item()
         
