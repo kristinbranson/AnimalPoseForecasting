@@ -184,7 +184,7 @@ def train(
 
             # compute validation loss after this epoch
             loss_epoch['val'][epoch], loss_epoch['val_discrete'][epoch], loss_epoch['val_continuous'][epoch] = \
-                compute_loss_mixed(model, val_dataloader, device, train_src_mask, weight_discrete=weight_discrete, input_gt=input_gt)
+                compute_loss_mixed(model, val_dataloader, device, train_src_mask, weight_discrete=weight_discrete, input_gt=model.input_gt_for_training)
             last_val_loss = loss_epoch['val'][epoch].item()
 
             if end_epoch_hook is not None:

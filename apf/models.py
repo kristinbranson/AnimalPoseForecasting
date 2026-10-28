@@ -689,7 +689,6 @@ class TransformerModel(torch.nn.Module):
             if decoder_kwargs == None:
                 decoder_kwargs = {}
             self.decoder = FlattenedDecoderTransformer(d_model, d_output_discrete, nbins, **decoder_kwargs)
-            # d_dec=512, nhead=nhead, nlayers=nlayers_decoder, d_hid=d_hid, dropout=0.1)
             self.input_gt_for_training=True
         elif decoder_type == 'flattened_simple':
             # This assumes all outputs are discretized
