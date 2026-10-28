@@ -5,15 +5,11 @@ import logging
 
 from apf.dataset import Dataset, Data, get_post_operations, get_operation, apply_inverse_operations, apply_opers_from_data
 from apf.models import TransformerModel
-from tqdm.notebook import tqdm, trange
+from tqdm.auto import trange
 
-LOG = logging.getLogger(__name__)
-
-from apf.dataset import Fusion
 from experiments.flyllm import BodyCentricKP, RawKP
 
-from flyllm.config import featangle
-from apf.utils import modrange
+LOG = logging.getLogger(__name__)
 
 
 def simulate(

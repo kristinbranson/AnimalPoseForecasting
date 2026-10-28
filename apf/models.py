@@ -601,23 +601,27 @@ class FlattenedDecoderTransformer(torch.nn.Module):
         z = self.final_norm(z).view(B, T, self.n_feat, self.d_dec)
         return torch.stack([head(z[:, :, k]) for k, head in enumerate(self.heads)], dim=2)
 
-    def forward(self, hidden, gt=None, temperature=1.0):
+    def forward(self, hidden, gt=None, temperature=1.0, sample_last_only=True):
         """
         Args:
             hidden: (B, T, d_model) from the temporal encoder.
             gt: (B, T, n_feat * n_bins) one-hot targets, or None to sample.
             temperature: sampling temperature; 0 means argmax.
+            sample_last_only: If true, decodes and samples only the last timestep in the input
         """
         B, T, _ = hidden.shape
-        ctx = self.ctx_proj(hidden)
         if gt is not None:
             y = gt.reshape(B, T, self.n_feat, self.n_bins)
-            return self.decode(ctx, y).reshape(B, T, -1)
-        return self.sample(ctx, temperature).reshape(B, T, -1)
+            return self.decode(self.ctx_proj(hidden), y).reshape(B, T, -1)
+        else:
+            if sample_last_only:
+                return self.sample(self.ctx_proj(hidden[:, -1:]), temperature).reshape(B, 1, -1)
+            else:
+                return self.sample(self.ctx_proj(hidden), temperature).reshape(B, T, -1)
 
     @torch.no_grad()
     def sample(self, ctx, temperature):
-        """Sample features one at a time. For rollouts, pass hidden[:, -1:] to sample only the next step."""
+        """Sample features one at a time. For rollouts, pass ctx[:, -1:] to sample only the next step."""
         B, T, _ = ctx.shape
         y = ctx.new_zeros(B, T, self.n_feat, self.n_bins)
         for k in range(self.n_feat):
@@ -641,7 +645,7 @@ class TransformerModel(torch.nn.Module):
                  d_output_discrete=None, nbins=None,
                  dataset_params=None, config=None,
                  decoder_type='linear', # 'diffusion', 'flattened', 'flattened_simple
-                 **decoder_kwargs,
+                 decoder_kwargs=None,
                  ):
         super().__init__()
         self.model_type = 'Transformer'
@@ -675,23 +679,26 @@ class TransformerModel(torch.nn.Module):
         else:
             self.encoder = torch.nn.Linear(d_input, d_model)
 
-        self.output_softmax=True
+        self.input_gt_for_training=False
         if decoder_type == 'linear':
             # fully-connected layer from d_model to input size
             self.decoder = torch.nn.Linear(d_model, d_output)
         elif decoder_type == 'flattened':
             # This assumes all outputs are discretized
             # .forward requires ground truth output at train time
+            if decoder_kwargs == None:
+                decoder_kwargs = {}
             self.decoder = FlattenedDecoderTransformer(d_model, d_output_discrete, nbins, **decoder_kwargs)
             # d_dec=512, nhead=nhead, nlayers=nlayers_decoder, d_hid=d_hid, dropout=0.1)
-            self.output_softmax=False
+            self.input_gt_for_training=True
         elif decoder_type == 'flattened_simple':
             # This assumes all outputs are discretized
             # .forward requires ground truth output at train time
             self.decoder = FlattenedDecoderSimple(d_model, d_output_discrete, nbins)
-            self.output_softmax=False
+            self.input_gt_for_training=True
         else:
             assert False, f"Decoder type '{decoder_type}' is not supported"
+        self.output_softmax = not self.input_gt_for_training
 
         # store hyperparameters
         self.d_model = d_model
@@ -1277,7 +1284,13 @@ def initialize_model(config, train_dataset, device):
         d_output = train_dataset.d_output_continuous
     else:
         d_output = train_dataset.d_output
-        
+
+    if 'decoder_type' in config:
+        MODEL_ARGS['decoder_type'] = config['decoder_type']
+    if 'decoder_kwargs' in config:
+
+        MODEL_ARGS['decoder_kwargs'] = config['decoder_kwargs']
+
     if config['modelstatetype'] == 'prob':
         model = TransformerStateModel(d_input, d_output, **MODEL_ARGS).to(device)
         criterion = prob_causal_criterion

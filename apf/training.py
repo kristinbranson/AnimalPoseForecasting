@@ -5,7 +5,6 @@ import tqdm
 import copy
 import logging
 from typing import Callable
-import os
 import time
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
@@ -51,7 +50,6 @@ def train(
         start_epoch: int = 0,
         savefilestr: str | None = None,
         save_epoch: int | None = None,
-        input_gt: bool = False,
 ) -> tuple[TransformerModel, TransformerModel, dict]:
     """ Trains a model on train_dataloader, using val_dataloader to select the best_model.
 
@@ -120,7 +118,7 @@ def train(
 
     # Sanity check on temporal dependencies
     # TODO: Does tmess=300 make sense when contextl is < 300?
-    if not input_gt:
+    if not model.input_gt_for_training:
         sanity_check_temporal_dep(train_dataloader, device, train_src_mask, is_causal, model, tmess=300)
 
     # Train
@@ -143,7 +141,7 @@ def train(
             nmask_train = 0
             for step, example in enumerate(train_dataloader):
 
-                if input_gt:
+                if model.input_gt_for_training:
                     pred = model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal,
                                  gt=example['labels_discrete'].to(device=device))
                 else:

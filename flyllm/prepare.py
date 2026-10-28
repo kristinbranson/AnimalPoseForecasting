@@ -341,7 +341,7 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
 
 def init_model(config=None,somedataset=None,somedataloader=None,device=None,loadmodelfile=None,
                restartmodelfile=None,mode='train',res={}, optimizer=None, lr_scheduler=None,
-               optimizer_args={}):
+               optimizer_args={},weights_only=True):
     """
     res = init_model(config=None,somedataset=None,somedataloader=None,device=None,loadmodelfile=None,
                      restartmodelfile=None,mode='train',ntrain_batches=None,res={})
@@ -383,7 +383,7 @@ def init_model(config=None,somedataset=None,somedataloader=None,device=None,load
         LOG.info(f'Loading model from file {loadmodelfile}...')
         modeltype_str, savetime = parse_modelfile(loadmodelfile)
         LOG.info(f'Parsed model type string: {modeltype_str}, savetime: {savetime}')
-        loss_epoch = load_model(loadmodelfile, model, device)
+        loss_epoch = load_model(loadmodelfile, model, device, weights_only=weights_only)
         if 'train' in loss_epoch and loss_epoch['train'] is not None:
             if np.any(np.isnan(loss_epoch['train'].cpu().numpy())):
                 epoch = np.nonzero(np.isnan(loss_epoch['train'].cpu().numpy()))[0][0]
@@ -403,7 +403,8 @@ def init_model(config=None,somedataset=None,somedataloader=None,device=None,load
                 num_training_steps = config['num_train_epochs'] * len(somedataloader)
                 if optimizer is None or lr_scheduler is None:
                     optimizer, lr_scheduler = init_optimizer(num_training_steps, model, optimizer_args)
-                loss_epoch = load_model(restartmodelfile, model, device, lr_optimizer=optimizer, scheduler=lr_scheduler)
+                loss_epoch = load_model(restartmodelfile, model, device,
+                                        lr_optimizer=optimizer, scheduler=lr_scheduler, weights_only=weights_only)
                 update_loss_nepochs(loss_epoch, config['num_train_epochs'])
                 if np.any(np.isnan(loss_epoch['train'].cpu().numpy())):
                     epoch = np.nonzero(np.isnan(loss_epoch['train'].cpu().numpy()))[0][0]
@@ -443,7 +444,8 @@ def init_flyllm(configfile=None,config=None,
                 restartmodelfile=None,
                 doinitconfig=True,doinitstate=True,
                 doinitdatasets=True,doinitmodel=True,overrideconfig={},
-                res={}):
+                res={},
+                weights_only=True):
     """
     Standard use:
     res = init_flyllm(configfile,mode)
@@ -548,7 +550,7 @@ def init_flyllm(configfile=None,config=None,
     if doinitconfig:
         LOG.info('Initializing configuration...')
         try:
-            init_config(configfile=configfile,config=config,mode=mode,loadmodelfile=loadmodelfile,overrideconfig=overrideconfig,res=res)
+            init_config(configfile=configfile,config=config,mode=mode,loadmodelfile=loadmodelfile,overrideconfig=overrideconfig,res=res,weights_only=weights_only)
         except Exception as e:
             LOG.exception(f'Error in init_config: {e}\nAborting init_flyllm')
             return res
@@ -599,7 +601,7 @@ def init_flyllm(configfile=None,config=None,
             # adds 'model', 'criterion', 'num_training_steps', 'optimizer', 'lr_scheduler', 'opt_model', 'modeltype_str',
             # 'model_savetime', 'loss_epoch', 'epoch', 'train_src_mask', and 'is_causal' to res
             res = init_model(config=res['config'],device=res['device'],loadmodelfile=loadmodelfile,
-                            restartmodelfile=restartmodelfile,mode=mode,res=res,**args)
+                            restartmodelfile=restartmodelfile,mode=mode,res=res,weights_only=weights_only,**args)
         except Exception as e:
             LOG.exception(f'Error in init_model: {e}\nAborting init_flyllm')
             return res
