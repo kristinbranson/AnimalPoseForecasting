@@ -927,7 +927,7 @@ class ResNet1d(torch.nn.Module):
         if self.single_output and (self.d_input is not None):
             assert d_input == self.d_input
 
-        sz = (int(np.prod(sz0[:dim])), self.channels[0], d_input)
+        sz = (math.prod(sz0[:dim]), self.channels[0], d_input)
         x = x.reshape(sz)
 
         for layer in self.layers:
@@ -988,7 +988,7 @@ class ResNet2d(torch.nn.Module):
                 k = [1, 1]
                 for i in range(2):
                     if is_d_input[i]:
-                        k[i] = sz[i + 1]
+                        k[i] = int(sz[i + 1])
                         self.collapse_dim.append(-2 + i)
                 self.fc = torch.nn.Conv2d(channels[-1], d_output, k, padding='valid')
         else:
@@ -1038,7 +1038,7 @@ class ResNet2d(torch.nn.Module):
         sz0 = x.shape
         d_input = sz0[-2:]
 
-        sz = (int(np.prod(sz0[:dim])), self.channels[0]) + d_input
+        sz = (math.prod(sz0[:dim]), self.channels[0]) + d_input
         x = x.reshape(sz)
 
         for layer in self.layers:
