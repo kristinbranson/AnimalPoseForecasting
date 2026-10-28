@@ -328,8 +328,7 @@ def load_data(
 
     # TODO: Remove this hack
     if config.get('use_raw_kp', False):
-    # if False: # For the purpose of comparing models, I want to set all data to invalid where there are 11 flies
-        print('ELIMINATING 11th FLY!')
+        LOG.warning('ELIMINATING 11th FLY!')
         vidids = np.unique(data['videoidx'])
         for vidid in vidids:
             inds = np.where(data['videoidx'][:, 0]==vidid)[0]
@@ -398,7 +397,6 @@ def make_dataset(
     # Compute features
     LOG.info('Computing input and label features for dataset...')
     track = Data('keypoints', Xkp.T, [])
-    print(track.array.shape)
 
     LOG.info('Computing sensory features...')
     if config.get('use_raw_kp', False):
@@ -431,15 +429,8 @@ def make_dataset(
     assert not np.any(np.isnan(pose.array[isdata.T])) and np.all(
         np.isnan(pose.array[~isdata.T])), "Pose features should be nan iff isdata == False"
 
-    print(pose.array.shape)
-
     LOG.info('Computing velocity features...')
     if config.get('global_velocity_only', False):
-        # global_ids = np.where(is_relative == 0)[0]
-        # local_ids = np.where(is_relative == 1)[0]
-        # vel_op = Fusion([GlobalVelocity(tspred=config['tspred_global']), Identity()], [global_ids, local_ids])
-        # vel_op.name = 'velocity'  # override the name for ease of simulation
-        # velocity = vel_op(pose, kwargs_per_op=[{'isstart': isstart}, {}])
         velocity = VelocityAndNextPose(featrelative=is_relative)(pose, isstart=isstart)
     else:
         if sum(is_relative) == len(is_relative):
