@@ -64,6 +64,11 @@ LOG.info('Timestamp: ' + timestamp)
 # %% [markdown]
 # ### Set parameters
 
+# %% tags=["parameters"]
+# Config entries to override those in the config file, e.g. {'num_train_epochs': 25}.
+# This is the notebook's papermill parameters cell, so papermill (-p or -y) can set it.
+overrideconfig = {}
+
 # %%
 # Point to the female-specific JSON config file (looked up in the working directory),
 # set optional restart checkpoint to None (start fresh), specify the figure and model
@@ -101,8 +106,10 @@ os.makedirs(outmodeldir, exist_ok=True)
 # transformer model, criterion, optimizer, and learning-rate scheduler.
 # Prints a summary of each returned object's type and size, then unpacks everything
 # into named variables for use in the rest of the notebook.
+LOG.info(f'Config overrides: {overrideconfig}')
 res = init_flyllm(configfile=configfile,mode='train',restartmodelfile=restartmodelfile,
-                debug_uselessdata=debug_uselessdata)
+                debug_uselessdata=debug_uselessdata,
+                overrideconfig=overrideconfig)
 
 for key in res:
     s = f'{key}: {type(res[key])}'
