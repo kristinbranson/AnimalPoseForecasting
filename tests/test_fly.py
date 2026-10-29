@@ -351,11 +351,11 @@ def test_labels_invert_to_velocity():
     'velocity', ...)`, which calls `Fusion.invert()` — `Discretize.invert(do_sampling=False)`, the
     probability-weighted average of the bin centers, and `Identity.invert()` — and then
     `Zscore.invert()`, and compares the decoded movement with `velocity`. The 26 continuous features
-    must equal `velocity` exactly. The discretized ones cannot: a value is recovered only to within
-    roughly a bin. For values at least two bins from either end, the error must be less than the
-    width of the widest interior bin. The two end bins are excluded because they are stretched to
-    cover outliers, and at least half of all values must be checked so the test cannot pass
-    vacuously. This would catch bins being mixed up, wrong z-score parameters, or discrete and
+    must equal `velocity` exactly, after the same rounding to float32 the dataset's stored labels
+    get. The discretized ones cannot: a value is recovered only to within roughly a bin. For values
+    at least two bins from either end, the error must be less than the width of the widest interior
+    bin. The two end bins are excluded because they are stretched to cover outliers, and at least
+    half of all values must be checked so the test cannot pass vacuously. This would catch bins being mixed up, wrong z-score parameters, or discrete and
     continuous columns being confused.
     """
     data = fly_data()
@@ -379,7 +379,11 @@ def test_labels_invert_to_velocity():
                 assert errors.max() <= max_width, \
                     f'feature {feature}: decoding error {errors.max():.3g} > widest interior bin {max_width:.3g}'
         else:
-            error = np.abs(recovered[..., feature_idx] - velocity.array[..., feature_idx])[defined]
+            # the dataset stores its labels as float32, so rebuild the expected values the same way:
+            # z-score velocity, round to the stored dtype, and undo the z-scoring
+            stored = zscore.apply(velocity.array).astype(labels.array.dtype)
+            expected = zscore.invert(stored)
+            error = np.abs(recovered[..., feature_idx] - expected[..., feature_idx])[defined]
             assert error.max() < EXACT_TOLERANCE, f'continuous label inversion error {error.max():.3g}'
 
 
@@ -616,6 +620,8 @@ def test_input_assembly_matches_dataset():
         tracked = data['isdata'][t]                                               # (n_agents,)
         for key, expected in dataset.inputs.items():
             assembled = getattr(processed[key], 'array', processed[key])[:, 0]   # (n_agents, n_features)
+            # the dataset stores its inputs as float32, so round the assembled inputs the same way
+            assembled = assembled.astype(expected.array.dtype)
             testing_utils.assert_arrays_match(assembled[tracked], expected.array[tracked, t], EXACT_TOLERANCE,
                                               f"frame {t}, input '{key}'")
 
