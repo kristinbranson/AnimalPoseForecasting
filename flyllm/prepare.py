@@ -26,14 +26,13 @@ from flyllm.plotting import (
 )
 from apf.models import (
     initialize_model, 
-    initialize_loss, 
-    compute_loss,
-    generate_square_full_mask, 
+    initialize_loss,
     sanity_check_temporal_dep,
-    criterion_wrapper,
     update_loss_nepochs,
-    stack_batch_list,
+    generate_square_full_mask,
+    criterion_wrapper
 )
+# from apf.models_unused import compute_loss, stack_batch_list
 from apf.dataset import Dataset, DataLoader
 from apf.training import init_optimizer
 from experiments.flyllm import make_dataset
@@ -48,7 +47,7 @@ mpl_backend = plt.get_backend()
 if mpl_backend == 'inline':
     from IPython import display
 
-def init_config(configfile=None,config=None,mode='train',loadmodelfile=None,overrideconfig={},res={}):
+def init_config(configfile=None,config=None,mode='train',loadmodelfile=None,overrideconfig={},res={}, weights_only=True):
     """
     res = init_config(configfile=None,config=None,mode='train',loadmodelfile=None,res={})
     Read configuration from configfile and optionally loadmodelfile
@@ -76,7 +75,7 @@ def init_config(configfile=None,config=None,mode='train',loadmodelfile=None,over
         if (loadmodelfile is None) and ('loadmodelfile' in config):
             loadmodelfile = config['loadmodelfile']
         assert loadmodelfile is not None, "No model file provided"
-        load_config_from_model_file(loadmodelfile=loadmodelfile,config=config)
+        load_config_from_model_file(loadmodelfile=loadmodelfile,config=config, weights_only=weights_only)
         assert 'dataset_params' in config, 'dataset_params not in config'
         
     res['config'] = config
@@ -252,7 +251,7 @@ def init_process_data(config=None,data=None,scale_perfly=None,
             raise ValueError(f'traindataprocess {traindataprocess} not recognized')
         res['X'] = X
         res['train_chunk_data_params'] = train_chunk_data_params
-        LOG.info(f'{len(X)} training ids, total of {sum([x['input'].shape[0] for x in X])} time points')
+        LOG.info(f"{len(X)} training ids, total of {sum([x['input'].shape[0] for x in X])} time points")
         
     if valdata is not None:
         LOG.info('Processing val data...')
@@ -266,7 +265,7 @@ def init_process_data(config=None,data=None,scale_perfly=None,
             raise ValueError(f'valdataprocess {valdataprocess} not recognized')
         res['valX'] = valX
         res['val_chunk_data_params'] = val_chunk_data_params
-        LOG.info(f' {len(valX)} val ids, total of {sum([x['input'].shape[0] for x in valX])} time points')
+        LOG.info(f" {len(valX)} val ids, total of {sum([x['input'].shape[0] for x in valX])} time points")
     
     return res
 
@@ -313,7 +312,8 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
         res['train_data'] = {}
         res['train_dataset'], res['train_data']['flyids'], res['train_data']['track'], res['train_data']['pose'], \
             res['train_data']['velocity'], res['train_data']['sensory'], res['config']['dataset_params'], \
-            res['train_data']['isdata'], res['train_data']['isstart'], res['train_data']['useoutputmask'] = \
+            res['train_data']['isdata'], res['train_data']['isstart'], res['train_data']['useoutputmask'], \
+            res['train_data']['labels'], res['train_data']['categories'] = \
             make_dataset(config,'intrainfile',return_all=True,debug=debug_uselessdata)
         res['dataset_params'] = res['config']['dataset_params']
         
@@ -328,7 +328,8 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
         res['val_data'] = {}
         res['val_dataset'], res['val_data']['flyids'], res['val_data']['track'], res['val_data']['pose'], \
             res['val_data']['velocity'], res['val_data']['sensory'], res['config']['dataset_params'], \
-            res['val_data']['isdata'], res['val_data']['isstart'], res['val_data']['useoutputmask'] = \
+            res['val_data']['isdata'], res['val_data']['isstart'], res['val_data']['useoutputmask'], \
+            res['val_data']['labels'], res['val_data']['categories'] = \
             make_dataset(config,'invalfile',return_all=True,debug=debug_uselessdata)
         res['dataset_params'] = res['config']['dataset_params']
 
@@ -337,9 +338,10 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
         res['nval_batches'] = len(res['val_dataloader'])
     return res
 
+
 def init_model(config=None,somedataset=None,somedataloader=None,device=None,loadmodelfile=None,
                restartmodelfile=None,mode='train',res={}, optimizer=None, lr_scheduler=None,
-               optimizer_args={}):
+               optimizer_args={},weights_only=True):
     """
     res = init_model(config=None,somedataset=None,somedataloader=None,device=None,loadmodelfile=None,
                      restartmodelfile=None,mode='train',ntrain_batches=None,res={})
@@ -381,7 +383,7 @@ def init_model(config=None,somedataset=None,somedataloader=None,device=None,load
         LOG.info(f'Loading model from file {loadmodelfile}...')
         modeltype_str, savetime = parse_modelfile(loadmodelfile)
         LOG.info(f'Parsed model type string: {modeltype_str}, savetime: {savetime}')
-        loss_epoch = load_model(loadmodelfile, model, device)
+        loss_epoch = load_model(loadmodelfile, model, device, weights_only=weights_only)
         if 'train' in loss_epoch and loss_epoch['train'] is not None:
             if np.any(np.isnan(loss_epoch['train'].cpu().numpy())):
                 epoch = np.nonzero(np.isnan(loss_epoch['train'].cpu().numpy()))[0][0]
@@ -401,7 +403,8 @@ def init_model(config=None,somedataset=None,somedataloader=None,device=None,load
                 num_training_steps = config['num_train_epochs'] * len(somedataloader)
                 if optimizer is None or lr_scheduler is None:
                     optimizer, lr_scheduler = init_optimizer(num_training_steps, model, optimizer_args)
-                loss_epoch = load_model(restartmodelfile, model, device, lr_optimizer=optimizer, scheduler=lr_scheduler)
+                loss_epoch = load_model(restartmodelfile, model, device,
+                                        lr_optimizer=optimizer, scheduler=lr_scheduler, weights_only=weights_only)
                 update_loss_nepochs(loss_epoch, config['num_train_epochs'])
                 if np.any(np.isnan(loss_epoch['train'].cpu().numpy())):
                     epoch = np.nonzero(np.isnan(loss_epoch['train'].cpu().numpy()))[0][0]
@@ -441,7 +444,8 @@ def init_flyllm(configfile=None,config=None,
                 restartmodelfile=None,
                 doinitconfig=True,doinitstate=True,
                 doinitdatasets=True,doinitmodel=True,overrideconfig={},
-                res={}):
+                res={},
+                weights_only=True):
     """
     Standard use:
     res = init_flyllm(configfile,mode)
@@ -546,7 +550,7 @@ def init_flyllm(configfile=None,config=None,
     if doinitconfig:
         LOG.info('Initializing configuration...')
         try:
-            init_config(configfile=configfile,config=config,mode=mode,loadmodelfile=loadmodelfile,overrideconfig=overrideconfig,res=res)
+            init_config(configfile=configfile,config=config,mode=mode,loadmodelfile=loadmodelfile,overrideconfig=overrideconfig,res=res,weights_only=weights_only)
         except Exception as e:
             LOG.exception(f'Error in init_config: {e}\nAborting init_flyllm')
             return res
@@ -597,7 +601,7 @@ def init_flyllm(configfile=None,config=None,
             # adds 'model', 'criterion', 'num_training_steps', 'optimizer', 'lr_scheduler', 'opt_model', 'modeltype_str',
             # 'model_savetime', 'loss_epoch', 'epoch', 'train_src_mask', and 'is_causal' to res
             res = init_model(config=res['config'],device=res['device'],loadmodelfile=loadmodelfile,
-                            restartmodelfile=restartmodelfile,mode=mode,res=res,**args)
+                            restartmodelfile=restartmodelfile,mode=mode,res=res,weights_only=weights_only,**args)
         except Exception as e:
             LOG.exception(f'Error in init_model: {e}\nAborting init_flyllm')
             return res

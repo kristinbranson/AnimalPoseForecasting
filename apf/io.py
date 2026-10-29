@@ -40,9 +40,10 @@ def save_model(savefile, model, lr_optimizer=None, scheduler=None, loss=None, co
     torch.save(tosave, savefile)
     return
 
-def modernize_model_file(loadfile,dataset,config,device):
+
+def modernize_model_file(loadfile,dataset,config,device, weights_only=True):
     LOG.info(f'Loading model from file {loadfile}...')
-    state = torch.load(loadfile, map_location=device, weights_only=False)
+    state = torch.load(loadfile, map_location=device, weights_only=weights_only)
     if 'model' not in state:
         state = {'model': state}
     if 'dataset_params' not in state['model']:
@@ -52,7 +53,7 @@ def modernize_model_file(loadfile,dataset,config,device):
     return state    
     
 
-def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, config=None, check_state=None):
+def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, config=None, check_state=None, weights_only=True):
     """Restores a model, and optionally its optimizer, scheduler and config, from a saved checkpoint.
 
     Args:
@@ -69,7 +70,7 @@ def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, confi
         loss: dict with 'train' and 'val' loss histories saved with the model, or None entries.
     """
     LOG.info(f'Loading model from file {loadfile}...')
-    state = torch.load(loadfile, map_location=device, weights_only=False)
+    state = torch.load(loadfile, map_location=device, weights_only=weights_only)
     if check_state is not None:
         check_state(state)
     if model is not None:
@@ -93,11 +94,11 @@ def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, confi
     return loss
 
 
-def load_config_from_model_file(loadmodelfile=None, config=None, state=None, no_overwrite=(), sensory_params=None):
+def load_config_from_model_file(loadmodelfile=None, config=None, state=None, no_overwrite=(), sensory_params=None, weights_only=True):
     if state is None:
         assert loadmodelfile is not None
         LOG.info(f'Loading config from file {loadmodelfile}...')
-        state = torch.load(loadmodelfile)
+        state = torch.load(loadmodelfile, weights_only=weights_only)
     if config is not None and 'config' in state:
         overwrite_config(config, state['config'], no_overwrite=no_overwrite)
     else:
