@@ -65,12 +65,12 @@ class TrueLabelModel(torch.nn.Module):
         self.labels = labels
         self.last_input = None
 
-    def output(self, input: torch.Tensor, mask=None, is_causal=None) -> dict[str, torch.Tensor]:
+    def output(self, input: torch.Tensor, mask=None, is_causal=None, return_hidden=False) -> dict[str, torch.Tensor]:
         """Returns the true labels for the frames covered by input, and records input.
 
         Args:
             input: (n_agents, n_input_frames, d_input) float tensor, frames [0, n_input_frames).
-            mask, is_causal: accepted for compatibility with TransformerModel.output, ignored.
+            mask, is_causal, return_hidden: accepted for compatibility with TransformerModel.output, ignored.
 
         Returns:
             dict with the same keys as self.labels, each (n_agents, n_input_frames,
