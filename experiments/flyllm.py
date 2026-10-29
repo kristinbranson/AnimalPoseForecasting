@@ -47,7 +47,8 @@ class Sensory(Operation):
         Returns:
             sensory_data: (n_agents,  n_frames, n_sensory_features) float array
         """
-        feats = []
+        # fill one preallocated output, rather than stacking per-fly arrays, to avoid a full-size copy
+        feats = None
         for flyid in range(Xkp.shape[0]):
             if DOTIME:
                 start_time = utils.tic()
@@ -56,11 +57,13 @@ class Sensory(Operation):
             else:
                 isdatacurr = None
             feat, idxinfo = compute_sensory_wrapper(Xkp.T, flyid, returnidx=True, isdata=isdatacurr)
-            feats.append(feat.T)
+            if feats is None:
+                feats = np.empty((Xkp.shape[0],) + feat.T.shape, dtype=feat.dtype)
+            feats[flyid] = feat.T
             if DOTIME:
                 LOG.info(f"Sensory computation for fly {flyid} took {utils.toc(start_time):.2f} seconds")
         self.idxinfo = idxinfo
-        return np.array(feats)
+        return feats
 
     def invert(self, sensory: np.ndarray) -> None:
         LOG.error(f"Operation {self} is not invertible")

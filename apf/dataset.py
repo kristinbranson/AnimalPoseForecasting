@@ -166,7 +166,10 @@ class Zscore(Operation):
         """
         if self.mean is None:
             self.compute(data)
-        return (data - self.mean[None, None, :]) / self.std[None, None, :]
+        # divide in place, to allocate one full-size array instead of two
+        zscored = data - self.mean[None, None, :]
+        zscored /= self.std[None, None, :]
+        return zscored
 
     def invert(self, data: np.ndarray) -> np.ndarray:
         """ Applies the inverse zscoring to data.
@@ -386,26 +389,31 @@ class Discretize(Operation):
         self.bin_centers = bin_medians
         self.bin_samples = samples
 
-    def apply(self, data: np.ndarray, compute_args: dict = {}) -> np.ndarray:
+    def is_computed(self) -> bool:
+        return self.bin_edges is not None and self.bin_centers is not None and self.bin_samples is not None
+
+    def apply(self, data: np.ndarray, compute_args: dict = {}, out: np.ndarray | None = None) -> np.ndarray:
         """ Bins the data.
 
         Args:
             data: Continuous data, (n_agents,  n_frames, n_features) float array
             or (n_frames, n_features) float array
+            out: If given, the binned data are written into this array (e.g. a slice of a larger array)
+                and it is returned. Must have the shape of binned (see below) and the dtype of data.
 
         Returns:
             binned: Binned data, (n_agents,  n_frames, n_features * n_bins) float array
             or (n_frames, n_features * n_bins) float array
         """
-        
-        if self.bin_edges is None or self.bin_centers is None or self.bin_samples is None:
+
+        if not self.is_computed():
             self.compute(data,**compute_args)
         sz_rest = data.shape[:-1]
         n_feat = data.shape[-1]
         data_flat = data.reshape((-1, n_feat))
 
-        data_flat_discrete = discretize_labels(data_flat, self.bin_edges, soften_to_ends=True)
-            
+        data_flat_discrete = discretize_labels(data_flat, self.bin_edges, soften_to_ends=True, out=out)
+
         return data_flat_discrete.reshape(sz_rest + (-1,))
 
     def invert(self, data: np.ndarray, do_sampling: bool = True) -> np.ndarray:
@@ -502,9 +510,32 @@ class Fusion(Operation):
             kwargs_per_op = [{} for _ in self.operations]
         elif ~isinstance(kwargs_per_op, list):
             kwargs_per_op = [kwargs_per_op for _ in self.operations]
-        processed = [op.apply(data[..., indices], **kwargs) for op, indices, kwargs in zip(self.operations, self.indices_per_op, kwargs_per_op)]
-        self.dims_per_op = [proc.shape[-1] for proc in processed]
-        fused = np.concatenate(processed, axis=-1)
+        # Discretize outputs are large, so rather than concatenating, Discretize writes into the fused
+        # output directly. Other operations are applied first, in order, while each Discretize computes
+        # its bins (if needed), so that the output dims, and hence the fused shape, are known.
+        processed = []
+        for op, indices, kwargs in zip(self.operations, self.indices_per_op, kwargs_per_op):
+            if isinstance(op, Discretize):
+                if not op.is_computed():
+                    op.compute(data[..., indices], **kwargs.get('compute_args', {}))
+                processed.append(None)
+            else:
+                processed.append(op.apply(data[..., indices], **kwargs))
+        self.dims_per_op = [len(indices) * (op.bin_edges.shape[1] - 1) if proc is None else proc.shape[-1]
+                            for op, indices, proc in zip(self.operations, self.indices_per_op, processed)]
+        dtype = np.result_type(*[data.dtype if proc is None else proc.dtype for proc in processed])
+        fused = np.empty(data.shape[:-1] + (sum(self.dims_per_op),), dtype=dtype)
+        start = 0
+        for op, indices, kwargs, proc, dim in zip(self.operations, self.indices_per_op, kwargs_per_op, processed,
+                                                  self.dims_per_op):
+            if proc is None:
+                if dtype == data.dtype:
+                    op.apply(data[..., indices], out=fused[..., start:start + dim], **kwargs)
+                else:
+                    fused[..., start:start + dim] = op.apply(data[..., indices], **kwargs)
+            else:
+                fused[..., start:start + dim] = proc
+            start += dim
         
         if not ismultiagent:
             fused = fused[0]
@@ -1242,6 +1273,14 @@ def collate_nested_dicts(batch):
         return batch
 
 
+def _as_float32(data: Data) -> Data:
+    """ Returns data with its array converted to float32, if it is a higher-precision float numpy array. """
+    array = data.array
+    if isinstance(array, np.ndarray) and np.issubdtype(array.dtype, np.floating) and array.dtype.itemsize > 4:
+        return data._replace(array=array.astype(np.float32))
+    return data
+
+
 class Dataset(torch.utils.data.Dataset):
     """ Contains ground truth data and can be supplied to torch's DataLoader to produce chunks of data.
 
@@ -1271,8 +1310,9 @@ class Dataset(torch.utils.data.Dataset):
             metadata: dict | None = None,
             useoutputmask: np.ndarray | None = None,
     ):
-        self.inputs = inputs
-        self.labels = labels
+        # get_chunk returns float32 chunks anyway, so storing float32 arrays gives the same chunks in half the memory
+        self.inputs = {key: _as_float32(data) for key, data in inputs.items()}
+        self.labels = {key: _as_float32(data) for key, data in labels.items()}
         self.isstart = isstart
         self.context_length = context_length
         self.metadata = metadata
