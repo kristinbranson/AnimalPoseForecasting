@@ -149,6 +149,9 @@
     "use_compile": false,
 
     "_comment_num_workers": "number of background worker processes for the training and validation DataLoaders (0 = load in the main process)",
-    "num_workers": 0
+    "num_workers": 0,
+
+    "_comment_dataset_cache_dir": "directory for caching the preprocessed training and validation datasets, so later runs with the same data config load them instead of rebuilding them (relative paths are relative to the working directory). null = no caching.",
+    "dataset_cache_dir": null
 }
 
