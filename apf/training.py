@@ -5,8 +5,8 @@ import tqdm
 import copy
 import logging
 from typing import Callable
-import os
 import time
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from apf.models import (
     sanity_check_temporal_dep,
@@ -158,7 +158,8 @@ def train(
 
     # Sanity check on temporal dependencies
     # TODO: Does tmess=300 make sense when contextl is < 300?
-    sanity_check_temporal_dep(train_dataloader, device, train_src_mask, is_causal, model, tmess=300)
+    if not model.input_gt_for_training:
+        sanity_check_temporal_dep(train_dataloader, device, train_src_mask, is_causal, model, tmess=300)
 
     # Train
     d_discrete = train_dataloader.dataset.d_output_discrete
@@ -170,111 +171,116 @@ def train(
     best_epoch = None
     best_val_loss = 10000
     n_nonfinite_steps = 0
-        
-    for epoch in range(start_epoch, num_train_epochs):
-        # sets both fwd_model and model, since model is a submodule of fwd_model
-        fwd_model.train()
-        tr_loss = torch.tensor(0.0).to(device)
-        tr_loss_discrete = torch.tensor(0.0).to(device)
-        tr_loss_continuous = torch.tensor(0.0).to(device)
 
-        nmask_train = 0
-        for step, example in enumerate(train_dataloader):
+    with sdpa_kernel(SDPBackend.MATH): # This kernel was needed to avoid nans in training
+        for epoch in range(start_epoch, num_train_epochs):
+            # sets both fwd_model and model, since model is a submodule of fwd_model
+            fwd_model.train()
+            tr_loss = torch.tensor(0.0).to(device)
+            tr_loss_discrete = torch.tensor(0.0).to(device)
+            tr_loss_continuous = torch.tensor(0.0).to(device)
 
-            with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=use_autocast):
-                pred = fwd_model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal)
-            # compute the loss in float32
-            pred = pred_to_float32(pred)
-            # check the prediction first, since the criterion asserts on nans
-            nonfinite_reason = None
-            if not all(torch.isfinite(v).all().item() for v in pred.values() if torch.is_tensor(v)):
-                nonfinite_reason = 'prediction'
-            else:
-                loss, loss_discrete, loss_continuous = criterion(
-                    example, pred, weight_discrete=weight_discrete, extraout=True
-                )
-                if not torch.isfinite(loss).item():
-                    nonfinite_reason = 'loss'
+            nmask_train = 0
+            for step, example in enumerate(train_dataloader):
+
+                with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=use_autocast):
+                    if model.input_gt_for_training:
+                        pred = fwd_model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal,
+                                         gt=example['labels_discrete'].to(device=device))
+                    else:
+                        pred = fwd_model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal)
+                # compute the loss in float32
+                pred = pred_to_float32(pred)
+                # check the prediction first, since the criterion asserts on nans
+                nonfinite_reason = None
+                if not all(torch.isfinite(v).all().item() for v in pred.values() if torch.is_tensor(v)):
+                    nonfinite_reason = 'prediction'
                 else:
-                    loss.backward()
-                    # gradient clipping; a non-finite norm would turn all gradients (and then weights) into nans
-                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-                    if not torch.isfinite(grad_norm).item():
-                        nonfinite_reason = f'gradient norm ({grad_norm.item()})'
+                    loss, loss_discrete, loss_continuous = criterion(
+                        example, pred, weight_discrete=weight_discrete, extraout=True
+                    )
+                    if not torch.isfinite(loss).item():
+                        nonfinite_reason = 'loss'
+                    else:
+                        loss.backward()
+                        # gradient clipping; a non-finite norm would turn all gradients (and then weights) into nans
+                        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                        if not torch.isfinite(grad_norm).item():
+                            nonfinite_reason = f'gradient norm ({grad_norm.item()})'
 
-            if nonfinite_reason is not None:
-                n_nonfinite_steps += 1
-                metadata = {k: [int(x) for x in v]
-                            for k, v in example.get('metadata', {}).items() if k in ('start_frame', 'agent_id')}
-                LOG.warning(f'Skipping step {step} of epoch {epoch}: non-finite {nonfinite_reason} '
-                            f'({n_nonfinite_steps} skipped so far). Batch chunks: {metadata}')
-                # free the autograd graph now, rather than holding it through the next forward pass
-                del pred
-                if nonfinite_reason == 'loss':
-                    del loss, loss_discrete, loss_continuous
-                model.zero_grad()
-                # keep the learning rate schedule aligned with the step count
+                if nonfinite_reason is not None:
+                    n_nonfinite_steps += 1
+                    metadata = {k: [int(x) for x in v]
+                                for k, v in example.get('metadata', {}).items() if k in ('start_frame', 'agent_id')}
+                    LOG.warning(f'Skipping step {step} of epoch {epoch}: non-finite {nonfinite_reason} '
+                                f'({n_nonfinite_steps} skipped so far). Batch chunks: {metadata}')
+                    # free the autograd graph now, rather than holding it through the next forward pass
+                    del pred
+                    if nonfinite_reason == 'loss':
+                        del loss, loss_discrete, loss_continuous
+                    model.zero_grad()
+                    # keep the learning rate schedule aligned with the step count
+                    lr_scheduler.step()
+                    if n_nonfinite_steps > max_nonfinite_steps:
+                        raise RuntimeError(f'More than {max_nonfinite_steps} training steps had non-finite '
+                                           f'{nonfinite_reason}; aborting')
+                    continue
+
+                # how many timepoints are in this batch for normalization
+                nmask_train += example['useoutputmask'].sum().detach()
+
+                tr_loss_step = loss.detach()
+                tr_loss += tr_loss_step
+                tr_loss_discrete += loss_discrete.detach()
+                tr_loss_continuous += loss_continuous.detach()
+
+                optimizer.step()
                 lr_scheduler.step()
-                if n_nonfinite_steps > max_nonfinite_steps:
-                    raise RuntimeError(f'More than {max_nonfinite_steps} training steps had non-finite '
-                                       f'{nonfinite_reason}; aborting')
-                continue
+                model.zero_grad()
 
-            # how many timepoints are in this batch for normalization
-            nmask_train += example['useoutputmask'].sum().detach()
+                if end_iter_hook is not None:
+                    end_iter_hook(model=model, step=step, example=example,
+                                predfn=lambda input: model.output(input, mask=train_src_mask, is_causal=is_causal))
 
-            tr_loss_step = loss.detach()
-            tr_loss += tr_loss_step
-            tr_loss_discrete += loss_discrete.detach()
-            tr_loss_continuous += loss_continuous.detach()
+            # update progress bar
+            stat = {'train loss': tr_loss.item() / nmask_train, 'last val loss': last_val_loss, 'epoch': epoch}
+            stat['train loss discrete'] = tr_loss_discrete.item() / nmask_train
+            stat['train loss continuous'] = tr_loss_continuous.item() / nmask_train
+            progress_bar.set_postfix(stat)
+                # progress_bar.update(1)
+            progress_bar.update(len(train_dataloader))
 
-            optimizer.step()
-            lr_scheduler.step()
-            model.zero_grad()
-            
-            if end_iter_hook is not None:
-                end_iter_hook(model=model, step=step, example=example, 
-                            predfn=lambda input: model.output(input, mask=train_src_mask, is_causal=is_causal))
+            # training epoch complete
+            loss_epoch['train'][epoch] = tr_loss.item() / nmask_train
+            loss_epoch['train_discrete'][epoch] = tr_loss_discrete.item() / nmask_train
+            loss_epoch['train_continuous'][epoch] = tr_loss_continuous.item() / nmask_train
 
-        # update progress bar
-        stat = {'train loss': tr_loss.item() / nmask_train, 'last val loss': last_val_loss, 'epoch': epoch}
-        stat['train loss discrete'] = tr_loss_discrete.item() / nmask_train
-        stat['train loss continuous'] = tr_loss_continuous.item() / nmask_train
-        progress_bar.set_postfix(stat)
-            # progress_bar.update(1)
-        progress_bar.update(len(train_dataloader))
+            # compute validation loss after this epoch, every val_epoch epochs
+            do_val = ((epoch + 1) % val_epoch == 0) or (epoch == num_train_epochs - 1)
+            if do_val:
+                loss_epoch['val'][epoch], loss_epoch['val_discrete'][epoch], loss_epoch['val_continuous'][epoch] = \
+                    compute_loss_mixed(fwd_model, val_dataloader, device, train_src_mask, weight_discrete=weight_discrete,
+                                       autocast_dtype=autocast_dtype, input_gt=model.input_gt_for_training)
+                last_val_loss = loss_epoch['val'][epoch].item()
 
-        # training epoch complete
-        loss_epoch['train'][epoch] = tr_loss.item() / nmask_train
-        loss_epoch['train_discrete'][epoch] = tr_loss_discrete.item() / nmask_train
-        loss_epoch['train_continuous'][epoch] = tr_loss_continuous.item() / nmask_train
+            if end_epoch_hook is not None:
+                end_epoch_hook(model=model, epoch=epoch, loss_epoch=loss_epoch)
 
-        # compute validation loss after this epoch, every val_epoch epochs
-        do_val = ((epoch + 1) % val_epoch == 0) or (epoch == num_train_epochs - 1)
-        if do_val:
-            loss_epoch['val'][epoch], loss_epoch['val_discrete'][epoch], loss_epoch['val_continuous'][epoch] = \
-                compute_loss_mixed(fwd_model, val_dataloader, device, train_src_mask, weight_discrete=weight_discrete,
-                                   autocast_dtype=autocast_dtype)
-            last_val_loss = loss_epoch['val'][epoch].item()
-        
-        if end_epoch_hook is not None:
-            end_epoch_hook(model=model, epoch=epoch, loss_epoch=loss_epoch)
+            if do_val and last_val_loss < best_val_loss:
+                best_model = copy.deepcopy(model)
+                best_epoch = epoch
+                best_val_loss = last_val_loss
 
-        if do_val and last_val_loss < best_val_loss:
-            best_model = copy.deepcopy(model)
-            best_epoch = epoch
-            best_val_loss = last_val_loss
-            
-        if ((epoch + 1) % save_epoch == 0) or (epoch == num_train_epochs - 1):
-            savefile = f'{savefilestr}_epoch{epoch + 1}.pth'
-            print(f'Saving to file {savefile}')
-            save_model(savefile, model,
-                        lr_optimizer=optimizer,
-                        scheduler=lr_scheduler,
-                        loss=loss_epoch)
+            if ((epoch + 1) % save_epoch == 0) or (epoch == num_train_epochs - 1):
+                savefile = f'{savefilestr}_epoch{epoch + 1}.pth'
+                print(f'Saving to file {savefile}')
+                save_model(savefile, model,
+                            lr_optimizer=optimizer,
+                            scheduler=lr_scheduler,
+                            loss=loss_epoch)
 
-        # if np.mod(epoch + 1, 5) == 0:
-        train_dataloader.dataset.recompute_chunk_indices()
+            # if np.mod(epoch + 1, 5) == 0:
+            train_dataloader.dataset.recompute_chunk_indices()
 
     # save best model
     if best_epoch is not None:

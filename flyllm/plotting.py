@@ -845,7 +845,7 @@ def debug_plot_pose(examplein, train_dataset=None, predin=None, data=None,
             flynum = examplecurr.metadata['flynum']
         else:
             Xkp_true = apf.dataset.apply_inverse_operations(examplecurr['labels']['velocity'],extraargs=invert_args)
-            Xkp_true = Xkp_true[0].transpose(0,2,1)
+            Xkp_true = Xkp_true.transpose(0,2,1)   # one example: (n_frames, 2, n_keypoints) -> (n_frames, n_keypoints, 2)
             t0 = examplecurr['metadata']['start_frame']
             flynum = examplecurr['metadata']['agent_id']
         if predin is not None:
@@ -855,7 +855,7 @@ def debug_plot_pose(examplein, train_dataset=None, predin=None, data=None,
                 Xkp_pred = predcurr.labels.get_next_keypoints(**pred_args)
             else:
                 Xkp_pred = apf.dataset.apply_inverse_operations(predcurr['labels']['velocity'],extraargs=invert_args)
-                Xkp_pred = Xkp_pred[0].transpose(0,2,1)
+                Xkp_pred = Xkp_pred.transpose(0,2,1)   # (n_frames, 2, n_keypoints) -> (n_frames, n_keypoints, 2)
             namepred = 'Pred'
         elif data is not None:
             if isflymlm:
@@ -1693,6 +1693,7 @@ def plot_bin_edges(featidx,xplot=None,yplot=None,example=None,labels=None,zscore
     
     return h
 
+
 def plot_multi_pred_iter_vs_true(pred_example,true_example,color_true='k',samplecolors=None,ylim_nstd=None,tsplot=None,fig=None,ylims=None,
                                  samplealpha=None,figwidth=16,axheight=4,maxsamplesplot=None,plotbestsample=False,featsplot=None,
                                  samplelabel='Predicted',plottrue=True):
@@ -1755,7 +1756,8 @@ def plot_multi_pred_iter_vs_true(pred_example,true_example,color_true='k',sample
     fig.tight_layout()
     
     return fig
-    
+
+
 def plot_multi_pred_vs_true(pred_example,true_example,color_true='k',featcolors=None,ylim_nstd=None,nsamples=100,
                             tsplot=None,fig=None,ylims=None,featsplot=None,samplealpha=None,
                             truelw=.5,truems=3,predlw=1,predms=6,plotbinedges=False,bincolor=[.6,.6,.6]):
@@ -1828,3 +1830,31 @@ def plot_multi_pred_vs_true(pred_example,true_example,color_true='k',featcolors=
     fig.tight_layout()
     
     return fig
+
+
+
+def plot_frame(track, frame_id, agent_ids, kp=7, show_spotlight=True, is_female=None):
+    plot_arena()
+    x, y = track[:, frame_id, :, :].transpose([1, 2, 0])  # n_keypoints x n_agents
+    for edge in skeleton_edges:
+        # Plot all agents in grey (wings in cyan)
+        lw = 0.8
+        alpha = 1
+        linestyle = '-'
+        if 0 in edge or 1 in edge:
+            # lw = 1.5
+            # alpha = 0.5
+            linestyle = '--'
+        plt.plot(x[edge, :], y[edge, :], linestyle, color=.3*np.ones(3), linewidth=lw, alpha=alpha)
+        # Plot specified agents in black and with a dot
+        plt.plot(x[edge][:, agent_ids], y[edge][:, agent_ids], linestyle + 'k', linewidth=lw, alpha=alpha)
+    # plt.plot(x[kp:kp+1, agent_ids], y[kp:kp+1, agent_ids], '.', markersize=8)
+    if show_spotlight:
+        if is_female is None:
+            plt.plot(x[kp:kp+1, agent_ids], y[kp:kp+1, agent_ids], 'o', markeredgecolor='none', markersize=60, alpha=0.2)
+        else:
+            female = is_female[agent_ids, frame_id]
+            inds = agent_ids[np.where(female)[0]]
+            plt.scatter(x[inds], y[inds], c=np.arange(len(inds)), s=3500, alpha=0.2, cmap='spring', clim=[0, len(inds)], edgecolors='none')
+            inds = agent_ids[np.where(~female)[0]]
+            plt.scatter(x[inds], y[inds], c=np.arange(len(inds)), s=3500, alpha=0.2, cmap='winter', clim=[0, len(inds)], edgecolors='none')

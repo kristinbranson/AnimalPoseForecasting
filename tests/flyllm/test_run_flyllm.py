@@ -1,6 +1,8 @@
+import pytest
 from flyllm.run_flyllm import main
 
 
+@pytest.mark.skip(reason="Deprecated. Replaced by tests/test_fly.py")
 def test_main():
     """This test just ensures that main runs without crashing. Takes about 1 minute to run.
     """
