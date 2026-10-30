@@ -148,6 +148,9 @@
     "_comment_use_compile": "whether to run model forward passes during training and validation through torch.compile (faster per step, but compiling takes about a minute at the start of training)",
     "use_compile": false,
 
+    "_comment_use_sdpa_math_kernel": "whether to run training and validation under sdpa_kernel(SDPBackend.MATH), restricting attention to PyTorch's unfused implementation; this was needed to avoid nans in training, but is slower than the fused kernels PyTorch otherwise chooses",
+    "use_sdpa_math_kernel": true,
+
     "_comment_num_workers": "number of background worker processes for the training and validation DataLoaders (0 = load in the main process)",
     "num_workers": 0,
 

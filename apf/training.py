@@ -1,4 +1,5 @@
 import sys
+import contextlib
 import torch
 from torch.utils.data import DataLoader
 import tqdm
@@ -56,6 +57,7 @@ def train(
         autocast_dtype: str | torch.dtype = 'bfloat16',
         val_epoch: int = 1,
         use_compile: bool = False,
+        use_sdpa_math_kernel: bool = True,
 ) -> tuple[TransformerModel, TransformerModel, dict]:
     """ Trains a model on train_dataloader, using val_dataloader to select the best_model.
 
@@ -96,6 +98,10 @@ def train(
             This is faster per step, but the first step (and the first validation pass) takes about a minute
             to compile. Saved models, best_model, and the hooks use the uncompiled model, which shares the
             compiled model's weights. Defaults to False.
+        use_sdpa_math_kernel: If True, training and validation run under sdpa_kernel(SDPBackend.MATH), which
+            restricts attention to PyTorch's unfused implementation. This was needed to avoid nans in
+            training, but it is slower than the fused kernels PyTorch otherwise chooses, and stores the full
+            attention matrix. Defaults to True.
 
     Returns:
         model: Model after training on all epochs
@@ -172,7 +178,9 @@ def train(
     best_val_loss = 10000
     n_nonfinite_steps = 0
 
-    with sdpa_kernel(SDPBackend.MATH): # This kernel was needed to avoid nans in training
+    if use_sdpa_math_kernel:
+        LOG.info('Using the math SDPA kernel for attention')
+    with sdpa_kernel(SDPBackend.MATH) if use_sdpa_math_kernel else contextlib.nullcontext():
         for epoch in range(start_epoch, num_train_epochs):
             # sets both fwd_model and model, since model is a submodule of fwd_model
             fwd_model.train()
