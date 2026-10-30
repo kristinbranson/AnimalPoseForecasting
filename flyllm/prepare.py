@@ -415,6 +415,41 @@ def load_dataset_cache_bang_bang(config, res, cache_file_path):
     torch.set_rng_state(cache['rng_state']['torch'])
     LOG.info('Loaded datasets from cache file')
 
+def build_datasets_bang_bang(config, res, needtraindata, needvaldata, debug_uselessdata):
+    """
+    Builds the training and/or validation datasets with make_dataset, and stores them and their intermediate
+    data in res. Building them also changes config (e.g. dataset_params, discretize_epsilon).
+    """
+    if needtraindata:
+        # create dataset
+        res['train_data'] = {}
+        res['train_dataset'], res['train_data']['flyids'], res['train_data']['track'], res['train_data']['pose'], \
+            res['train_data']['velocity'], res['train_data']['sensory'], res['config']['dataset_params'], \
+            res['train_data']['isdata'], res['train_data']['isstart'], res['train_data']['useoutputmask'], \
+            res['train_data']['labels'], res['train_data']['categories'] = \
+            make_dataset(config,'intrainfile',return_all=True,debug=debug_uselessdata)
+        res['dataset_params'] = res['config']['dataset_params']
+
+    if needvaldata:
+        # create dataset
+        res['val_data'] = {}
+        res['val_dataset'], res['val_data']['flyids'], res['val_data']['track'], res['val_data']['pose'], \
+            res['val_data']['velocity'], res['val_data']['sensory'], res['config']['dataset_params'], \
+            res['val_data']['isdata'], res['val_data']['isstart'], res['val_data']['useoutputmask'], \
+            res['val_data']['labels'], res['val_data']['categories'] = \
+            make_dataset(config,'invalfile',return_all=True,debug=debug_uselessdata)
+        res['dataset_params'] = res['config']['dataset_params']
+
+def generate_and_save_dataset_cache_bang_bang(config, res, cache_file_path, cachekey, needtraindata, needvaldata,
+                                              debug_uselessdata):
+    """
+    Builds the datasets into res and config, as build_datasets_bang_bang does, and saves them to the dataset
+    cache file at cache_file_path, with key cachekey.
+    """
+    config_before = copy.deepcopy(config)
+    build_datasets_bang_bang(config, res, needtraindata, needvaldata, debug_uselessdata)
+    save_dataset_cache(cache_file_path, cachekey, config_before, config, res)
+
 def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idct_m=None,debug_uselessdata=False,res={}):
     """
     res = init_datasets(config=None,X=None,valX=None,traindataprocess='chunk',
@@ -454,33 +489,13 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
 
     cachekey = dataset_cache_key(config, needtraindata, needvaldata, debug_uselessdata)
     cache_file_path = dataset_cache_file_path(config, cachekey)
-    if cache_file_path is not None and os.path.exists(cache_file_path):
+    if cache_file_path is None:
+        build_datasets_bang_bang(config, res, needtraindata, needvaldata, debug_uselessdata)
+    elif os.path.exists(cache_file_path):
         load_dataset_cache_bang_bang(config, res, cache_file_path)
     else:
-        config_before = copy.deepcopy(config) if cache_file_path is not None else None
-
-        if needtraindata:
-            # create dataset
-            res['train_data'] = {}
-            res['train_dataset'], res['train_data']['flyids'], res['train_data']['track'], res['train_data']['pose'], \
-                res['train_data']['velocity'], res['train_data']['sensory'], res['config']['dataset_params'], \
-                res['train_data']['isdata'], res['train_data']['isstart'], res['train_data']['useoutputmask'], \
-                res['train_data']['labels'], res['train_data']['categories'] = \
-                make_dataset(config,'intrainfile',return_all=True,debug=debug_uselessdata)
-            res['dataset_params'] = res['config']['dataset_params']
-
-        if needvaldata:
-            # create dataset
-            res['val_data'] = {}
-            res['val_dataset'], res['val_data']['flyids'], res['val_data']['track'], res['val_data']['pose'], \
-                res['val_data']['velocity'], res['val_data']['sensory'], res['config']['dataset_params'], \
-                res['val_data']['isdata'], res['val_data']['isstart'], res['val_data']['useoutputmask'], \
-                res['val_data']['labels'], res['val_data']['categories'] = \
-                make_dataset(config,'invalfile',return_all=True,debug=debug_uselessdata)
-            res['dataset_params'] = res['config']['dataset_params']
-
-        if cache_file_path is not None:
-            save_dataset_cache(cache_file_path, cachekey, config_before, config, res)
+        generate_and_save_dataset_cache_bang_bang(config, res, cache_file_path, cachekey, needtraindata, needvaldata,
+                                                  debug_uselessdata)
 
     if needtraindata:
         # create dataloader
