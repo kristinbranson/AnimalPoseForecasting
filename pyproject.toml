@@ -1,8 +1,9 @@
 # Install with `pip install -e .`, which also installs the commands under [project.scripts].
 #
-# Version ranges are loose on purpose, so that they don't make pip replace what conda installed, but stay
-# within the major version in use (for 0.x versions, the minor version).  Exact versions belong in the
-# environment that uses this package (a conda env file, or a uv lock file).
+# Version ranges are loose on purpose, so that in a conda env made from environment/*.yml, pip doesn't replace
+# the packages conda installed (it does install ratinabox, scikit-learn, transformers, and pytest, which those
+# envs lack).  But they stay within the major version in use (for 0.x versions, the minor version).  Exact
+# versions belong in the environment that uses this package (a conda env file, or a uv lock file).
 
 [project]
 name = "AnimalPoseForecasting"
@@ -22,8 +23,8 @@ dependencies = [
     "ratinabox>=1.15,<2",
     # for flyllm.optimal_binning's k-means binning
     "scikit-learn>=1.2,<2",
-    # for flyllm/run_flyllm.py
-    "transformers>=4.30,<5",
+    # for flyllm/run_flyllm.py, which uses transformers.optimization.AdamW, removed in 4.50
+    "transformers>=4.30,<4.50",
     "pytest>=9.0,<10",
 ]
 
