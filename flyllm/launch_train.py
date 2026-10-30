@@ -5,7 +5,7 @@ launch-train-flyllm.
 Submits, from the current dir, the equivalent of:
     ssh -A login2 bsub -n 12 -gpu "num=1" -q <queue> -W 72:00 -P branson -cwd <current dir> \\
         -oo <current dir>/<name>_run_NN.out.txt -eo <current dir>/<name>_run_NN.err.txt \\
-        train-flyllm <config file path> [--overrideconfig <overrides>]
+        train-flyllm <config file path> [--overrideconfig <overrides>] [--debug-uselessdata]
 
 where <name> is given by the --name option (default: the config file name without .json), NN is the smallest
 run index greater than that of any existing <name>_run_NN.{out.txt,err.txt,ipynb} file in the current dir,
@@ -37,6 +37,8 @@ def main():
     parser.add_argument('-q', '--queue', default=DEFAULT_QUEUE, help=f'LSF queue to submit to (default: {DEFAULT_QUEUE})')
     parser.add_argument('--overrideconfig', type=json.loads, default=None,
                         help='JSON dict of config entries to override, e.g. \'{"num_train_epochs": 25}\'')
+    parser.add_argument('--debug-uselessdata', action='store_true',
+                        help='train on a small subset of the data, for quick debugging runs')
     parser.add_argument('--name', default=None,
                         help='start of the log file names (default: the config file name without .json)')
     args = parser.parse_args()
@@ -66,6 +68,8 @@ def main():
         '-eo', str(err_file_path),
         str(installed_script_file_path('train-flyllm')), str(config_file_path),
     ]
+    if args.debug_uselessdata:
+        bsub_args.append('--debug-uselessdata')
     if args.overrideconfig:
         bsub_args += ['--overrideconfig', json.dumps(args.overrideconfig)]
     print(f'Run {run_index:02d}')

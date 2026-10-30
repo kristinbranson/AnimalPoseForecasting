@@ -42,6 +42,8 @@ def main():
     parser.add_argument('--overrideconfig', type=json.loads, default={},
                         help='JSON dict of config entries to override, e.g. \'{"num_train_epochs": 25}\'')
     parser.add_argument('--restartmodelfile', default=None, help='model file to restart training from')
+    parser.add_argument('--debug-uselessdata', action='store_true',
+                        help='train on a small subset of the data, for quick debugging runs')
     parser.add_argument('--outdir', default='.', help='directory for the models and figs dirs (default: .)')
     args = parser.parse_args()
     if not isinstance(args.overrideconfig, dict):
@@ -57,7 +59,8 @@ def main():
 
     LOG.info(f'Config overrides: {args.overrideconfig}')
     res = init_flyllm(configfile=os.path.abspath(args.configfile), mode='train',
-                      restartmodelfile=args.restartmodelfile, overrideconfig=args.overrideconfig)
+                      restartmodelfile=args.restartmodelfile, debug_uselessdata=args.debug_uselessdata,
+                      overrideconfig=args.overrideconfig)
     if not res['success']:
         raise RuntimeError('init_flyllm failed')
     config = res['config']
