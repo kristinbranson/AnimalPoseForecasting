@@ -10,6 +10,7 @@ setup(
     include_package_data=True,
     entry_points={'console_scripts': [
         'build-dataset-cache = flyllm.build_dataset_cache:main',
+        'launch-build-dataset-cache = flyllm.launch_build_dataset_cache:main',
         'train-flyllm = flyllm.train:main',
         'launch-train-flyllm = flyllm.launch_train:main',
     ]},

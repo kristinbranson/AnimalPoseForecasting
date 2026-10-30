@@ -17,12 +17,10 @@ figures to <current dir>/figs.
 import argparse
 import json
 import re
-import shlex
-import subprocess
-import sys
 from pathlib import Path
 
-LOGIN_HOST = 'login2'
+from apf.lsf import installed_script_file_path, submit_job
+
 DEFAULT_QUEUE = 'gpu_a100'
 
 
@@ -56,9 +54,6 @@ def main():
     # LSF creates the log files only when the job starts, so create one now to reserve this run index
     # for later submissions (bsub -oo overwrites it)
     out_file_path.touch(exist_ok=False)
-    # the train-flyllm in the same environment as this script, by absolute path, since the job doesn't get
-    # this environment's PATH
-    train_file_path = Path(sys.executable).parent / 'train-flyllm'
     bsub_args = [
         'bsub',
         '-n', '12',
@@ -69,14 +64,12 @@ def main():
         '-cwd', str(run_dir_path),
         '-oo', str(out_file_path),
         '-eo', str(err_file_path),
-        str(train_file_path), str(config_file_path),
+        str(installed_script_file_path('train-flyllm')), str(config_file_path),
     ]
     if args.overrideconfig:
         bsub_args += ['--overrideconfig', json.dumps(args.overrideconfig)]
-    # ssh joins its arguments into one string for the remote shell, so quote them here
-    remote_command = shlex.join(bsub_args)
-    print(f'Submitting run {run_index:02d}: {remote_command}')
-    subprocess.run(['ssh', '-A', LOGIN_HOST, remote_command], check=True)
+    print(f'Run {run_index:02d}')
+    submit_job(bsub_args)
 
 
 if __name__ == '__main__':
