@@ -349,11 +349,12 @@ def dataset_cache_key(config, needtraindata, needvaldata, debug_uselessdata):
     key['version'] = DATASET_CACHE_VERSION
     return key
 
-def dataset_cache_file(config, key):
+def dataset_cache_file_path(config, key):
     """
-    Returns the dataset cache file for the datasets with this dataset_cache_key, or None if caching is off
-    (config['dataset_cache_dir'] not set). The file is named by a hash of key, so any change to what the
-    datasets depend on gives a different file. Relative cache dirs are relative to the working directory.
+    Returns the absolute path of the dataset cache file for the datasets with this dataset_cache_key, or
+    None if caching is off (config['dataset_cache_dir'] not set). The file name contains a hash of key, so
+    any change to what the datasets depend on gives a different file. Relative cache dirs are relative to
+    the working directory.
     """
     cachedir = config.get('dataset_cache_dir')
     if not cachedir:
@@ -367,11 +368,12 @@ def _same_value(a, b):
     except Exception:
         return False
 
-def save_dataset_cache(cachefile, key, config_before, config, res):
+def save_dataset_cache(cache_file_path, key, config_before, config, res):
     """
-    Saves the datasets init_datasets built to cachefile, along with the config entries building them changed
-    (e.g. dataset_params, discretize_epsilon) and the numpy and torch random number generator states afterwards
-    (building them draws random numbers), so that loading the cache leaves everything as building them would.
+    Saves the datasets init_datasets built to the file at cache_file_path, along with the config entries
+    building them changed (e.g. dataset_params, discretize_epsilon) and the numpy and torch random number
+    generator states afterwards (building them draws random numbers), so that loading the cache leaves
+    everything as building them would.
     Python's random module is not seeded by init_state, so its state is left alone.
     Also writes the cache key to a .json file next to it, for reference.
     """
@@ -386,21 +388,24 @@ def save_dataset_cache(cachefile, key, config_before, config, res):
                            if k not in config_before or not _same_value(v, config_before[k])},
         'rng_state': {'numpy': np.random.get_state(), 'torch': torch.get_rng_state()},
     }
-    LOG.info(f'Saving datasets to cache file {cachefile}...')
-    os.makedirs(os.path.dirname(cachefile), exist_ok=True)
+    LOG.info(f'Saving datasets to cache file {cache_file_path}...')
+    os.makedirs(os.path.dirname(cache_file_path), exist_ok=True)
     # write to a temporary file and rename, so an interrupted save never leaves a partial cache file
-    tmpfile = f'{cachefile}.{os.getpid()}.tmp'
-    with open(tmpfile, 'wb') as f:
+    tmp_file_path = f'{cache_file_path}.{os.getpid()}.tmp'
+    with open(tmp_file_path, 'wb') as f:
         pickle.dump(cache, f, protocol=pickle.HIGHEST_PROTOCOL)
-    os.replace(tmpfile, cachefile)
-    with open(os.path.splitext(cachefile)[0] + '.json', 'w') as f:
+    os.replace(tmp_file_path, cache_file_path)
+    with open(os.path.splitext(cache_file_path)[0] + '.json', 'w') as f:
         json.dump(key, f, indent=2, sort_keys=True, default=_json_default)
     LOG.info('Saved datasets to cache file')
 
-def load_dataset_cache(cachefile, config, res):
-    """ Loads datasets saved by save_dataset_cache into res, and applies its config changes and RNG states. """
-    LOG.info(f'Loading datasets from cache file {cachefile}...')
-    with open(cachefile, 'rb') as f:
+def load_dataset_cache(cache_file_path, config, res):
+    """
+    Loads datasets saved by save_dataset_cache, from the file at cache_file_path, into res, and applies
+    its config changes and RNG states.
+    """
+    LOG.info(f'Loading datasets from cache file {cache_file_path}...')
+    with open(cache_file_path, 'rb') as f:
         cache = pickle.load(f)
     res.update(cache['res'])
     config.update(cache['config_changes'])
@@ -447,11 +452,11 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
     res['nval_batches'] = None
 
     cachekey = dataset_cache_key(config, needtraindata, needvaldata, debug_uselessdata)
-    cachefile = dataset_cache_file(config, cachekey)
-    if cachefile is not None and os.path.exists(cachefile):
-        load_dataset_cache(cachefile, config, res)
+    cache_file_path = dataset_cache_file_path(config, cachekey)
+    if cache_file_path is not None and os.path.exists(cache_file_path):
+        load_dataset_cache(cache_file_path, config, res)
     else:
-        config_before = copy.deepcopy(config) if cachefile is not None else None
+        config_before = copy.deepcopy(config) if cache_file_path is not None else None
 
         if needtraindata:
             # create dataset
@@ -473,8 +478,8 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
                 make_dataset(config,'invalfile',return_all=True,debug=debug_uselessdata)
             res['dataset_params'] = res['config']['dataset_params']
 
-        if cachefile is not None:
-            save_dataset_cache(cachefile, cachekey, config_before, config, res)
+        if cache_file_path is not None:
+            save_dataset_cache(cache_file_path, cachekey, config_before, config, res)
 
     if needtraindata:
         # create dataloader
