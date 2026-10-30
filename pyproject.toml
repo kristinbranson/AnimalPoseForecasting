@@ -2,33 +2,34 @@
 # installs the commands under [project.scripts].  In a conda env made from environment/*.yml, the
 # dependencies are already there, so pip installs only this package.
 #
-# Version ranges are loose on purpose, so that they don't make pip replace what conda installed.  Exact
-# versions belong in the environment that uses this package (a conda env file, or a uv lock file).
+# Version ranges are loose on purpose, so that they don't make pip replace what conda installed, but stay
+# within the major version in use (for 0.x versions, the minor version).  Exact versions belong in the
+# environment that uses this package (a conda env file, or a uv lock file).
 
 [project]
 name = "AnimalPoseForecasting"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "numpy>=2.0",
-    "scipy>=1.10",
-    "matplotlib>=3.7",
-    "h5py>=3.8",
-    "hdf5storage>=0.1.19",
-    "tqdm>=4.60",
-    "ipython>=8.0",
-    "torch>=2.5",
+    "numpy>=2.0,<3",
+    "scipy>=1.10,<2",
+    "matplotlib>=3.7,<4",
+    "h5py>=3.8,<4",
+    "hdf5storage>=0.1.19,<0.2",
+    "tqdm>=4.60,<5",
+    "ipython>=9.0,<10",
+    "torch>=2.5,<3",
 ]
 
 [project.optional-dependencies]
 # synthrat needs the patched fork at https://github.com/kristinbranson/RatInABox (branch speedup), not the
 # PyPI release (see environment/README.md), so install that one first
-synthrat = ["ratinabox>=1.15"]
+synthrat = ["ratinabox>=1.15,<2"]
 # for flyllm.optimal_binning's k-means binning
-optimal-binning = ["scikit-learn>=1.2"]
+optimal-binning = ["scikit-learn>=1.2,<2"]
 # for flyllm/run_flyllm.py
-run-flyllm = ["transformers>=4.30"]
-test = ["pytest>=8.0"]
+run-flyllm = ["transformers>=4.30,<5"]
+test = ["pytest>=9.0,<10"]
 
 [project.scripts]
 build-dataset-cache = "flyllm.build_dataset_cache:main"
