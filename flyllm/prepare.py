@@ -349,18 +349,24 @@ def dataset_cache_key(config, needtraindata, needvaldata, debug_uselessdata):
     key['version'] = DATASET_CACHE_VERSION
     return key
 
-def dataset_cache_file_path(config, key):
+def dataset_cache_dir_path_maybe(config: dict) -> str | None:
     """
-    Returns the absolute path of the dataset cache file for the datasets with this dataset_cache_key, or
-    None if caching is off (config['dataset_cache_dir'] not set). The file name contains a hash of key, so
-    any change to what the datasets depend on gives a different file. Relative cache dirs are relative to
-    the working directory.
+    Returns the absolute path of the dataset cache directory, config['dataset_cache_dir'], or None if caching
+    is off (it is not set). A relative dir is relative to the working directory.
     """
-    cachedir = config.get('dataset_cache_dir')
-    if not cachedir:
+    cache_dir_name_maybe: str | None = config.get('dataset_cache_dir')
+    if not cache_dir_name_maybe:
         return None
+    return os.path.abspath(cache_dir_name_maybe)
+
+def dataset_cache_file_path(cache_dir_path: str, key: dict) -> str:
+    """
+    Returns the absolute path of the dataset cache file in the directory at cache_dir_path for the datasets
+    with this dataset_cache_key. The file name contains a hash of key, so any change to what the datasets
+    depend on gives a different file.
+    """
     keystr = json.dumps(key, sort_keys=True, default=_json_default)
-    return os.path.join(os.path.abspath(cachedir), f'datasets_{hashlib.sha256(keystr.encode()).hexdigest()[:16]}.pkl')
+    return os.path.join(cache_dir_path, f'datasets_{hashlib.sha256(keystr.encode()).hexdigest()[:16]}.pkl')
 
 def _same_value(a, b):
     try:
@@ -487,15 +493,18 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
     res['ntrain_batches'] = None
     res['nval_batches'] = None
 
-    cachekey = dataset_cache_key(config, needtraindata, needvaldata, debug_uselessdata)
-    cache_file_path = dataset_cache_file_path(config, cachekey)
-    if cache_file_path is None:
+    cache_dir_path_maybe: str | None = dataset_cache_dir_path_maybe(config)
+    if cache_dir_path_maybe is None:
         build_datasets_bang_bang(config, res, needtraindata, needvaldata, debug_uselessdata)
-    elif os.path.exists(cache_file_path):
-        load_dataset_cache_bang_bang(config, res, cache_file_path)
     else:
-        generate_and_save_dataset_cache_bang_bang(config, res, cache_file_path, cachekey, needtraindata, needvaldata,
-                                                  debug_uselessdata)
+        cache_dir_path: str = cache_dir_path_maybe
+        cachekey = dataset_cache_key(config, needtraindata, needvaldata, debug_uselessdata)
+        cache_file_path = dataset_cache_file_path(cache_dir_path, cachekey)
+        if os.path.exists(cache_file_path):
+            load_dataset_cache_bang_bang(config, res, cache_file_path)
+        else:
+            generate_and_save_dataset_cache_bang_bang(config, res, cache_file_path, cachekey, needtraindata,
+                                                      needvaldata, debug_uselessdata)
 
     if needtraindata:
         # create dataloader
