@@ -399,10 +399,10 @@ def save_dataset_cache(cache_file_path, key, config_before, config, res):
         json.dump(key, f, indent=2, sort_keys=True, default=_json_default)
     LOG.info('Saved datasets to cache file')
 
-def load_dataset_cache(cache_file_path, config, res):
+def load_dataset_cache_bang_bang(config, res, cache_file_path):
     """
     Loads datasets saved by save_dataset_cache, from the file at cache_file_path, into res, and applies
-    its config changes and RNG states.
+    its config changes to config. Also sets the numpy and torch RNG states to the saved ones.
     """
     LOG.info(f'Loading datasets from cache file {cache_file_path}...')
     with open(cache_file_path, 'rb') as f:
@@ -454,7 +454,7 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
     cachekey = dataset_cache_key(config, needtraindata, needvaldata, debug_uselessdata)
     cache_file_path = dataset_cache_file_path(config, cachekey)
     if cache_file_path is not None and os.path.exists(cache_file_path):
-        load_dataset_cache(cache_file_path, config, res)
+        load_dataset_cache_bang_bang(config, res, cache_file_path)
     else:
         config_before = copy.deepcopy(config) if cache_file_path is not None else None
 
