@@ -402,7 +402,8 @@ def save_dataset_cache(cache_file_path, key, config_before, config, res):
 def load_dataset_cache_bang_bang(config, res, cache_file_path):
     """
     Loads datasets saved by save_dataset_cache, from the file at cache_file_path, into res, and applies
-    its config changes to config. Also sets the numpy and torch RNG states to the saved ones.
+    its config changes to config. Also sets the numpy and torch RNG states to the saved ones.  The 
+    `_bang_bang` in the name is to indicate that it modifies `config` and `res` in-place.
     """
     LOG.info(f'Loading datasets from cache file {cache_file_path}...')
     with open(cache_file_path, 'rb') as f:
