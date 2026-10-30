@@ -290,9 +290,19 @@ def _dataloader_worker_args(config):
         return {}
     return {'num_workers': num_workers, 'persistent_workers': False, 'multiprocessing_context': 'fork'}
 
-# Bump this when a code change alters the datasets init_datasets builds (e.g. in make_dataset, or the
-# operations it applies), so that existing dataset cache files are no longer used.
+# Bump this when something other than DATASET_SOURCE_FILES and DATASET_CONFIG_KEYS alters the datasets
+# init_datasets builds (e.g. a numpy upgrade that changes results), so that existing dataset cache files
+# are no longer used.
 DATASET_CACHE_VERSION = 2
+
+# Source files, relative to the repository root, whose code builds the datasets init_datasets builds: the
+# files whose functions run while building them, plus flyllm/config.py, whose constants they use. Their
+# contents are part of the dataset cache key, so editing any of them gives a new cache file. If
+# dataset-building code starts using another file, add it here.
+DATASET_SOURCE_FILES = [
+    'apf/data.py', 'apf/dataset.py', 'apf/features.py', 'apf/io.py', 'apf/utils.py',
+    'experiments/flyllm.py', 'flyllm/config.py', 'flyllm/features.py', 'flyllm/prepare.py',
+]
 
 # Config entries that affect the datasets init_datasets builds (via make_dataset and load_and_filter_data).
 # If dataset-building code starts reading another config entry, add it here.
@@ -310,10 +320,21 @@ def _json_default(x):
         return x.item()
     return repr(x)
 
+def dataset_source_hash():
+    """ Returns a SHA-256 hex digest of the names and contents of DATASET_SOURCE_FILES. """
+    repodir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    h = hashlib.sha256()
+    for relpath in DATASET_SOURCE_FILES:
+        with open(os.path.join(repodir, relpath), 'rb') as f:
+            contents = f.read()
+        h.update(relpath.encode() + b'\0' + str(len(contents)).encode() + b'\0' + contents)
+    return h.hexdigest()
+
 def dataset_cache_key(config, needtraindata, needvaldata, debug_uselessdata):
     """
     Returns a dict of everything the datasets built by init_datasets depend on: the DATASET_CONFIG_KEYS
-    entries of config, the input files' sizes and modification times, the arguments, and DATASET_CACHE_VERSION.
+    entries of config, the input files' sizes and modification times, the arguments, a hash of the contents
+    of DATASET_SOURCE_FILES, and DATASET_CACHE_VERSION.
     """
     key = {k: config.get(k) for k in DATASET_CONFIG_KEYS}
     key['input_file_stats'] = {}
@@ -324,6 +345,7 @@ def dataset_cache_key(config, needtraindata, needvaldata, debug_uselessdata):
     key['needtraindata'] = needtraindata
     key['needvaldata'] = needvaldata
     key['debug_uselessdata'] = debug_uselessdata
+    key['source_hash'] = dataset_source_hash()
     key['version'] = DATASET_CACHE_VERSION
     return key
 
