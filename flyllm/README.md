@@ -6,6 +6,8 @@ Reorganization of flyllm.py and a subset of MABeFlyUtils.py, copied from https:/
 
 **run_flyllm.py**: Main entry point. Loads data, trains a model, visualizes process.
 
+**build_dataset_cache.py**: Builds the dataset cache file for a config, so a cluster job can build it on a CPU-only node before training jobs use it.
+
 **config.py**: Parameters for feature extraction.
 
 **features.py**: Functions for extracting features from tracking data.
