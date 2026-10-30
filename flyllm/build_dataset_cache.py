@@ -1,11 +1,10 @@
-#!/usr/bin/env python3
 """Build the dataset cache file for a config, the one a training run with that config would load, and exit.
 
-Does nothing if the cache file already exists.  Doesn't use the GPU, so it can run on CPU-only nodes.
-
-Usage: python -m flyllm.build_dataset_cache <config file name>
+Does nothing if the cache file already exists.  Doesn't use the GPU, so it can run on CPU-only nodes.  Run it as
+build-dataset-cache.
 """
 
+import argparse
 import logging
 import os
 import sys
@@ -21,10 +20,11 @@ LOG = logging.getLogger('build_dataset_cache')
 
 
 def main():
-    if len(sys.argv) != 2:
-        sys.exit(__doc__)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('configfile', help='config file name')
+    args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s: %(message)s')
-    config_file_path = os.path.abspath(sys.argv[1])
+    config_file_path = os.path.abspath(args.configfile)
     config = init_config(configfile=config_file_path, overrideconfig={'device': 'cpu'})['config']
 
     cache_dir_path_maybe: str | None = dataset_cache_dir_path_maybe(config)

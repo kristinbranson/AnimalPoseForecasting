@@ -8,6 +8,11 @@ setup(
                                     'jaaba_detect', 'jaaba_detect.*', 'tests', 'tests.*']),
     package_data={'jaaba_detect': ['ellipse_from_keypoints.json']},
     include_package_data=True,
+    entry_points={'console_scripts': [
+        'build-dataset-cache = flyllm.build_dataset_cache:main',
+        'train-flyllm = flyllm.train:main',
+        'launch-train-flyllm = flyllm.launch_train:main',
+    ]},
 )
 
 # run `pip install -e .` to run this in editable mode

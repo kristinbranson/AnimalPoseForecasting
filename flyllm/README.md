@@ -6,9 +6,11 @@ Reorganization of flyllm.py and a subset of MABeFlyUtils.py, copied from https:/
 
 **run_flyllm.py**: Main entry point. Loads data, trains a model, visualizes process.
 
-**train.py**: Trains a model from a config file, like notebooks/train_fly_llm_female_for_reals.py but as a script, saving the debug and loss figures as PNG files.
+**train.py** (`train-flyllm`): Trains a model from a config file, like notebooks/train_fly_llm_female_for_reals.py but as a script, saving the debug and loss figures as PNG files.
 
-**build_dataset_cache.py**: Builds the dataset cache file for a config, so a cluster job can build it on a CPU-only node before training jobs use it.
+**launch_train.py** (`launch-train-flyllm`): Submits a train-flyllm job to the Janelia cluster.
+
+**build_dataset_cache.py** (`build-dataset-cache`): Builds the dataset cache file for a config, so a cluster job can build it on a CPU-only node before training jobs use it.
 
 **config.py**: Parameters for feature extraction.
 

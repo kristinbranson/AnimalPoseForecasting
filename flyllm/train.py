@@ -1,10 +1,9 @@
-#!/usr/bin/env python3
 """
 Train a fly forecasting model from a config file, as notebooks/train_fly_llm_female_for_reals.py does, but as a
 script.  Model checkpoints go to <out dir>/models.  The debug and loss figures are saved as PNG files in
 <out dir>/figs, overwritten each time they're updated.
 
-Run it as python -m flyllm.train.
+Run it as train-flyllm.
 """
 
 import argparse
