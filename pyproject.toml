@@ -1,6 +1,4 @@
-# Install with `pip install -e .` (or `pip install -e '.[synthrat,test]'` for the extras below), which also
-# installs the commands under [project.scripts].  In a conda env made from environment/*.yml, the
-# dependencies are already there, so pip installs only this package.
+# Install with `pip install -e .`, which also installs the commands under [project.scripts].
 #
 # Version ranges are loose on purpose, so that they don't make pip replace what conda installed, but stay
 # within the major version in use (for 0.x versions, the minor version).  Exact versions belong in the
@@ -19,17 +17,15 @@ dependencies = [
     "tqdm>=4.60,<5",
     "ipython>=9.0,<10",
     "torch>=2.5,<3",
+    # synthrat needs the patched fork at https://github.com/kristinbranson/RatInABox (branch speedup), not the
+    # PyPI release (see environment/README.md), so install that one first
+    "ratinabox>=1.15,<2",
+    # for flyllm.optimal_binning's k-means binning
+    "scikit-learn>=1.2,<2",
+    # for flyllm/run_flyllm.py
+    "transformers>=4.30,<5",
+    "pytest>=9.0,<10",
 ]
-
-[project.optional-dependencies]
-# synthrat needs the patched fork at https://github.com/kristinbranson/RatInABox (branch speedup), not the
-# PyPI release (see environment/README.md), so install that one first
-synthrat = ["ratinabox>=1.15,<2"]
-# for flyllm.optimal_binning's k-means binning
-optimal-binning = ["scikit-learn>=1.2,<2"]
-# for flyllm/run_flyllm.py
-run-flyllm = ["transformers>=4.30,<5"]
-test = ["pytest>=9.0,<10"]
 
 [project.scripts]
 build-dataset-cache = "flyllm.build_dataset_cache:main"
