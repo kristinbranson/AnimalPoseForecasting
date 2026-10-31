@@ -3,14 +3,16 @@ Submit a job to the Janelia cluster that trains a model from a config file with 
 launch-train-flyllm.
 
 Submits, from the current dir, the equivalent of:
-    ssh -A login2 bsub -n 12 -gpu "num=1" -q <queue> -W 72:00 -P branson -cwd <current dir> \\
+    ssh -A login2 bsub -n <slot count> -gpu "num=<GPU count>" -q <queue> -W 72:00 -P branson -cwd <current dir> \\
         -oo <current dir>/<name>_run_NN.out.txt -eo <current dir>/<name>_run_NN.err.txt \\
         train-flyllm <config file path> [--overrideconfig <overrides>] [--debug-uselessdata]
 
 where <name> is given by the --name option (default: the config file name without .json), NN is the smallest
 run index greater than that of any existing <name>_run_NN.{out.txt,err.txt,ipynb} file in the current dir,
-<queue> is given by the -q option (default: gpu_a100), and <overrides> is given by the --overrideconfig
-option.  The job runs the train-flyllm installed alongside this one, so models go to <current dir>/models and
+<queue> is given by the -q option (default: gpu_a100), <slot count> and <GPU count> by the -n and --gpus options
+(default: 12 and 1), and <overrides> by the --overrideconfig option.  Training uses only one GPU, but asking
+for all of a node's GPUs and slots (4 and 48 on gpu_a100 nodes) gets the whole node, so that other jobs don't
+affect its speed.  The job runs the train-flyllm installed alongside this one, so models go to <current dir>/models and
 figures to <current dir>/figs.
 """
 
@@ -22,6 +24,9 @@ from pathlib import Path
 from apf.lsf import installed_script_file_path, submit_job
 
 DEFAULT_QUEUE = 'gpu_a100'
+# 12 slots per GPU is the natural ratio in gpu_a100 and gpu_h100
+DEFAULT_SLOT_COUNT = 12
+DEFAULT_GPU_COUNT = 1
 
 
 def next_run_index(run_dir_path: Path, name: str) -> int:
@@ -35,6 +40,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('configfile', help='config file name')
     parser.add_argument('-q', '--queue', default=DEFAULT_QUEUE, help=f'LSF queue to submit to (default: {DEFAULT_QUEUE})')
+    parser.add_argument('-n', '--slots', type=int, default=DEFAULT_SLOT_COUNT,
+                        help=f'number of slots (default: {DEFAULT_SLOT_COUNT})')
+    parser.add_argument('--gpus', type=int, default=DEFAULT_GPU_COUNT,
+                        help=f'number of GPUs (default: {DEFAULT_GPU_COUNT})')
     parser.add_argument('--overrideconfig', type=json.loads, default=None,
                         help='JSON dict of config entries to override, e.g. \'{"num_train_epochs": 25}\'')
     parser.add_argument('--debug-uselessdata', action='store_true',
@@ -58,8 +67,8 @@ def main():
     out_file_path.touch(exist_ok=False)
     bsub_args = [
         'bsub',
-        '-n', '12',
-        '-gpu', 'num=1',
+        '-n', str(args.slots),
+        '-gpu', f'num={args.gpus}',
         '-q', args.queue,
         '-W', '72:00',
         '-P', 'branson',
