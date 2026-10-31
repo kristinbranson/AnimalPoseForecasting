@@ -5,15 +5,17 @@ launch-train-flyllm.
 Submits, from the current dir, the equivalent of:
     ssh -A login2 bsub -n <slot count> -gpu "num=<GPU count>" -q <queue> -W 72:00 -P branson -cwd <current dir> \\
         -oo <current dir>/<name>_run_NN.out.txt -eo <current dir>/<name>_run_NN.err.txt \\
-        train-flyllm <config file path> [--overrideconfig <overrides>] [--debug-uselessdata]
+        train-flyllm <config file path> --outdir <current dir>/<name>_run_NN \\
+        [--overrideconfig <overrides>] [--debug-uselessdata]
 
 where <name> is given by the --name option (default: the config file name without .json), NN is the smallest
-run index greater than that of any existing <name>_run_NN.{out.txt,err.txt,ipynb} file in the current dir,
-<queue> is given by the -q option (default: gpu_a100), <slot count> and <GPU count> by the -n and --gpus options
-(default: 12 and 1), and <overrides> by the --overrideconfig option.  Training uses only one GPU, but asking
+run index greater than that of any existing <name>_run_NN dir or <name>_run_NN.{out.txt,err.txt,ipynb} file in
+the current dir, <queue> is given by the -q option (default: gpu_a100), <slot count> and <GPU count> by the -n
+and --gpus options (default: 12 and 1), and <overrides> by the --overrideconfig option.  Training uses only one GPU, but asking
 for all of a node's GPUs and slots (4 and 48 on gpu_a100 nodes) gets the whole node, so that other jobs don't
-affect its speed.  The job runs the train-flyllm installed alongside this one, so models go to <current dir>/models and
-figures to <current dir>/figs.
+affect its speed.  The job runs the train-flyllm installed alongside this one, and its models go to
+<current dir>/<name>_run_NN/models and figures to <current dir>/<name>_run_NN/figs, so that runs can't overwrite
+each other's files.
 """
 
 import argparse
@@ -30,8 +32,9 @@ DEFAULT_GPU_COUNT = 1
 
 
 def next_run_index(run_dir_path: Path, name: str) -> int:
-    """ Returns 1 + the largest run index among existing <name>_run_NN.{out.txt,err.txt,ipynb} files. """
-    pattern = re.compile(rf'^{re.escape(name)}_run_(\d+)\.(?:out\.txt|err\.txt|ipynb)$')
+    """ Returns 1 + the largest run index among existing <name>_run_NN dirs and <name>_run_NN.{out.txt,err.txt,ipynb}
+    files. """
+    pattern = re.compile(rf'^{re.escape(name)}_run_(\d+)(?:\.(?:out\.txt|err\.txt|ipynb))?$')
     indices = [int(match.group(1)) for path in run_dir_path.iterdir() if (match := pattern.match(path.name))]
     return max(indices, default=0) + 1
 
@@ -60,11 +63,13 @@ def main():
 
     run_dir_path = Path.cwd()
     run_index = next_run_index(run_dir_path, name)
-    out_file_path = run_dir_path / f'{name}_run_{run_index:02d}.out.txt'
-    err_file_path = run_dir_path / f'{name}_run_{run_index:02d}.err.txt'
-    # LSF creates the log files only when the job starts, so create one now to reserve this run index
-    # for later submissions (bsub -oo overwrites it)
-    out_file_path.touch(exist_ok=False)
+    run_name = f'{name}_run_{run_index:02d}'
+    out_dir_path = run_dir_path / run_name
+    out_file_path = run_dir_path / f'{run_name}.out.txt'
+    err_file_path = run_dir_path / f'{run_name}.err.txt'
+    # LSF creates the log files only when the job starts, so create the output dir now to reserve this run index
+    # for later submissions
+    out_dir_path.mkdir()
     bsub_args = [
         'bsub',
         '-n', str(args.slots),
@@ -76,6 +81,7 @@ def main():
         '-oo', str(out_file_path),
         '-eo', str(err_file_path),
         str(installed_script_file_path('train-flyllm')), str(config_file_path),
+        '--outdir', str(out_dir_path),
     ]
     if args.debug_uselessdata:
         bsub_args.append('--debug-uselessdata')
