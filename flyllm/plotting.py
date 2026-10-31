@@ -1417,10 +1417,11 @@ def initialize_debug_plots(dataset, dataloader, data, name='', tsplot=None, traj
 
     # plot to visualize input features
     figsample, axsample = debug_plot_sample(example, dataset)
+    figsample.suptitle(name)
 
     # plot to check that we can get poses from examples
     hpose, ax, fig = debug_plot_pose(example, dataset, data=data, tsplot=tsplot)
-    ax[-1, 0].set_xlabel('Train')
+    fig.suptitle(name)
 
     # plot to visualize motion outputs
     axtraj, figtraj = debug_plot_batch_traj(example, dataset, data=data,
