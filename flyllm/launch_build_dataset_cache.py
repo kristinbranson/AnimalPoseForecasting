@@ -20,8 +20,9 @@ from apf.lsf import installed_script_file_path, submit_job
 DEFAULT_QUEUE = 'local'
 # 15GB per slot in the CPU queues, and building the female fly datasets peaked at 157GB
 DEFAULT_SLOT_COUNT = 16
-# building the female fly datasets took 47 min
-DEFAULT_RUN_LIMIT = '2:00'
+# building the female fly datasets has taken from 47 min to over 2 h, and their setup in training jobs up to
+# 4.7 h, depending on the node
+DEFAULT_RUN_LIMIT = '6:00'
 
 
 def main():
