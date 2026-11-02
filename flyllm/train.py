@@ -1,7 +1,7 @@
 """
-Train a fly forecasting model from a config file, as notebooks/train_fly_llm_female_for_reals.py does, but as a
-script.  Model checkpoints go to <out dir>/models.  The debug and loss figures are saved as PNG files in
-<out dir>/figs, overwritten each time they're updated.
+Train a fly forecasting model from a config file, as notebooks/train_fly_llm.py does, but as a script.  Model
+checkpoints go to <out dir>/models.  The debug and loss figures are saved as PNG files in <out dir>/figs,
+overwritten each time they're updated.
 
 Run it as train-flyllm.
 """
