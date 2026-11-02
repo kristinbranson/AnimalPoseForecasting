@@ -1,7 +1,7 @@
 """Build the dataset cache file for a config, the one a training run with that config would load, and exit.
 
 Does nothing if the cache file already exists.  Doesn't use the GPU, so it can run on CPU-only nodes.  Run it as
-build-dataset-cache.
+python -m flyllm.build_dataset_cache.
 """
 
 import argparse

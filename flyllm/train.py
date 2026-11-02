@@ -3,7 +3,7 @@ Train a fly forecasting model from a config file, as notebooks/train_fly_llm.py 
 checkpoints go to <out dir>/models.  The debug and loss figures are saved as PNG files in <out dir>/figs,
 overwritten each time they're updated.
 
-Run it as train-flyllm.
+Run it as python -m flyllm.train.
 """
 
 import argparse
