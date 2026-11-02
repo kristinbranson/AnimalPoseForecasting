@@ -1,0 +1,24 @@
+# Install with `pip install -e .` to run this in editable mode.
+# jaaba_detect additionally needs: h5py, scipy (+ hdf5storage for load_X_video)
+# Classifiers are NOT bundled: pass any exported .classifier.mat path to
+# jaaba_detect_from_X / jaaba_detect_from_track / jaaba_detect.
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "AnimalPoseForecasting"
+version = "0.1.0"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["flyllm", "flyllm.*", "apf", "apf.*", "experiments", "experiments.*", "synthrat", "jaaba_detect",
+           "jaaba_detect.*", "tests", "tests.*"]
+# setup.py used find_packages, which only finds dirs with an __init__.py
+namespaces = false
+
+[tool.setuptools.package-data]
+jaaba_detect = ["ellipse_from_keypoints.json"]
