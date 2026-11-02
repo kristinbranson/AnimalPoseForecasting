@@ -3,9 +3,10 @@
 # rat-in-a-box stuff.
 
 # To use it, create a symlink to this file in
-# `AnimalPoseForecasting/`.  Then do `uv sync` to create the env.
-# After that, `uv run python foo.py` will run `foo.py` using the env's
-# Python executable.  
+# `AnimalPoseForecasting/`, and a symlink in `AnimalPoseForecasting/`
+# to `environment/uv.lock`.  Then in `AnimalPoseForecasting/` do `uv
+# sync` to create the env.  After that, `uv run python foo.py` will
+# run `foo.py` using the env's Python executable.
 
 # Version ranges are loose, but stay within the major version in use
 # (for 0.x versions, the minor version).  The exact versions are in
