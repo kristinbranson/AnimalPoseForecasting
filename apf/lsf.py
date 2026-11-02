@@ -32,8 +32,9 @@ def limit_threads_to_lsf_slots() -> int | None:
 
 def installed_script_file_path(name: str) -> Path:
     """
-    Returns the absolute path of the console script with this name installed in the same environment as the
-    running Python.  Jobs submitted with submit_job don't get this environment's PATH, so they need it.
+    Returns the absolute path of the executable with this name (e.g. 'python') in the bin dir of the running
+    Python's environment.  It isn't checked to exist.  Jobs submitted with submit_job don't get this
+    environment's PATH, so they need the absolute path to run a program from it.
     """
     return Path(sys.executable).parent / name
 
