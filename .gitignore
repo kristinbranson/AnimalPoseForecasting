@@ -111,9 +111,6 @@ venv/
 ENV/
 env.bak/
 venv.bak/
-# environment/pyproject.toml, symlinked here for uv, and the lock file uv sync writes next to it
-/pyproject.toml
-/uv.lock
 
 # Spyder project settings
 .spyderproject
