@@ -155,6 +155,6 @@
     "num_workers": 4,
 
     "_comment_dataset_cache_dir": "directory for caching the preprocessed training and validation datasets, so later runs with the same data config load them instead of rebuilding them (relative paths are relative to the working directory). null = no caching.",
-    "dataset_cache_dir": null
+    "dataset_cache_dir": "/nrs/branson/AnimalPoseForecasting/dataset-cache"
 }
 
