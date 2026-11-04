@@ -6,6 +6,9 @@ import datetime
 import os
 from matplotlib import animation
 import pickle
+import copy
+import hashlib
+import json
 
 from apf.utils import get_dct_matrix, compute_npad, save_animation
 from apf.data import process_test_data, interval_all, debug_less_data, chunk_data
@@ -105,6 +108,12 @@ def init_state(config=None,seedrandom=True,res={}):
     device = torch.device(config['device'])
     if device.type == 'cuda':
         assert torch.cuda.is_available(), 'CUDA is not available'
+
+    # float32 matmul precision: 'highest' is full fp32 (the PyTorch default), 'high' allows TF32 on
+    # Ampere and newer GPUs, which is much faster and has a negligible effect on training
+    matmul_precision = config.get('float32_matmul_precision', 'highest')
+    torch.set_float32_matmul_precision(matmul_precision)
+    LOG.info(f'float32 matmul precision: {matmul_precision}')
         
     res['device'] = device
     
@@ -269,6 +278,184 @@ def init_process_data(config=None,data=None,scale_perfly=None,
     
     return res
 
+def _dataloader_worker_args(config):
+    """
+    Keyword arguments for DataLoader controlling background worker processes, from config['num_workers'].
+    Workers are forked, so they share the in-memory data arrays with the main process copy-on-write.
+    Workers are deliberately not persistent: the training dataset re-tiles its chunks at the end of each
+    epoch (recompute_chunk_indices), and fresh workers forked at the start of each epoch see the new tiling.
+    """
+    num_workers = config.get('num_workers', 0)
+    if num_workers <= 0:
+        return {}
+    return {'num_workers': num_workers, 'persistent_workers': False, 'multiprocessing_context': 'fork'}
+
+# Bump this when something other than DATASET_SOURCE_FILES and DATASET_CONFIG_KEYS alters the datasets
+# init_datasets builds (e.g. a numpy upgrade that changes results), so that existing dataset cache files
+# are no longer used.
+DATASET_CACHE_VERSION = 2
+
+# Source files, relative to the repository root, whose code builds the datasets init_datasets builds: the
+# files whose functions run while building them, plus flyllm/config.py, whose constants they use. Their
+# contents are part of the dataset cache key, so editing any of them gives a new cache file. If
+# dataset-building code starts using another file, add it here.
+DATASET_SOURCE_FILES = [
+    'apf/data.py', 'apf/dataset.py', 'apf/features.py', 'apf/io.py', 'apf/utils.py',
+    'experiments/flyllm.py', 'flyllm/config.py', 'flyllm/features.py', 'flyllm/prepare.py',
+]
+
+# Config entries that affect the datasets init_datasets builds (via make_dataset and load_and_filter_data).
+# If dataset-building code starts reading another config entry, add it here.
+DATASET_CONFIG_KEYS = [
+    'intrainfile', 'invalfile', 'contextl', 'tspred_global', 'dataset_params',
+    'discreteidx', 'discretize_nbins', 'discretize_epsilon', 'all_discretize_epsilon', 'simplify_out',
+    'bin_edges_absolute', 'categories', 'output_categories', 'augment_flip',
+]
+
+def _json_default(x):
+    """ json.dumps default for dataset cache keys: numpy values as lists/scalars, anything else by repr. """
+    if isinstance(x, np.ndarray):
+        return x.tolist()
+    if isinstance(x, np.generic):
+        return x.item()
+    return repr(x)
+
+def dataset_source_hash():
+    """ Returns a SHA-256 hex digest of the names and contents of DATASET_SOURCE_FILES. """
+    repodir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    h = hashlib.sha256()
+    for relpath in DATASET_SOURCE_FILES:
+        with open(os.path.join(repodir, relpath), 'rb') as f:
+            contents = f.read()
+        h.update(relpath.encode() + b'\0' + str(len(contents)).encode() + b'\0' + contents)
+    return h.hexdigest()
+
+def dataset_cache_key(config, needtraindata, needvaldata, debug_uselessdata):
+    """
+    Returns a dict of everything the datasets built by init_datasets depend on: the DATASET_CONFIG_KEYS
+    entries of config, the input files' sizes and modification times, the arguments, a hash of the contents
+    of DATASET_SOURCE_FILES, and DATASET_CACHE_VERSION.
+    """
+    key = {k: config.get(k) for k in DATASET_CONFIG_KEYS}
+    key['input_file_stats'] = {}
+    for k in ['intrainfile', 'invalfile']:
+        if config.get(k) is not None and os.path.exists(config[k]):
+            st = os.stat(config[k])
+            key['input_file_stats'][k] = [st.st_size, st.st_mtime_ns]
+    key['needtraindata'] = needtraindata
+    key['needvaldata'] = needvaldata
+    key['debug_uselessdata'] = debug_uselessdata
+    key['source_hash'] = dataset_source_hash()
+    key['version'] = DATASET_CACHE_VERSION
+    return key
+
+def dataset_cache_dir_path_maybe(config: dict) -> str | None:
+    """
+    Returns the absolute path of the dataset cache directory, config['dataset_cache_dir'], or None if caching
+    is off (it is not set). A relative dir is relative to the working directory.
+    """
+    cache_dir_name_maybe: str | None = config.get('dataset_cache_dir')
+    if not cache_dir_name_maybe:
+        return None
+    return os.path.abspath(cache_dir_name_maybe)
+
+def dataset_cache_file_path(cache_dir_path: str, key: dict) -> str:
+    """
+    Returns the absolute path of the dataset cache file in the directory at cache_dir_path for the datasets
+    with this dataset_cache_key. The file name contains a hash of key, so any change to what the datasets
+    depend on gives a different file.
+    """
+    keystr = json.dumps(key, sort_keys=True, default=_json_default)
+    return os.path.join(cache_dir_path, f'datasets_{hashlib.sha256(keystr.encode()).hexdigest()[:16]}.pkl')
+
+def _same_value(a, b):
+    try:
+        return pickle.dumps(a) == pickle.dumps(b)
+    except Exception:
+        return False
+
+def save_dataset_cache(cache_file_path, key, config_before, config, res):
+    """
+    Saves the datasets init_datasets built to the file at cache_file_path, along with the config entries
+    building them changed (e.g. dataset_params, discretize_epsilon) and the numpy and torch random number
+    generator states afterwards (building them draws random numbers), so that loading the cache leaves
+    everything as building them would.
+    Python's random module is not seeded by init_state, so its state is left alone.
+    Also writes the cache key to a .json file next to it, for reference.
+    """
+    keys = ['dataset_params']
+    if res.get('train_dataset') is not None:
+        keys += ['train_dataset', 'train_data']
+    if res.get('val_dataset') is not None:
+        keys += ['val_dataset', 'val_data']
+    cache = {
+        'res': {k: res[k] for k in keys},
+        'config_changes': {k: v for k, v in config.items()
+                           if k not in config_before or not _same_value(v, config_before[k])},
+        'rng_state': {'numpy': np.random.get_state(), 'torch': torch.get_rng_state()},
+    }
+    LOG.info(f'Saving datasets to cache file {cache_file_path}...')
+    os.makedirs(os.path.dirname(cache_file_path), exist_ok=True)
+    # write to a temporary file and rename, so an interrupted save never leaves a partial cache file
+    tmp_file_path = f'{cache_file_path}.{os.getpid()}.tmp'
+    with open(tmp_file_path, 'wb') as f:
+        pickle.dump(cache, f, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(tmp_file_path, cache_file_path)
+    with open(os.path.splitext(cache_file_path)[0] + '.json', 'w') as f:
+        json.dump(key, f, indent=2, sort_keys=True, default=_json_default)
+    LOG.info('Saved datasets to cache file')
+
+def load_dataset_cache_bang_bang(config, res, cache_file_path):
+    """
+    Loads datasets saved by save_dataset_cache, from the file at cache_file_path, into res, and applies
+    its config changes to config. Also sets the numpy and torch RNG states to the saved ones.  The
+    `_bang_bang` in the name is to indicate that it modifies `config` and `res` in-place.
+    """
+    LOG.info(f'Loading datasets from cache file {cache_file_path}...')
+    with open(cache_file_path, 'rb') as f:
+        cache = pickle.load(f)
+    res.update(cache['res'])
+    config.update(cache['config_changes'])
+    res['config']['dataset_params'] = res['dataset_params']
+    np.random.set_state(cache['rng_state']['numpy'])
+    torch.set_rng_state(cache['rng_state']['torch'])
+    LOG.info('Loaded datasets from cache file')
+
+def build_datasets_bang_bang(config, res, needtraindata, needvaldata, debug_uselessdata):
+    """
+    Builds the training and/or validation datasets with make_dataset, and stores them and their intermediate
+    data in res. Building them also changes config (e.g. dataset_params, discretize_epsilon).
+    """
+    if needtraindata:
+        # create dataset
+        res['train_data'] = {}
+        res['train_dataset'], res['train_data']['flyids'], res['train_data']['track'], res['train_data']['pose'], \
+            res['train_data']['velocity'], res['train_data']['sensory'], res['config']['dataset_params'], \
+            res['train_data']['isdata'], res['train_data']['isstart'], res['train_data']['useoutputmask'], \
+            res['train_data']['labels'], res['train_data']['categories'] = \
+            make_dataset(config,'intrainfile',return_all=True,debug=debug_uselessdata)
+        res['dataset_params'] = res['config']['dataset_params']
+
+    if needvaldata:
+        # create dataset
+        res['val_data'] = {}
+        res['val_dataset'], res['val_data']['flyids'], res['val_data']['track'], res['val_data']['pose'], \
+            res['val_data']['velocity'], res['val_data']['sensory'], res['config']['dataset_params'], \
+            res['val_data']['isdata'], res['val_data']['isstart'], res['val_data']['useoutputmask'], \
+            res['val_data']['labels'], res['val_data']['categories'] = \
+            make_dataset(config,'invalfile',return_all=True,debug=debug_uselessdata)
+        res['dataset_params'] = res['config']['dataset_params']
+
+def generate_and_save_dataset_cache_bang_bang(config, res, cache_file_path, cachekey, needtraindata, needvaldata,
+                                              debug_uselessdata):
+    """
+    Builds the datasets into res and config, as build_datasets_bang_bang does, and saves them to the dataset
+    cache file at cache_file_path, with key cachekey.
+    """
+    config_before = copy.deepcopy(config)
+    build_datasets_bang_bang(config, res, needtraindata, needvaldata, debug_uselessdata)
+    save_dataset_cache(cache_file_path, cachekey, config_before, config, res)
+
 def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idct_m=None,debug_uselessdata=False,res={}):
     """
     res = init_datasets(config=None,X=None,valX=None,traindataprocess='chunk',
@@ -306,35 +493,31 @@ def init_datasets(config=None,needtraindata=True,needvaldata=True,dct_m=None,idc
     res['ntrain_batches'] = None
     res['nval_batches'] = None
 
-    if needtraindata:
-        
-        # create dataset
-        res['train_data'] = {}
-        res['train_dataset'], res['train_data']['flyids'], res['train_data']['track'], res['train_data']['pose'], \
-            res['train_data']['velocity'], res['train_data']['sensory'], res['config']['dataset_params'], \
-            res['train_data']['isdata'], res['train_data']['isstart'], res['train_data']['useoutputmask'], \
-            res['train_data']['labels'], res['train_data']['categories'] = \
-            make_dataset(config,'intrainfile',return_all=True,debug=debug_uselessdata)
-        res['dataset_params'] = res['config']['dataset_params']
-        
-        # create dataloader
-        res['train_dataloader'] = DataLoader(res['train_dataset'], batch_size=config['batch_size'], shuffle=True, pin_memory=True)
-        
-        res['ntrain_batches'] = len(res['train_dataloader'])
-        
-    if needvaldata:
-        
-        # create dataset
-        res['val_data'] = {}
-        res['val_dataset'], res['val_data']['flyids'], res['val_data']['track'], res['val_data']['pose'], \
-            res['val_data']['velocity'], res['val_data']['sensory'], res['config']['dataset_params'], \
-            res['val_data']['isdata'], res['val_data']['isstart'], res['val_data']['useoutputmask'], \
-            res['val_data']['labels'], res['val_data']['categories'] = \
-            make_dataset(config,'invalfile',return_all=True,debug=debug_uselessdata)
-        res['dataset_params'] = res['config']['dataset_params']
+    cache_dir_path_maybe: str | None = dataset_cache_dir_path_maybe(config)
+    if cache_dir_path_maybe is None:
+        build_datasets_bang_bang(config, res, needtraindata, needvaldata, debug_uselessdata)
+    else:
+        cache_dir_path: str = cache_dir_path_maybe
+        cachekey = dataset_cache_key(config, needtraindata, needvaldata, debug_uselessdata)
+        cache_file_path = dataset_cache_file_path(cache_dir_path, cachekey)
+        if os.path.exists(cache_file_path):
+            load_dataset_cache_bang_bang(config, res, cache_file_path)
+        else:
+            generate_and_save_dataset_cache_bang_bang(config, res, cache_file_path, cachekey, needtraindata,
+                                                      needvaldata, debug_uselessdata)
 
+    if needtraindata:
         # create dataloader
-        res['val_dataloader'] = DataLoader(res['val_dataset'], batch_size=config['batch_size'], shuffle=False, pin_memory=True)
+        res['train_dataloader'] = DataLoader(res['train_dataset'], batch_size=config['batch_size'], shuffle=True,
+                                             pin_memory=True, **_dataloader_worker_args(config))
+        res['ntrain_batches'] = len(res['train_dataloader'])
+
+    if needvaldata:
+        # create dataloader
+        # validation needs no gradients, so it can use the (typically larger) test batch size
+        val_batch_size = config.get('test_batch_size', config['batch_size'])
+        res['val_dataloader'] = DataLoader(res['val_dataset'], batch_size=val_batch_size, shuffle=False,
+                                           pin_memory=True, **_dataloader_worker_args(config))
         res['nval_batches'] = len(res['val_dataloader'])
     return res
 

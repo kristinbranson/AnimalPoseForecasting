@@ -296,7 +296,10 @@ def fit_discretize_data(data, nbins=50, bin_epsilon=None, outlierprct=.001, frac
     return bin_edges, samples, bin_means, bin_medians
 
 
-def discretize_labels(movement, bin_edges, soften_to_ends=False):
+def discretize_labels(movement, bin_edges, soften_to_ends=False, out=None):
+    """ If out is given, it is a szrest + (nfeat * nbins,) array view, e.g. a slice of a larger array, which
+    the labels are written into (and returned) instead of a new array.
+    """
     szrest = movement.shape[:-1]
     n = int(np.prod(szrest))
     movement = movement.reshape((n, -1))
@@ -307,7 +310,12 @@ def discretize_labels(movement, bin_edges, soften_to_ends=False):
     bin_width = (bin_edges[:, 1:] - bin_edges[:, :-1])
 
     # d = np.zeros((n,nbins+1))
-    labels = np.zeros((n, nfeat, nbins), dtype=movement.dtype)  # ,dtype=bool)
+    if out is None:
+        labels = np.zeros((n, nfeat, nbins), dtype=movement.dtype)  # ,dtype=bool)
+    else:
+        # copy=False raises rather than silently copying, so writes to labels always go to out
+        labels = out.reshape((n, nfeat, nbins), copy=False)
+        labels[...] = 0
     if soften_to_ends:
         lastbin = 0
     else:

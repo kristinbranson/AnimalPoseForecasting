@@ -5,7 +5,7 @@ setup(
     version='0.1.0',
     packages=find_packages(include=['flyllm', 'flyllm.*', 'apf', 'apf.*',
                                     'experiments', 'experiments.*', 'synthrat',
-                                    'jaaba_detect', 'jaaba_detect.*']),
+                                    'jaaba_detect', 'jaaba_detect.*', 'tests', 'tests.*']),
     package_data={'jaaba_detect': ['ellipse_from_keypoints.json']},
     include_package_data=True,
 )

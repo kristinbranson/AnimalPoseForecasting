@@ -1,3 +1,4 @@
+import contextlib
 import numpy as np
 import math
 import typing
@@ -637,6 +638,11 @@ class FlattenedDecoderTransformer(torch.nn.Module):
 
 class TransformerModel(torch.nn.Module):
 
+    # Under torch.autocast, the input embedding and this many initial transformer layers are computed in
+    # float32. The embedding is scaled by sqrt(d_model) before the first layer, which makes that layer's
+    # attention logits very large (~1e4), so bf16 rounding there badly distorts the attention and gradients.
+    n_float32_layers_under_autocast = 1
+
     def __init__(self, d_input: int, d_output: int,
                  d_model: int = 2048, nhead: int = 8, d_hid: int = 512,
                  nlayers: int = 12, dropout: float = 0.1,
@@ -727,17 +733,38 @@ class TransformerModel(torch.nn.Module):
       output Tensor of shape [batch_size, seq_len, ntoken]
     """
 
-        # project input into d_model space, multiple by sqrt(d_model) for reasons?
-        src = self.encoder(src) * math.sqrt(self.d_model)
+        autocast_on = torch.is_autocast_enabled(src.device.type)
+        nfp32 = self.n_float32_layers_under_autocast if autocast_on else 0
 
-        # add in the positional encoding of where in the sentence the words occur
-        # it is weird to me that these are added, but I guess it would be almost
-        # the same to have these be combined in a single linear layer
-        src = self.pos_encoder(src)
+        with torch.autocast(device_type=src.device.type, enabled=False) if autocast_on else contextlib.nullcontext():
+            if autocast_on:
+                src = src.float()
+
+            # project input into d_model space, multiple by sqrt(d_model) for reasons?
+            src = self.encoder(src) * math.sqrt(self.d_model)
+
+            # add in the positional encoding of where in the sentence the words occur
+            # it is weird to me that these are added, but I guess it would be almost
+            # the same to have these be combined in a single linear layer
+            src = self.pos_encoder(src)
+
+            if return_hidden:
+                hidden_states = []
+            for layer in self.transformer_encoder.layers[:nfp32]:
+                src = layer(src, src_mask=mask, is_causal=is_causal)
+                if return_hidden:
+                    hidden_states.append(src.detach().cpu().numpy())
 
         # main transformer layers
-        if return_hidden:
-            hidden_states = []
+        if nfp32 > 0:
+            # remaining layers under autocast; the encoder has no final norm, so this matches transformer_encoder
+            assert self.transformer_encoder.norm is None
+            output = src
+            for layer in self.transformer_encoder.layers[nfp32:]:
+                output = layer(output, src_mask=mask, is_causal=is_causal)
+                if return_hidden:
+                    hidden_states.append(output.detach().float().cpu().numpy())
+        elif return_hidden:
             output = src
             for layer in self.transformer_encoder.layers:
                 output = layer(
@@ -1064,7 +1091,7 @@ class ResNet1d(torch.nn.Module):
         if self.single_output and (self.d_input is not None):
             assert d_input == self.d_input
 
-        sz = (int(np.prod(sz0[:dim])), self.channels[0], d_input)
+        sz = (math.prod(sz0[:dim]), self.channels[0], d_input)
         x = x.reshape(sz)
 
         for layer in self.layers:
@@ -1125,12 +1152,42 @@ class ResNet2d(torch.nn.Module):
                 k = [1, 1]
                 for i in range(2):
                     if is_d_input[i]:
-                        k[i] = sz[i + 1]
+                        k[i] = int(sz[i + 1])
                         self.collapse_dim.append(-2 + i)
                 self.fc = torch.nn.Conv2d(channels[-1], d_output, k, padding='valid')
         else:
             self.avg_pool = None
             self.fc = torch.nn.Conv2d(channels[-1], d_output, 1)
+
+    def _fc_as_linear(self, x):
+        """ Computes self.fc(x) with F.linear when self.fc is a Conv2d whose kernel spans exactly one full
+        input dimension and is 1 along the other, e.g. kernel (1, 72) on input (N, C, T, 72). cuDNN picks a
+        very slow kernel for the backward pass of such a convolution, while the equivalent matrix multiply is
+        fast. The parameters stay those of the Conv2d, so saved model files are unaffected.
+
+        Returns None if the shortcut does not apply, in which case the caller should use self.fc(x).
+        """
+        fc = self.fc
+        if not isinstance(fc, torch.nn.Conv2d) or self.collapse_dim not in ([-1], [-2]):
+            return None
+        if fc.stride != (1, 1) or fc.dilation != (1, 1) or fc.groups != 1 or fc.padding not in ('valid', (0, 0)):
+            return None
+        N, C, H, W = x.shape
+        d_out = fc.out_channels
+        if self.collapse_dim == [-1]:
+            if fc.kernel_size != (1, W):
+                return None
+            # (N, C, H, W) -> (N, H, C*W) @ (C*W, d_out) -> (N, d_out, H, 1)
+            y = torch.nn.functional.linear(x.permute(0, 2, 1, 3).reshape(N, H, C * W),
+                                           fc.weight.reshape(d_out, C * W), fc.bias)
+            return y.permute(0, 2, 1).unsqueeze(-1)
+        else:
+            if fc.kernel_size != (H, 1):
+                return None
+            # (N, C, H, W) -> (N, W, C*H) @ (C*H, d_out) -> (N, d_out, 1, W)
+            y = torch.nn.functional.linear(x.permute(0, 3, 1, 2).reshape(N, W, C * H),
+                                           fc.weight.reshape(d_out, C * H), fc.bias)
+            return y.permute(0, 2, 1).unsqueeze(-2)
 
     def forward(self, x):
 
@@ -1145,7 +1202,7 @@ class ResNet2d(torch.nn.Module):
         sz0 = x.shape
         d_input = sz0[-2:]
 
-        sz = (int(np.prod(sz0[:dim])), self.channels[0]) + d_input
+        sz = (math.prod(sz0[:dim]), self.channels[0]) + d_input
         x = x.reshape(sz)
 
         for layer in self.layers:
@@ -1156,7 +1213,8 @@ class ResNet2d(torch.nn.Module):
             dimout = -1
         else:
             dimout = -3
-        x = self.fc(x)
+        y = self._fc_as_linear(x) if self.avg_pool is None else None
+        x = self.fc(x) if y is None else y
         x = x.reshape(sz0[:dim] + x.shape[dimout:])
         dim_channel = len(sz0[:dim])
         x = torch.squeeze(x, self.collapse_dim)
@@ -1367,7 +1425,14 @@ def compute_loss(model, dataloader, dataset, device, mask, criterion, config):
             return loss
 
 
-def compute_loss_mixed(model, dataloader, device, mask, weight_discrete, input_gt=False):
+def compute_loss_mixed(model, dataloader, device, mask, weight_discrete, autocast_dtype=None, input_gt=False):
+    """ Average loss of model over all examples in dataloader, in eval mode.
+
+    autocast_dtype: if not None (e.g. torch.bfloat16), runs the model forward pass under torch.autocast
+    with this dtype. The loss itself is always computed in float32.
+    input_gt: if True, passes the ground-truth discrete labels to the model (teacher forcing, for the
+    flattened decoders).
+    """
     model.eval()
     with torch.no_grad():
         all_loss = torch.zeros(len(dataloader), device=device)
@@ -1376,11 +1441,13 @@ def compute_loss_mixed(model, dataloader, device, mask, weight_discrete, input_g
         loss_continuous = torch.tensor(0.0).to(device)
         nmask = 0
         for i, example in enumerate(dataloader):
-            if input_gt:
-                pred = model(example['input'].to(device=device), mask=mask, is_causal=True,
-                             gt=example['labels_discrete'].to(device=device))
-            else:
-                pred = model(example['input'].to(device=device), mask=mask, is_causal=True)
+            with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=autocast_dtype is not None):
+                if input_gt:
+                    pred = model(example['input'].to(device=device), mask=mask, is_causal=True,
+                                 gt=example['labels_discrete'].to(device=device))
+                else:
+                    pred = model(example['input'].to(device=device), mask=mask, is_causal=True)
+            pred = pred_to_float32(pred)
             loss_curr, loss_discrete_curr, loss_continuous_curr = mixed_causal_criterion(
                 example, pred, weight_discrete=weight_discrete, extraout=True
             )
@@ -1394,6 +1461,15 @@ def compute_loss_mixed(model, dataloader, device, mask, weight_discrete, input_g
         loss_discrete = loss_discrete.item() / nmask
         loss_continuous = loss_continuous.item() / nmask
         return loss, loss_discrete, loss_continuous
+
+
+def pred_to_float32(pred):
+    """ Casts floating-point tensors in a model prediction (dict or tensor) to float32, e.g. after an
+    autocast forward pass, so that losses are computed in full precision.
+    """
+    def tofloat(v):
+        return v.float() if torch.is_tensor(v) and v.is_floating_point() else v
+    return pred_apply_fun(pred, tofloat)
 
 
 def update_loss_nepochs(loss_epoch, nepochs):
