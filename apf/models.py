@@ -1348,14 +1348,20 @@ def initialize_model(config, train_dataset, device):
 
         MODEL_ARGS['decoder_kwargs'] = config['decoder_kwargs']
 
+    # create the model's tensors directly on the device, since initializing the weights of a big model on the CPU
+    # takes minutes
+    def construct_model(model_class):
+        with torch.device(device):
+            return model_class(d_input, d_output, **MODEL_ARGS)
+
     if config['modelstatetype'] == 'prob':
-        model = TransformerStateModel(d_input, d_output, **MODEL_ARGS).to(device)
+        model = construct_model(TransformerStateModel)
         criterion = prob_causal_criterion
     elif config['modelstatetype'] == 'min':
-        model = TransformerBestStateModel(d_input, d_output, **MODEL_ARGS).to(device)
+        model = construct_model(TransformerBestStateModel)
         criterion = min_causal_criterion
     else:
-        model = TransformerModel(d_input, d_output, **MODEL_ARGS).to(device)
+        model = construct_model(TransformerModel)
 
         if train_dataset.discretize:
             # Before refactor this was: config['weight_discrete'] = len(config['discreteidx']) / nfeatures
