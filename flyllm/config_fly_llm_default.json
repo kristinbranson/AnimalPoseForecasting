@@ -152,7 +152,7 @@
     "use_sdpa_math_kernel": true,
 
     "_comment_num_workers": "number of background worker processes for the training and validation DataLoaders (0 = load in the main process)",
-    "num_workers": 4,
+    "num_workers": 2,
 
     "_comment_dataset_cache_dir": "directory for caching the preprocessed training and validation datasets, so later runs with the same data config load them instead of rebuilding them (relative paths are relative to the working directory). null = no caching.",
     "dataset_cache_dir": "/nrs/branson/AnimalPoseForecasting/dataset-cache"
