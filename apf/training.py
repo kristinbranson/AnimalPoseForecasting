@@ -7,7 +7,12 @@ import copy
 import logging
 from typing import Callable
 import time
+import numpy as np
+import torch.distributed as dist
 from torch.nn.attention import SDPBackend, sdpa_kernel
+from torch.nn.parallel import DistributedDataParallel
+
+import apf.distributed as distributed
 
 from apf.models import (
     sanity_check_temporal_dep,
@@ -103,12 +108,21 @@ def train(
             training, but it is slower than the fused kernels PyTorch otherwise chooses, and stores the full
             attention matrix. Defaults to True.
 
+    In a process started by apf.distributed.run_on_gpus, trains with DistributedDataParallel, together with the
+    other processes: model must be on this process's GPU, and the dataloaders should sample with
+    apf.distributed.ShardedSampler, so each process gets its share of each epoch.  Each training step's
+    gradients are averaged over the processes, so the effective batch size is the processes' batch sizes
+    summed.  Losses are summed over all the processes' batches, and a step is skipped in every process if
+    it's non-finite in any.  Only rank 0 calls the hooks, saves models, and returns the best model; the other
+    ranks return model as best_model.  Outside of run_on_gpus, trains in this process alone, as before.
+
     Returns:
         model: Model after training on all epochs
         best_model: Model with the lowest validation loss
         losses: Stores losses per epoch for continuous, discrete, and combined objectives for training and validation.
     """
     device = next(model.parameters()).device
+    is_rank0 = distributed.rank() == 0
 
     if use_autocast:
         if autocast_dtype is None:
@@ -128,6 +142,13 @@ def train(
         fwd_model = torch.compile(model)
     else:
         fwd_model = model
+    # training forward passes go through DDP, which averages the gradients over the processes in backward().
+    # Validation uses fwd_model, since DDP syncs the batch norm buffers in some forward passes, and the
+    # processes can have different numbers of validation batches.
+    if dist.is_initialized():
+        train_model = DistributedDataParallel(fwd_model, device_ids=[device.index])
+    else:
+        train_model = fwd_model
 
     # Optimizer
     num_training_steps = num_train_epochs * len(train_dataloader)
@@ -172,7 +193,7 @@ def train(
     d_continuous = train_dataloader.dataset.d_output_continuous
     weight_discrete = d_discrete / (d_discrete + d_continuous)
     LOG.info(f"weight_discrete = {weight_discrete}")
-    progress_bar = tqdm.tqdm(range(num_training_steps), file=sys.stdout)
+    progress_bar = tqdm.tqdm(range(num_training_steps), file=sys.stdout, disable=not is_rank0)
     best_model = model
     best_epoch = None
     best_val_loss = 10000
@@ -182,8 +203,10 @@ def train(
         LOG.info('Using the math SDPA kernel for attention')
     with sdpa_kernel(SDPBackend.MATH) if use_sdpa_math_kernel else contextlib.nullcontext():
         for epoch in range(start_epoch, num_train_epochs):
-            # sets both fwd_model and model, since model is a submodule of fwd_model
-            fwd_model.train()
+            # sets fwd_model and model too, since they're submodules of train_model
+            train_model.train()
+            if hasattr(train_dataloader.sampler, 'set_epoch'):
+                train_dataloader.sampler.set_epoch(epoch)
             tr_loss = torch.tensor(0.0).to(device)
             tr_loss_discrete = torch.tensor(0.0).to(device)
             tr_loss_continuous = torch.tensor(0.0).to(device)
@@ -193,25 +216,28 @@ def train(
 
                 with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=use_autocast):
                     if model.input_gt_for_training:
-                        pred = fwd_model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal,
-                                         gt=example['labels_discrete'].to(device=device))
+                        pred = train_model(example['input'].to(device=device), mask=train_src_mask,
+                                           is_causal=is_causal, gt=example['labels_discrete'].to(device=device))
                     else:
-                        pred = fwd_model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal)
+                        pred = train_model(example['input'].to(device=device), mask=train_src_mask, is_causal=is_causal)
                 # compute the loss in float32
                 pred = pred_to_float32(pred)
-                # check the prediction first, since the criterion asserts on nans
+                # check the prediction first, since the criterion asserts on nans.  The prediction and loss
+                # checks agree across processes, since a step's backward() must run in all of them or none.
                 nonfinite_reason = None
-                if not all(torch.isfinite(v).all().item() for v in pred.values() if torch.is_tensor(v)):
+                pred_finite = torch.stack([torch.isfinite(v).all() for v in pred.values() if torch.is_tensor(v)]).all()
+                if not distributed.all_true(pred_finite):
                     nonfinite_reason = 'prediction'
                 else:
                     loss, loss_discrete, loss_continuous = criterion(
                         example, pred, weight_discrete=weight_discrete, extraout=True
                     )
-                    if not torch.isfinite(loss).item():
+                    if not distributed.all_true(torch.isfinite(loss)):
                         nonfinite_reason = 'loss'
                     else:
                         loss.backward()
-                        # gradient clipping; a non-finite norm would turn all gradients (and then weights) into nans
+                        # gradient clipping; a non-finite norm would turn all gradients (and then weights) into nans.
+                        # The gradients are averaged over the processes by now, so the norm is the same in all.
                         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
                         if not torch.isfinite(grad_norm).item():
                             nonfinite_reason = f'gradient norm ({grad_norm.item()})'
@@ -246,9 +272,16 @@ def train(
                 lr_scheduler.step()
                 model.zero_grad()
 
-                if end_iter_hook is not None:
+                if end_iter_hook is not None and is_rank0:
                     end_iter_hook(model=model, step=step, example=example,
                                 predfn=lambda input: model.output(input, mask=train_src_mask, is_causal=is_causal))
+
+            # sum the losses over the processes
+            tr_loss = distributed.all_reduce_sum(tr_loss)
+            tr_loss_discrete = distributed.all_reduce_sum(tr_loss_discrete)
+            tr_loss_continuous = distributed.all_reduce_sum(tr_loss_continuous)
+            nmask_train = distributed.all_reduce_sum(torch.as_tensor(nmask_train, dtype=torch.float64,
+                                                                      device=device)).item()
 
             # update progress bar
             stat = {'train loss': tr_loss.item() / nmask_train, 'last val loss': last_val_loss, 'epoch': epoch}
@@ -271,15 +304,15 @@ def train(
                                        autocast_dtype=autocast_dtype, input_gt=model.input_gt_for_training)
                 last_val_loss = loss_epoch['val'][epoch].item()
 
-            if end_epoch_hook is not None:
+            if end_epoch_hook is not None and is_rank0:
                 end_epoch_hook(model=model, epoch=epoch, loss_epoch=loss_epoch)
 
-            if do_val and last_val_loss < best_val_loss:
+            if do_val and last_val_loss < best_val_loss and is_rank0:
                 best_model = copy.deepcopy(model)
                 best_epoch = epoch
                 best_val_loss = last_val_loss
 
-            if ((epoch + 1) % save_epoch == 0) or (epoch == num_train_epochs - 1):
+            if (((epoch + 1) % save_epoch == 0) or (epoch == num_train_epochs - 1)) and is_rank0:
                 savefile = f'{savefilestr}_epoch{epoch + 1}.pth'
                 print(f'Saving to file {savefile}')
                 save_model(savefile, model,
@@ -288,10 +321,13 @@ def train(
                             loss=loss_epoch)
 
             # if np.mod(epoch + 1, 5) == 0:
-            train_dataloader.dataset.recompute_chunk_indices()
+            # rank 0 picks the random offset, so that all the processes' datasets have the same chunks
+            start_offset = distributed.broadcast_int(np.random.randint(train_dataloader.dataset.context_length),
+                                                     device)
+            train_dataloader.dataset.recompute_chunk_indices(start_offset=start_offset)
 
     # save best model
-    if best_epoch is not None:
+    if best_epoch is not None and is_rank0:
         savefile = f'{savefilestr}_bestepoch{best_epoch + 1}.pth'
         print(f'Saving best model to file {savefile}')
         save_model(savefile, best_model,

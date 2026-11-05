@@ -3,6 +3,7 @@ import numpy as np
 import math
 import typing
 import torch
+import apf.distributed as distributed
 from apf.data import weighted_sample
 
 def CrossEntropyLossEps(eps=1e-8,**kwargs):
@@ -1463,9 +1464,11 @@ def compute_loss_mixed(model, dataloader, device, mask, weight_discrete, autocas
             loss_discrete += loss_discrete_curr
             loss_continuous += loss_continuous_curr
 
-        loss = loss.item() / nmask
-        loss_discrete = loss_discrete.item() / nmask
-        loss_continuous = loss_continuous.item() / nmask
+        # in apf.distributed.run_on_gpus processes, each has a share of the batches, so sum over them
+        nmask = distributed.all_reduce_sum(torch.as_tensor(nmask, dtype=torch.float64, device=device)).item()
+        loss = distributed.all_reduce_sum(loss).item() / nmask
+        loss_discrete = distributed.all_reduce_sum(loss_discrete).item() / nmask
+        loss_continuous = distributed.all_reduce_sum(loss_continuous).item() / nmask
         return loss, loss_discrete, loss_continuous
 
 

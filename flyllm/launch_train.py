@@ -14,8 +14,9 @@ and <overrides> by the --overrideconfig option.  In the default <out dir>, <conf
 without .json, and NN is the smallest run index greater than that of any existing <config name>_run_NN dir or
 <config name>_run_NN.{out.txt,err.txt,ipynb} file in <current dir>/runs (created if needed).
 
-Training uses only one GPU, but asking for all of a node's GPUs and slots (4 and 48 on gpu_a100 nodes) gets the
-whole node, so that other jobs don't affect its speed.  <python> is the running Python, so the job runs in the
+Training uses all the job's GPUs, one process each, with config['batch_size'] as each GPU's batch size.  Asking
+for all of a node's GPUs and slots (4 and 48 on gpu_a100 nodes) gets the whole node, so that other jobs don't
+affect its speed.  <python> is the running Python, so the job runs in the
 same environment.
 
 Everything the run writes goes in <out dir>: the job's logs, models in <out dir>/models, and figures in

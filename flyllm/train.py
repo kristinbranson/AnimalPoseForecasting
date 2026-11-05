@@ -3,6 +3,11 @@ Train a fly forecasting model from a config file, as notebooks/train_fly_llm.py 
 checkpoints go to <out dir>/models.  The debug and loss figures are saved as PNG files in <out dir>/figs,
 overwritten each time they're updated.
 
+Trains on all the GPUs CUDA can see, or on the first --gpus of them, with DistributedDataParallel, one process
+per GPU, even for one GPU.  The datasets are loaded first, and then the processes are forked, so they share the
+datasets' memory.  config['batch_size'] is each GPU's batch size, so the effective batch size is that times the
+GPU count.  Only rank 0 makes the figures and saves models.
+
 Run it as python -m flyllm.train.
 """
 
@@ -17,14 +22,19 @@ limit_threads_to_lsf_slots()
 
 # no display on cluster nodes, and the figures are only saved to files
 os.environ.setdefault('MPLBACKEND', 'Agg')
+# so that torch.cuda.is_available() doesn't initialize CUDA before the training processes are forked, which would
+# keep them from using it
+os.environ.setdefault('PYTORCH_NVML_BASED_CUDA_CHECK', '1')
 
 import numpy as np
 import torch
+from torch.utils.data import DataLoader
 
+import apf.distributed as distributed
 import apf.utils as utils
 from apf.training import train
 from flyllm.plotting import initialize_debug_plots, initialize_loss_plots, update_debug_plots, update_loss_plots
-from flyllm.prepare import init_flyllm
+from flyllm.prepare import _dataloader_worker_args, init_flyllm, init_model
 
 LOG = logging.getLogger('flyllm.train')
 
@@ -36,60 +46,57 @@ def save_figures(h: dict, fig_file_path_prefix: str) -> None:
             fig.savefig(f'{fig_file_path_prefix}_{k}.png')
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('configfile', help='config file name')
-    parser.add_argument('--overrideconfig', type=json.loads, default={},
-                        help='JSON dict of config entries to override, e.g. \'{"num_train_epochs": 25}\'')
-    parser.add_argument('--restartmodelfile', default=None, help='model file to restart training from')
-    parser.add_argument('--debug-uselessdata', action='store_true',
-                        help='train on a small subset of the data, for quick debugging runs')
-    parser.add_argument('--outdir', default='.', help='directory for the models and figs dirs (default: .)')
-    args = parser.parse_args()
-    if not isinstance(args.overrideconfig, dict):
-        parser.error('--overrideconfig must be a JSON dict')
-
-    logging.basicConfig(level=logging.INFO)
-    out_dir_path = os.path.abspath(args.outdir)
-    out_model_dir_path = os.path.join(out_dir_path, 'models')
-    out_fig_dir_path = os.path.join(out_dir_path, 'figs')
-    os.makedirs(out_model_dir_path, exist_ok=True)
-    os.makedirs(out_fig_dir_path, exist_ok=True)
-    LOG.info(f'Writing model checkpoints to {out_model_dir_path} and figures to {out_fig_dir_path}')
-
-    LOG.info(f'Config overrides: {args.overrideconfig}')
-    res = init_flyllm(configfile=os.path.abspath(args.configfile), mode='train',
-                      restartmodelfile=args.restartmodelfile, debug_uselessdata=args.debug_uselessdata,
-                      overrideconfig=args.overrideconfig)
-    if not res['success']:
-        raise RuntimeError('init_flyllm failed')
+def train_on_gpu(device: torch.device, res: dict, restartmodelfile_maybe: str | None, out_model_dir_path: str,
+                 out_fig_dir_path: str) -> None:
+    """ Trains in one of the processes forked by distributed.run_on_gpus, on device, with the datasets in res. """
     config = res['config']
-    device = res['device']
-    model = res['model']
+    res['device'] = device
+    rank = distributed.rank()
+    # each process gets its own dropout masks.  The model is initialized from rank 0's GPU RNG, since DDP copies
+    # rank 0's weights to the others.
+    torch.cuda.manual_seed(config['torch_seed'] + rank)
+
+    # each process loads its share of the batches
     train_dataset = res['train_dataset']
-    train_dataloader = res['train_dataloader']
     val_dataset = res['val_dataset']
-    val_dataloader = res['val_dataloader']
+    train_dataloader = DataLoader(train_dataset, batch_size=config['batch_size'],
+                                  sampler=distributed.ShardedSampler(train_dataset, shuffle=True,
+                                                                     seed=config['torch_seed']),
+                                  pin_memory=True, **_dataloader_worker_args(config))
+    val_dataloader = DataLoader(val_dataset, batch_size=config.get('test_batch_size', config['batch_size']),
+                                sampler=distributed.ShardedSampler(val_dataset, shuffle=False),
+                                pin_memory=True, **_dataloader_worker_args(config))
+    res['train_dataloader'] = train_dataloader
+    res['val_dataloader'] = val_dataloader
+
+    LOG.info('Initializing model...')
+    init_model(config=config, somedataset=train_dataset, somedataloader=train_dataloader, device=device,
+               restartmodelfile=restartmodelfile_maybe, mode='train', res=res)
+    model = res['model']
     criterion = res['criterion']
     loss_epoch = res['loss_epoch']
 
     run_name = f"fly{res['modeltype_str']}_{res['model_savetime']}"
-    fig_file_path_prefix = os.path.join(out_fig_dir_path, run_name)
 
-    # debug and loss plots, as in the notebook
-    debug_params = {}
-    # if contextl is long, still just look at samples from the first 64 frames
-    if config['contextl'] > 64:
-        debug_params['tsplot'] = np.round(np.linspace(0, 64, 5)).astype(int)
-        debug_params['traj_nsamplesplot'] = 1
-    hdebug = {
-        'train': initialize_debug_plots(train_dataset, train_dataloader, res['train_data'], name='Train',
-                                        **debug_params),
-        'val': initialize_debug_plots(val_dataset, val_dataloader, res['val_data'], name='Val', **debug_params),
-    }
-    hloss = initialize_loss_plots(loss_epoch)
-    valexample = next(iter(val_dataloader))
+    # the figures, on rank 0 only
+    if rank == 0:
+        fig_file_path_prefix = os.path.join(out_fig_dir_path, run_name)
 
+        # debug and loss plots, as in the notebook
+        debug_params = {}
+        # if contextl is long, still just look at samples from the first 64 frames
+        if config['contextl'] > 64:
+            debug_params['tsplot'] = np.round(np.linspace(0, 64, 5)).astype(int)
+            debug_params['traj_nsamplesplot'] = 1
+        hdebug = {
+            'train': initialize_debug_plots(train_dataset, train_dataloader, res['train_data'], name='Train',
+                                            **debug_params),
+            'val': initialize_debug_plots(val_dataset, val_dataloader, res['val_data'], name='Val', **debug_params),
+        }
+        hloss = initialize_loss_plots(loss_epoch)
+        valexample = next(iter(val_dataloader))
+
+    # train() calls the hooks on rank 0 only
     def end_iter_hook(model=None, step=None, example=None, predfn=None, **kwargs):
         if step % config['niterplot'] != 0:
             return
@@ -121,6 +128,42 @@ def main():
     train_args['start_epoch'] = res['epoch']
     train_args['savefilestr'] = os.path.join(out_model_dir_path, run_name)
     train(**train_args)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('configfile', help='config file name')
+    parser.add_argument('--overrideconfig', type=json.loads, default={},
+                        help='JSON dict of config entries to override, e.g. \'{"num_train_epochs": 25}\'')
+    parser.add_argument('--restartmodelfile', default=None, help='model file to restart training from')
+    parser.add_argument('--debug-uselessdata', action='store_true',
+                        help='train on a small subset of the data, for quick debugging runs')
+    parser.add_argument('--outdir', default='.', help='directory for the models and figs dirs (default: .)')
+    parser.add_argument('--gpus', type=int, default=None,
+                        help='number of GPUs to train on (default: all the GPUs CUDA can see)')
+    args = parser.parse_args()
+    if not isinstance(args.overrideconfig, dict):
+        parser.error('--overrideconfig must be a JSON dict')
+
+    logging.basicConfig(level=logging.INFO)
+    out_dir_path = os.path.abspath(args.outdir)
+    out_model_dir_path = os.path.join(out_dir_path, 'models')
+    out_fig_dir_path = os.path.join(out_dir_path, 'figs')
+    os.makedirs(out_model_dir_path, exist_ok=True)
+    os.makedirs(out_fig_dir_path, exist_ok=True)
+    LOG.info(f'Writing model checkpoints to {out_model_dir_path} and figures to {out_fig_dir_path}')
+
+    LOG.info(f'Config overrides: {args.overrideconfig}')
+    # everything but the model, which is made on each process's GPU after forking
+    res = init_flyllm(configfile=os.path.abspath(args.configfile), mode='train',
+                      debug_uselessdata=args.debug_uselessdata, overrideconfig=args.overrideconfig, doinitmodel=False)
+    if not res['success']:
+        raise RuntimeError('init_flyllm failed')
+    gpu_count = args.gpus if args.gpus is not None else torch.cuda.device_count()
+    LOG.info(f'Training on {gpu_count} GPU(s), with an effective batch size of '
+             f'{gpu_count * res["config"]["batch_size"]}')
+    distributed.run_on_gpus(train_on_gpu, gpu_count, args=(res, args.restartmodelfile, out_model_dir_path,
+                                                            out_fig_dir_path))
     LOG.info('Done training')
 
 
