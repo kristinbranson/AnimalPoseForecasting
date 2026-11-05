@@ -42,6 +42,18 @@ def init_optimizer(num_training_steps: int, model: TransformerModel, optimizer_a
                                                     total_iters=num_training_steps)
     return optimizer, lr_scheduler
 
+def scale_learning_rate_bang_bang(optimizer: torch.optim.Optimizer, lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
+                                  factor: float) -> None:
+    """ Multiplies the learning rate of every optimizer param group by factor, now and for the rest of the
+    schedule, e.g. after restoring them from a checkpoint trained with a different GPU count. """
+    for group in optimizer.param_groups:
+        group['lr'] *= factor
+        if 'initial_lr' in group:
+            group['initial_lr'] *= factor
+    lr_scheduler.base_lrs = [lr * factor for lr in lr_scheduler.base_lrs]
+    lr_scheduler._last_lr = [group['lr'] for group in optimizer.param_groups]
+
+
 def train(
         train_dataloader: DataLoader | None = None,
         val_dataloader: DataLoader | None = None,

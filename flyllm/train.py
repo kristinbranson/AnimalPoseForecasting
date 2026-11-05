@@ -6,7 +6,11 @@ overwritten each time they're updated.
 Trains on all the GPUs CUDA can see, or on the first --gpus of them, with DistributedDataParallel, one process
 per GPU, even for one GPU.  The datasets are loaded first, and then the processes are forked, so they share the
 datasets' memory.  config['batch_size'] is each GPU's batch size, so the effective batch size is that times the
-GPU count.  Only rank 0 makes the figures and saves models.
+GPU count, and the learning rate, config['optimizer_args']['lr'], is multiplied by the square root of the GPU
+count, the scaling rule for Adam-like optimizers (Malladi et al. 2022).  The GPU count is saved in the models'
+configs, as config['train_gpu_count'], and when restarting from a model file trained on a different number of
+GPUs, the restored learning rate is rescaled by the square root of the ratio.  Only rank 0 makes the figures and
+saves models.
 
 Run it as python -m flyllm.train.
 """
@@ -14,6 +18,7 @@ Run it as python -m flyllm.train.
 import argparse
 import json
 import logging
+import math
 import os
 
 from apf.lsf import limit_threads_to_lsf_slots
@@ -32,7 +37,7 @@ from torch.utils.data import DataLoader
 
 import apf.distributed as distributed
 import apf.utils as utils
-from apf.training import train
+from apf.training import scale_learning_rate_bang_bang, train
 from flyllm.plotting import initialize_debug_plots, initialize_loss_plots, update_debug_plots, update_loss_plots
 from flyllm.prepare import _dataloader_worker_args, init_flyllm, init_model
 
@@ -69,9 +74,25 @@ def train_on_gpu(device: torch.device, res: dict, restartmodelfile_maybe: str | 
     res['train_dataloader'] = train_dataloader
     res['val_dataloader'] = val_dataloader
 
+    gpu_count = distributed.world_size()
     LOG.info('Initializing model...')
     init_model(config=config, somedataset=train_dataset, somedataloader=train_dataloader, device=device,
-               restartmodelfile=restartmodelfile_maybe, mode='train', res=res)
+               restartmodelfile=restartmodelfile_maybe, mode='train', res=res,
+               # model files hold their configs, which hold numpy arrays, which weights_only loading refuses
+               weights_only=False)
+    if restartmodelfile_maybe is not None:
+        # the restored learning rate was scaled for the GPU count the model was trained on, which is 1 for model
+        # files saved before the count was
+        restartmodelfile: str = restartmodelfile_maybe
+        saved_config = torch.load(restartmodelfile, map_location='cpu', mmap=True, weights_only=False).get('config')
+        saved_gpu_count = (saved_config or {}).get('train_gpu_count', 1)
+        if saved_gpu_count != gpu_count:
+            lr_scale = math.sqrt(gpu_count / saved_gpu_count)
+            LOG.info(f'{restartmodelfile} was trained on {saved_gpu_count} GPU(s), so scaling its learning rate '
+                     f'by {lr_scale:.3g}')
+            scale_learning_rate_bang_bang(res['optimizer'], res['lr_scheduler'], lr_scale)
+    # saved with the models, via model.config
+    config['train_gpu_count'] = gpu_count
     model = res['model']
     criterion = res['criterion']
     loss_epoch = res['loss_epoch']
@@ -117,6 +138,13 @@ def train_on_gpu(device: torch.device, res: dict, restartmodelfile_maybe: str | 
         save_figures(hloss, f'{fig_file_path_prefix}_loss')
 
     train_args = utils.function_args_from_config(config, train)
+    if res['optimizer'] is None:
+        # train() makes the optimizer, so scale its learning rate for the effective batch size.  The config, which
+        # is saved with the models, keeps the unscaled one.
+        lr_scale = math.sqrt(gpu_count)
+        train_args['optimizer_args'] = {**config['optimizer_args'], 'lr': config['optimizer_args']['lr'] * lr_scale}
+        LOG.info(f"Learning rate {config['optimizer_args']['lr']} times {lr_scale:.3g}, the square root of the GPU "
+                 f"count: {train_args['optimizer_args']['lr']:.3g}")
     train_args['train_dataloader'] = train_dataloader
     train_args['val_dataloader'] = val_dataloader
     train_args['model'] = model
