@@ -6,11 +6,13 @@ overwritten each time they're updated.
 Trains on all the GPUs CUDA can see, or on the first --gpus of them, with DistributedDataParallel, one process
 per GPU, even for one GPU.  The datasets are loaded first, and then the processes are forked, so they share the
 datasets' memory.  config['batch_size'] is each GPU's batch size, so the effective batch size is that times the
-GPU count, and the learning rate, config['optimizer_args']['lr'], is multiplied by the square root of the GPU
-count, the scaling rule for Adam-like optimizers (Malladi et al. 2022).  The GPU count is saved in the models'
-configs, as config['train_gpu_count'], and when restarting from a model file trained on a different number of
-GPUs, the restored learning rate is rescaled by the square root of the ratio.  Only rank 0 makes the figures and
-saves models.
+GPU count, and the learning rate, config['optimizer_args']['lr'], is multiplied by a function of the GPU count
+set by config['lr_gpu_scaling']: 'sqrt' (the default), the square root of the GPU count, the scaling rule for
+Adam-like optimizers (Malladi et al. 2022), or 'linear', the GPU count itself (Goyal et al. 2017), which
+usually needs warmup (config['num_warmup_epochs']).  The GPU count is saved in the models' configs, as
+config['train_gpu_count'], and when restarting from a model file trained on a different number of GPUs or
+with a different rule, the restored learning rate is rescaled to what this run's rule and GPU count give.
+Only rank 0 makes the figures and saves models.
 
 Run it as python -m flyllm.train.
 """
@@ -42,6 +44,18 @@ from flyllm.plotting import initialize_debug_plots, initialize_loss_plots, updat
 from flyllm.prepare import _dataloader_worker_args, init_flyllm, init_model
 
 LOG = logging.getLogger('flyllm.train')
+
+# The values config['lr_gpu_scaling'] can have, and the learning rate factor each gives for a GPU count
+LR_GPU_SCALING_FUNCTIONS = {'sqrt': math.sqrt, 'linear': float}
+LR_GPU_SCALING_DESCRIPTIONS = {'sqrt': 'the square root of the GPU count', 'linear': 'the GPU count'}
+
+
+def lr_gpu_scale(gpu_count: int, lr_gpu_scaling: str) -> float:
+    """ The factor the learning rate is multiplied by when training on gpu_count GPUs, for config['lr_gpu_scaling']
+    lr_gpu_scaling. """
+    if lr_gpu_scaling not in LR_GPU_SCALING_FUNCTIONS:
+        raise ValueError(f"lr_gpu_scaling is {lr_gpu_scaling!r}, but must be one of {list(LR_GPU_SCALING_FUNCTIONS)}")
+    return LR_GPU_SCALING_FUNCTIONS[lr_gpu_scaling](gpu_count)
 
 
 def save_figures(h: dict, fig_file_path_prefix: str) -> None:
@@ -86,10 +100,12 @@ def train_on_gpu(device: torch.device, res: dict, restartmodelfile_maybe: str | 
         restartmodelfile: str = restartmodelfile_maybe
         saved_config = torch.load(restartmodelfile, map_location='cpu', mmap=True, weights_only=False).get('config')
         saved_gpu_count = (saved_config or {}).get('train_gpu_count', 1)
-        if saved_gpu_count != gpu_count:
-            lr_scale = math.sqrt(gpu_count / saved_gpu_count)
-            LOG.info(f'{restartmodelfile} was trained on {saved_gpu_count} GPU(s), so scaling its learning rate '
-                     f'by {lr_scale:.3g}')
+        saved_lr_gpu_scaling = (saved_config or {}).get('lr_gpu_scaling', 'sqrt')
+        lr_scale = (lr_gpu_scale(gpu_count, config.get('lr_gpu_scaling', 'sqrt'))
+                    / lr_gpu_scale(saved_gpu_count, saved_lr_gpu_scaling))
+        if lr_scale != 1:
+            LOG.info(f'{restartmodelfile} was trained on {saved_gpu_count} GPU(s), with {saved_lr_gpu_scaling} '
+                     f'learning rate scaling, so scaling its learning rate by {lr_scale:.3g}')
             scale_learning_rate_bang_bang(res['optimizer'], res['lr_scheduler'], lr_scale)
     # saved with the models, via model.config
     config['train_gpu_count'] = gpu_count
@@ -141,10 +157,11 @@ def train_on_gpu(device: torch.device, res: dict, restartmodelfile_maybe: str | 
     if res['optimizer'] is None:
         # train() makes the optimizer, so scale its learning rate for the effective batch size.  The config, which
         # is saved with the models, keeps the unscaled one.
-        lr_scale = math.sqrt(gpu_count)
+        lr_gpu_scaling = config.get('lr_gpu_scaling', 'sqrt')
+        lr_scale = lr_gpu_scale(gpu_count, lr_gpu_scaling)
         train_args['optimizer_args'] = {**config['optimizer_args'], 'lr': config['optimizer_args']['lr'] * lr_scale}
-        LOG.info(f"Learning rate {config['optimizer_args']['lr']} times {lr_scale:.3g}, the square root of the GPU "
-                 f"count: {train_args['optimizer_args']['lr']:.3g}")
+        LOG.info(f"Learning rate {config['optimizer_args']['lr']} times {lr_scale:.3g}, "
+                 f"{LR_GPU_SCALING_DESCRIPTIONS[lr_gpu_scaling]}: {train_args['optimizer_args']['lr']:.3g}")
     train_args['train_dataloader'] = train_dataloader
     train_args['val_dataloader'] = val_dataloader
     train_args['model'] = model
