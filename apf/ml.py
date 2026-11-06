@@ -129,12 +129,10 @@ def apply_binary_classifier(
     model.eval()
     device = next(model.parameters()).device
     logits = np.zeros(len(frames))
-    for i in range(0, len(frames), batch_size):
-        chunk = torch.from_numpy(Xdata[agents[i:i + batch_size], frames[i:i + batch_size]]).to(device)
-        logits[i:i + batch_size] = model(chunk).detach().cpu().numpy()[:, 0]
-    chunk = torch.from_numpy(Xdata[agents[i + batch_size:], frames[i + batch_size:]]).to(device)
     with torch.no_grad():
-        logits[i + batch_size:] = model(chunk).detach().cpu().numpy()[:, 0]
+        for i in range(0, len(frames), batch_size):
+            chunk = torch.from_numpy(Xdata[agents[i:i + batch_size], frames[i:i + batch_size]]).to(device)
+            logits[i:i + batch_size] = model(chunk).cpu().numpy()[:, 0]
     predictions = (logits > 0.5).astype(float)
     if ydata is None:
         accuracy = None

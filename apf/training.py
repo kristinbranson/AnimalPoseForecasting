@@ -83,6 +83,10 @@ def train(
     """
     device = next(model.parameters()).device
 
+    # Allow TF32 tensor-core matmuls (large speedup on Ampere+ GPUs, negligible accuracy impact)
+    torch.set_float32_matmul_precision('high')
+    print('precision set to high')
+
     # Optimizer
     num_training_steps = num_train_epochs * len(train_dataloader)
     if optimizer is None or lr_scheduler is None:

@@ -1,3 +1,5 @@
+from os import replace
+
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -445,7 +447,7 @@ def init_flyllm(configfile=None,config=None,
                 doinitconfig=True,doinitstate=True,
                 doinitdatasets=True,doinitmodel=True,overrideconfig={},
                 res={},
-                weights_only=True):
+                weights_only=True, replace_val_for_test=False):
     """
     Standard use:
     res = init_flyllm(configfile,mode)
@@ -554,6 +556,10 @@ def init_flyllm(configfile=None,config=None,
         except Exception as e:
             LOG.exception(f'Error in init_config: {e}\nAborting init_flyllm')
             return res
+
+    if replace_val_for_test:
+        from apf.eval_pipeline.context import use_test_split
+        use_test_split(res['config'])
 
     ## setup device and random
     if doinitstate:

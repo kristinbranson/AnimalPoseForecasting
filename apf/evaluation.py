@@ -12,7 +12,8 @@ from scipy import ndimage
 from apf.io import load_config_from_model_file, load_model
 from apf.simulation import simulate
 from apf.dataset import Dataset, Fusion, apply_opers_from_data
-from apf.models import initialize_model, MLP
+from apf.models import initialize_model
+from apf.ml import MLP
 from apf.plotting import fig_to_numpy, arrays_to_video, convert_video_to_mp4
 from experiments.flyllm import Sensory, Pose, Velocity
 from flyllm.prepare import init_datasets, init_raw_data

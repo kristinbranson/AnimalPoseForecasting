@@ -25,6 +25,8 @@ def simulate(
     start_frame: int = 1000,
     transformed_cache: np.ndarray = None,
     sanity_check_gt_labels: bool = False,
+    hidden_layer: int = None,
+    hidden_out: np.ndarray = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """ Simulates an agent given model and some initialization.
 
@@ -42,6 +44,12 @@ def simulate(
         start_frame: First frame of the burn-in. The returned tracks cover frames
             [start_frame, start_frame + track_len); their first burn_in frames are real data, and
             prediction starts at frame start_frame + burn_in.
+        hidden_layer: Layer to record in hidden_out. Must be given together with hidden_out.
+        hidden_out: Filled with the hidden state of hidden_layer, shape (n_sim_agents, track_len, d_model), where
+            hidden_out[:, i] is the state whose window ends at frame start_frame + i. Entries from burn_in - 1 on are
+            written, including the final frame (which needs one extra forward pass since nothing is predicted from
+            it). Each window has the same real context as the simulation, which can't be recovered from a track
+            stitched together from consecutive simulations.
 
     Returns:
         gt_track: ground truth 2d track at each frame. Used for first burn_in frames.
@@ -88,9 +96,13 @@ def simulate(
     pred_pose = copy.deepcopy(gt_pose)
     pred_pose[agent_ids, curr_frame + 1:] = np.nan
 
-    return_hidden = transformed_cache is not None
+    assert (hidden_layer is None) == (hidden_out is None), "hidden_layer and hidden_out must be given together"
+    return_hidden = transformed_cache is not None or hidden_out is not None
+    # With hidden_out, only copy the one state that is needed to the CPU rather than every layer's full window
+    hidden_kwargs = {} if hidden_out is None else {'hidden_layers': [hidden_layer], 'hidden_last_only': True}
 
     masksizeprev = 0
+    aborted = False
     model.eval()
     for curr_frame in trange(curr_frame, track_len, desc='Simulating', leave=False):
         # Make a motion prediction
@@ -113,9 +125,11 @@ def simulate(
         else:
             with torch.no_grad():
                 curr_input = model_input[:, frame0:curr_frame, :]
-                pred = model.output(curr_input, mask=mask, is_causal=True, return_hidden=return_hidden)
+                pred = model.output(curr_input, mask=mask, is_causal=True, return_hidden=return_hidden, **hidden_kwargs)
 
-        if return_hidden:
+        if hidden_out is not None:
+            hidden_out[:, curr_frame - 1] = pred['hidden'][0]
+        elif return_hidden:
             for layer_id, out in enumerate(pred['hidden']):
                 transformed_cache[layer_id, agent_ids, start_frame+curr_frame-1, :] = out[:, -1]
 
@@ -137,6 +151,7 @@ def simulate(
         
         if np.isnan(new_pose).sum() > 0:
             LOG.error(f"Predicted pose contains a NaN, aborting at frame {curr_frame}.")
+            aborted = True
             break
 
         # Map pose to keypoints
@@ -163,5 +178,16 @@ def simulate(
         curr_in = np.concatenate(list(inputs_proc.values()), axis=-1)
 
         model_input[:, curr_frame, :] = torch.from_numpy(curr_in[:, 0, :].astype(np.float32)).to(device)
+
+    if hidden_out is not None and not aborted:
+        # The loop records the state before each prediction, so the final frame still needs a forward pass
+        frame0 = 0 if max_contextl is None else max(0, track_len - max_contextl)
+        masksize = track_len - frame0
+        if masksize != masksizeprev:
+            mask = torch.nn.Transformer.generate_square_subsequent_mask(masksize, device=device)
+        with torch.no_grad():
+            pred = model.forward(model_input[:, frame0:track_len, :], mask=mask, is_causal=True, return_hidden=True,
+                                 hidden_only=True, **hidden_kwargs)
+        hidden_out[:, track_len - 1] = pred['hidden'][0]
 
     return gt_track, pred_track

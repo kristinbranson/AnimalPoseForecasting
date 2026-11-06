@@ -716,6 +716,7 @@ class TransformerModel(torch.nn.Module):
     def forward(
             self, src: torch.Tensor, mask: torch.Tensor = None, is_causal: bool = False,
             return_hidden: bool = False, gt: torch.Tensor = None,
+            hidden_layers: list[int] | None = None, hidden_last_only: bool = False, hidden_only: bool = False,
     ) -> torch.Tensor:
         """
     Args:
@@ -723,6 +724,10 @@ class TransformerModel(torch.nn.Module):
       src_mask: Tensor, shape [seq_len, seq_len]
       return_hidden: Whether to include hidden states in the output. Hidden states are stored as a list of float arrays
         of shape (batch_size, seq_len, d_model).
+      hidden_layers: If not None, only return hidden states for these layers (in this order of increasing layer id).
+      hidden_last_only: Only return the last position of each hidden state, shape (batch_size, d_model).
+      hidden_only: Stop after the last requested hidden layer and return only {'hidden': ...}, skipping any remaining
+        layers and the decoder. Requires hidden_layers.
     Returns:
       output Tensor of shape [batch_size, seq_len, ntoken]
     """
@@ -739,13 +744,17 @@ class TransformerModel(torch.nn.Module):
         if return_hidden:
             hidden_states = []
             output = src
-            for layer in self.transformer_encoder.layers:
+            for layer_id, layer in enumerate(self.transformer_encoder.layers):
                 output = layer(
                     output,
                     src_mask=mask,
                     is_causal=is_causal,
                 )
-                hidden_states.append(output.detach().cpu().numpy())
+                if hidden_layers is None or layer_id in hidden_layers:
+                    hidden = output[:, -1] if hidden_last_only else output
+                    hidden_states.append(hidden.detach().cpu().numpy())
+                if hidden_only and layer_id == max(hidden_layers):
+                    return {'hidden': hidden_states}
         else:
             output = self.transformer_encoder(src, mask=mask, is_causal=is_causal)
 
