@@ -135,6 +135,8 @@
     
     "_comment_num_train_epochs": "total number of training epochs",
     "num_train_epochs": 200,
+    "_comment_num_warmup_epochs": "number of epochs, possibly fractional, over which the learning rate rises linearly to its full value at the start of training",
+    "num_warmup_epochs": 0,
 
     "_comment_optimizer_args": "dict containing gradient descent parameters",
     "optimizer_args": {"lr": 5e-5, "betas": [0.9,0.999], "eps": 1e-8},

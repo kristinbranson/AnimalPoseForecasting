@@ -26,20 +26,54 @@ from apf.io import save_model
 LOG = logging.getLogger(__name__)
 
 
-def init_optimizer(num_training_steps: int, model: TransformerModel, optimizer_args: dict = {}) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR]:
+class WarmupLinearDecay:
+    """ Learning rate factor for step: rises linearly over the first num_warmup_steps steps, from
+    1/num_warmup_steps to 1, then falls linearly to 0 at num_training_steps.  With no warmup steps, it's the
+    same as LinearLR(start_factor=1, end_factor=0).  It's a class rather than a function so that LambdaLR's
+    state_dict saves its step counts, and a restart gets the schedule it was trained with.
+    """
+    def __init__(self, num_warmup_steps: int, num_training_steps: int):
+        self.num_warmup_steps = num_warmup_steps
+        self.num_training_steps = num_training_steps
+
+    def __call__(self, step: int) -> float:
+        if step < self.num_warmup_steps:
+            return (step + 1) / self.num_warmup_steps
+        return max(0., (self.num_training_steps - step) / max(1, self.num_training_steps - self.num_warmup_steps))
+
+
+class WarmupLinearLR(torch.optim.lr_scheduler.LambdaLR):
+    """ LambdaLR with a WarmupLinearDecay schedule, which also loads the state of the LinearLR(start_factor=1,
+    end_factor=0) that init_optimizer made before there was warmup, so older checkpoints can still be restarted.
+    """
+    def __init__(self, optimizer: torch.optim.Optimizer, num_warmup_steps: int, num_training_steps: int):
+        super().__init__(optimizer, WarmupLinearDecay(num_warmup_steps, num_training_steps))
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        if 'lr_lambdas' not in state_dict:
+            # a LinearLR's state.  Its schedule is a WarmupLinearDecay with no warmup over its total_iters.
+            schedule = {'num_warmup_steps': 0, 'num_training_steps': state_dict['total_iters']}
+            state_dict = {k: v for k, v in state_dict.items() if k not in ('start_factor', 'end_factor', 'total_iters')}
+            state_dict['lr_lambdas'] = [dict(schedule) for _ in self.lr_lambdas]
+        super().load_state_dict(state_dict)
+
+
+def init_optimizer(num_training_steps: int, model: TransformerModel, optimizer_args: dict = {},
+                   num_warmup_steps: int = 0) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR]:
     """ Initializes AdamW optimizer and linear learning rate scheduler.
 
     Args:
         num_training_steps: Total number of training steps that will be taken.
         optimizer_args: Named arguments used for the AdamW optimizer.
+        num_warmup_steps: Number of steps over which the learning rate rises linearly to its full value, at the
+            start of the num_training_steps.  Defaults to 0, no warmup.
     Returns:
         optimizer: AdamW optimizer
-        lr_scheduler: Linear learning rate scheduler
+        lr_scheduler: Linear learning rate scheduler: warmup, then a linear decay to 0 at num_training_steps
     """
     # Optimizer
     optimizer = torch.optim.AdamW(model.parameters(), **optimizer_args)
-    lr_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1., end_factor=0.,
-                                                    total_iters=num_training_steps)
+    lr_scheduler = WarmupLinearLR(optimizer, num_warmup_steps, num_training_steps)
     return optimizer, lr_scheduler
 
 def scale_learning_rate_bang_bang(optimizer: torch.optim.Optimizer, lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
@@ -59,6 +93,7 @@ def train(
         val_dataloader: DataLoader | None = None,
         model: TransformerModel | None = None,
         num_train_epochs: int | None = None,
+        num_warmup_epochs: float = 0,
         max_grad_norm: float | None = None,
         optimizer_args: dict | None = None,
         loss_epoch: dict | None = None,
@@ -84,6 +119,9 @@ def train(
         val_dataloader: Dataloader usef for validation.
         model: Transformer model to be trained
         num_train_epochs: How many times to loop through all examples in the dataset during training.
+        num_warmup_epochs: How many epochs, possibly fractional, the learning rate rises linearly over at the start
+            of training, before it falls linearly to 0 at the end.  Only used if train makes the optimizer and
+            scheduler; a restart keeps the schedule it was trained with.  Defaults to 0, no warmup.
         max_grad_norm: Threshold for clipping gradients during training.
         optimizer_args: Named arguments used for the AdamW optimizer.
         loss_epoch: Keeps track of training and validation losses. If None, initializes a new structure.
@@ -165,7 +203,10 @@ def train(
     # Optimizer
     num_training_steps = num_train_epochs * len(train_dataloader)
     if optimizer is None or lr_scheduler is None:
-        optimizer, lr_scheduler = init_optimizer(num_training_steps, model, optimizer_args)
+        num_warmup_steps = round(num_warmup_epochs * len(train_dataloader))
+        if num_warmup_steps > 0:
+            LOG.info(f'Warming up the learning rate over {num_warmup_steps} steps ({num_warmup_epochs} epochs)')
+        optimizer, lr_scheduler = init_optimizer(num_training_steps, model, optimizer_args, num_warmup_steps)
 
     # Criterion
     criterion = mixed_causal_criterion
