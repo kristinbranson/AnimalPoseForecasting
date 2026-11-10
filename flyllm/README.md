@@ -10,6 +10,8 @@ Reorganization of flyllm.py and a subset of MABeFlyUtils.py, copied from https:/
 
 **batch_build_dataset_cache.py** (`python -m flyllm.batch_build_dataset_cache`): Builds the dataset cache file for a config, so a cluster job can build it on a CPU-only node before training jobs use it.
 
+**batch_optimal_binning.py** (`python -m flyllm.batch_optimal_binning`): Finds optimal bin edges for a config's discretized outputs, like notebooks/flyllm_optimal_binning.py but as a script that runs headless, with all its figures, the binning info and the bin edges in `--outdir`.
+
 **launch_train.py** (`python -m flyllm.launch_train`): Submits a batch_train.py job to the Janelia cluster, with its logs, models, and figures in one output dir (by default a new numbered dir in `runs/`).
 
 **launch_build_dataset_cache.py** (`python -m flyllm.launch_build_dataset_cache`): Submits a batch_build_dataset_cache.py job to a CPU queue on the Janelia cluster.
