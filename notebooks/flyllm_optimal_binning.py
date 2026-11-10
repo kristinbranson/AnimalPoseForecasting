@@ -88,10 +88,10 @@ if False:
 # %%
 overrideconfig = {}
 # use all data
-overrideconfig['categories'] = 'courtship'
+overrideconfig['categories'] = ['courtship']
 config = init_config(configfile=configfile,overrideconfig=overrideconfig)['config']
 # don't actually need most of this stuff... 
-train_dataset, flyids, track, pose, velocity, sensory, dataset_params, isdata, isstart, useoutputmask = \
+train_dataset, flyids, track, pose, velocity, sensory, dataset_params, isdata, isstart, useoutputmask, labels, categories = \
     make_dataset(config,'intrainfile',return_all=True,debug=debug_uselessdata)
 
 # %%
