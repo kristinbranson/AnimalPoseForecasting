@@ -1,11 +1,11 @@
 """
-Submit a job to the Janelia cluster that trains a model from a config file with flyllm.train.  Run it as
+Submit a job to the Janelia cluster that trains a model from a config file with flyllm.batch_train.  Run it as
 python -m flyllm.launch_train.
 
 Submits, from the current dir, the equivalent of:
     ssh -A login2 bsub -n <slot count> -gpu "num=<GPU count>" -q <queue> -W 72:00 -P branson -cwd <current dir> \\
         -oo <out dir>/out.txt -eo <out dir>/err.txt \\
-        <python> -m flyllm.train <config file path> --outdir <out dir> \\
+        <python> -m flyllm.batch_train <config file path> --outdir <out dir> \\
             [--overrideconfig <overrides>] [--debug-uselessdata]
 
 where <out dir> is given by the --outdir option (default: <current dir>/runs/<config name>_run_NN), <queue> by
@@ -94,7 +94,7 @@ def main():
         '-cwd', str(current_dir_path),
         '-oo', str(out_dir_path / 'out.txt'),
         '-eo', str(out_dir_path / 'err.txt'),
-        sys.executable, '-m', 'flyllm.train', str(config_file_path),
+        sys.executable, '-m', 'flyllm.batch_train', str(config_file_path),
         '--outdir', str(out_dir_path),
     ]
     if args.debug_uselessdata:

@@ -6,13 +6,13 @@ Reorganization of flyllm.py and a subset of MABeFlyUtils.py, copied from https:/
 
 **run_flyllm.py**: Main entry point. Loads data, trains a model, visualizes process.
 
-**train.py** (`python -m flyllm.train`): Trains a model from a config file, like notebooks/train_fly_llm.py but as a script, saving the debug and loss figures as PNG files.  Trains on all visible GPUs (or `--gpus N` of them), one process each, with DistributedDataParallel.
+**batch_train.py** (`python -m flyllm.batch_train`): Trains a model from a config file, like notebooks/train_fly_llm.py but as a script, saving the debug and loss figures as PNG files.  Trains on all visible GPUs (or `--gpus N` of them), one process each, with DistributedDataParallel.
 
-**build_dataset_cache.py** (`python -m flyllm.build_dataset_cache`): Builds the dataset cache file for a config, so a cluster job can build it on a CPU-only node before training jobs use it.
+**batch_build_dataset_cache.py** (`python -m flyllm.batch_build_dataset_cache`): Builds the dataset cache file for a config, so a cluster job can build it on a CPU-only node before training jobs use it.
 
-**launch_train.py** (`python -m flyllm.launch_train`): Submits a train.py job to the Janelia cluster, with its logs, models, and figures in one output dir (by default a new numbered dir in `runs/`).
+**launch_train.py** (`python -m flyllm.launch_train`): Submits a batch_train.py job to the Janelia cluster, with its logs, models, and figures in one output dir (by default a new numbered dir in `runs/`).
 
-**launch_build_dataset_cache.py** (`python -m flyllm.launch_build_dataset_cache`): Submits a build_dataset_cache.py job to a CPU queue on the Janelia cluster.
+**launch_build_dataset_cache.py** (`python -m flyllm.launch_build_dataset_cache`): Submits a batch_build_dataset_cache.py job to a CPU queue on the Janelia cluster.
 
 **config.py**: Parameters for feature extraction.
 

@@ -1,11 +1,11 @@
 """
 Submit a job to the Janelia cluster that builds the dataset cache file for a config with
-flyllm.build_dataset_cache, on a CPU-only node.  Run it as python -m flyllm.launch_build_dataset_cache.
+flyllm.batch_build_dataset_cache, on a CPU-only node.  Run it as python -m flyllm.launch_build_dataset_cache.
 
 Submits, from the current dir, the equivalent of:
     ssh -A login2 bsub -n <slot count> -q <queue> -W <run limit> -P branson -cwd <current dir> \\
         -oo <out dir>/out.txt -eo <out dir>/err.txt \\
-        <python> -m flyllm.build_dataset_cache <config file path>
+        <python> -m flyllm.batch_build_dataset_cache <config file path>
 
 where <out dir> is given by the --outdir option (default: <current dir>/runs/<config name>_build_dataset_cache_run_NN,
 numbered as flyllm.launch_train numbers its runs), and must not already exist.  <config name> is the config file
@@ -64,7 +64,7 @@ def main():
         '-cwd', str(current_dir_path),
         '-oo', str(out_dir_path / 'out.txt'),
         '-eo', str(out_dir_path / 'err.txt'),
-        sys.executable, '-m', 'flyllm.build_dataset_cache', str(config_file_path),
+        sys.executable, '-m', 'flyllm.batch_build_dataset_cache', str(config_file_path),
     ])
 
 

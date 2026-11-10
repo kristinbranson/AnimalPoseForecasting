@@ -14,7 +14,7 @@ config['train_gpu_count'], and when restarting from a model file trained on a di
 with a different rule, the restored learning rate is rescaled to what this run's rule and GPU count give.
 Only rank 0 makes the figures and saves models.
 
-Run it as python -m flyllm.train.
+Run it as python -m flyllm.batch_train.
 """
 
 import argparse
@@ -43,7 +43,7 @@ from apf.training import scale_learning_rate_bang_bang, train
 from flyllm.plotting import initialize_debug_plots, initialize_loss_plots, update_debug_plots, update_loss_plots
 from flyllm.prepare import _dataloader_worker_args, init_flyllm, init_model
 
-LOG = logging.getLogger('flyllm.train')
+LOG = logging.getLogger('flyllm.batch_train')
 
 # The values config['lr_gpu_scaling'] can have, and the learning rate factor each gives for a GPU count
 LR_GPU_SCALING_FUNCTIONS = {'sqrt': math.sqrt, 'linear': float}

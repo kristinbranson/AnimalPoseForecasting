@@ -1,7 +1,7 @@
 """Build the dataset cache file for a config, the one a training run with that config would load, and exit.
 
 Does nothing if the cache file already exists.  Doesn't use the GPU, so it can run on CPU-only nodes.  Run it as
-python -m flyllm.build_dataset_cache.
+python -m flyllm.batch_build_dataset_cache.
 """
 
 import argparse
@@ -16,7 +16,7 @@ limit_threads_to_lsf_slots()
 from flyllm.prepare import (dataset_cache_dir_path_maybe, dataset_cache_file_path, dataset_cache_key, init_config,
                             init_flyllm)
 
-LOG = logging.getLogger('build_dataset_cache')
+LOG = logging.getLogger('flyllm.batch_build_dataset_cache')
 
 
 def main():
