@@ -45,7 +45,7 @@ python -m flyllm.launch_build_dataset_cache <config>.json
   - The file is named after the data-related config settings.  If a matching cache already exists, the job finishes right away without doing anything.
 - Logs go in `--outdir`.  The default is a new numbered directory under `./runs/`.
 - As with training, the job runs with the same `python` you launch it with.  So that environment must be on a filesystem the compute nodes can see.
-- **When you need a new cache:** only when you change settings that affect the data, such as the data files, `categories`, features or binning.
+- **When you need a new cache:** only when something that affects the data changes.  That means settings such as the data files, `categories`, features or binning; the data files themselves (their size or modification time); the code that builds the datasets (the files listed in `DATASET_SOURCE_FILES` in `flyllm/prepare.py`); or whether the run uses `--debug-uselessdata`.
   - Changing model or training settings (learning rate, epochs, GPU count, etc.) reuses the existing cache.
   - If a training run can't find its cache, it builds one itself, but that uses up GPU time.
 
