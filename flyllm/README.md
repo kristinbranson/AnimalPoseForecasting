@@ -16,6 +16,8 @@ Reorganization of flyllm.py and a subset of MABeFlyUtils.py, copied from https:/
 
 **launch_build_dataset_cache.py** (`python -m flyllm.launch_build_dataset_cache`): Submits a batch_build_dataset_cache.py job to a CPU queue on the Janelia cluster.
 
+**launch_optimal_binning.py** (`python -m flyllm.launch_optimal_binning`): Submits a batch_optimal_binning.py job to a CPU queue on the Janelia cluster, with its logs and output in one output dir (by default a new numbered dir in `runs/`).
+
 **config.py**: Parameters for feature extraction.
 
 **features.py**: Functions for extracting features from tracking data.
