@@ -8,11 +8,12 @@ Submits, from the current dir, the equivalent of:
         <python> -m flyllm.batch_train <config file path> --outdir <out dir> \\
             [--overrideconfig <overrides>] [--debug-uselessdata]
 
-where <out dir> is given by the --outdir option (default: <current dir>/runs/<config name>_run_NN), <queue> by
-the -q option (default: gpu_a100), <slot count> and <GPU count> by the -n and --gpus options (default: 12 and 1),
-and <overrides> by the --overrideconfig option.  In the default <out dir>, <config name> is the config file name
-without .json, and NN is the smallest run index greater than that of any existing <config name>_run_NN dir or
-<config name>_run_NN.{out.txt,err.txt,ipynb} file in <current dir>/runs (created if needed).
+where <out dir> is given by the --outdir option (default: <current dir>/runs/<config name>_batch_train_run_NN),
+<queue> by the -q option (default: gpu_a100), <slot count> and <GPU count> by the -n and --gpus options (default:
+12 and 1), and <overrides> by the --overrideconfig option.  In the default <out dir>, <config name> is the config
+file name without .json, and NN is the smallest run index greater than that of any existing
+<config name>_batch_train_run_NN dir or <config name>_batch_train_run_NN.{out.txt,err.txt,ipynb} file in
+<current dir>/runs (created if needed).
 
 Training uses all the job's GPUs, one process each, with config['batch_size'] as each GPU's batch size.  Asking
 for all of a node's GPUs and slots (4 and 48 on gpu_a100 nodes) gets the whole node, so that other jobs don't
@@ -57,7 +58,7 @@ def main():
     parser.add_argument('configfile', help='config file name')
     parser.add_argument('--outdir', default=None,
                         help='directory for the job logs and the models and figs dirs, which must not already exist '
-                             '(default: runs/<config name>_run_NN)')
+                             '(default: runs/<config name>_batch_train_run_NN)')
     parser.add_argument('-q', '--queue', default=DEFAULT_QUEUE, help=f'LSF queue to submit to (default: {DEFAULT_QUEUE})')
     parser.add_argument('-n', '--slots', type=int, default=DEFAULT_SLOT_COUNT,
                         help=f'number of slots (default: {DEFAULT_SLOT_COUNT})')
@@ -76,7 +77,7 @@ def main():
     if args.outdir is not None:
         out_dir_path = Path(args.outdir).resolve()
     else:
-        out_dir_path = default_out_dir_path(config_file_path.stem)
+        out_dir_path = default_out_dir_path(f'{config_file_path.stem}_batch_train')
     if out_dir_path.exists():
         parser.error(f'output dir {out_dir_path} already exists')
 
