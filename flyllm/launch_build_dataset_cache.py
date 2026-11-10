@@ -7,11 +7,11 @@ Submits, from the current dir, the equivalent of:
         -oo <out dir>/out.txt -eo <out dir>/err.txt \\
         <python> -m flyllm.batch_build_dataset_cache <config file path>
 
-where <out dir> is given by the --outdir option (default: <current dir>/runs/<config name>_build_dataset_cache_run_NN,
-numbered as flyllm.launch_train numbers its runs), and must not already exist.  <config name> is the config file
-name without .json.  The job's logs go in <out dir>, and the cache file goes in the config's dataset_cache_dir.  The
-job does nothing if the cache file already exists.  <python> is the running Python, so the job runs in the same
-environment.
+where <out dir> is given by the --outdir option (default:
+<current dir>/runs/<config name>_batch_build_dataset_cache_run_NN, numbered as flyllm.launch_train numbers its
+runs), and must not already exist.  <config name> is the config file name without .json.  The job's logs go in
+<out dir>, and the cache file goes in the config's dataset_cache_dir.  The job does nothing if the cache file
+already exists.  <python> is the running Python, so the job runs in the same environment.
 """
 
 import argparse
@@ -34,7 +34,7 @@ def main():
     parser.add_argument('configfile', help='config file name')
     parser.add_argument('--outdir', default=None,
                         help='directory for the job logs, which must not already exist '
-                             '(default: runs/<config name>_build_dataset_cache_run_NN)')
+                             '(default: runs/<config name>_batch_build_dataset_cache_run_NN)')
     parser.add_argument('-q', '--queue', default=DEFAULT_QUEUE, help=f'LSF queue to submit to (default: {DEFAULT_QUEUE})')
     parser.add_argument('-n', '--slots', type=int, default=DEFAULT_SLOT_COUNT,
                         help=f'number of slots, each one core and 15GB in the CPU queues (default: {DEFAULT_SLOT_COUNT})')
@@ -47,7 +47,7 @@ def main():
     if args.outdir is not None:
         out_dir_path = Path(args.outdir).resolve()
     else:
-        out_dir_path = default_out_dir_path(f'{config_file_path.stem}_build_dataset_cache')
+        out_dir_path = default_out_dir_path(f'{config_file_path.stem}_batch_build_dataset_cache')
     if out_dir_path.exists():
         parser.error(f'output dir {out_dir_path} already exists')
 
