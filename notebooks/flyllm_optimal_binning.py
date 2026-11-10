@@ -18,7 +18,6 @@
 # #%matplotlib widget
 # %matplotlib inline
 
-import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -46,8 +45,7 @@ logging.basicConfig(
 )
 LOG = logging.getLogger(__name__)
 
-# a non-interactive backend, so this runs headless as a script.  Does nothing in a notebook.
-utils.set_mpl_backend('Agg')
+utils.set_mpl_backend('tkAgg')
 ISNOTEBOOK = utils.is_notebook()
 
 LOG.info('CUDA available: ' + str(torch.cuda.is_available()))
@@ -64,21 +62,6 @@ flyllmdir = flyllm.__path__[0]
 configfile = os.path.join(flyllmdir,configfile)
 outfigdir = os.path.join(flyllmdir,outfigdir)
 assert os.path.exists(configfile), f'Config file {configfile} does not exist!'
-
-# where to save the binning info; in a notebook, the config's savedir
-savedir = None
-
-# run as a script (e.g. pixi run optimal-binning), all output goes in --outdir
-if not ISNOTEBOOK:
-    parser = argparse.ArgumentParser(description='Find optimal bin edges for the discretized outputs of a flyllm config.')
-    parser.add_argument('--outdir', default='binning-output',
-                        help='directory for all output, relative to the dir pixi run was run from '
-                             '(default: binning-output)')
-    args = parser.parse_args()
-    # pixi run runs tasks in the workspace root, but sets INIT_CWD to the dir it was run from
-    outfigdir = os.path.join(os.environ.get('INIT_CWD', os.getcwd()), args.outdir)
-    savedir = outfigdir
-    LOG.info(f'Saving all output to {outfigdir}')
 
 # make directory if it doesn't exist
 if not os.path.exists(outfigdir):
@@ -105,12 +88,10 @@ if False:
 # %%
 overrideconfig = {}
 # use all data
-overrideconfig['categories'] = ['courtship']
+overrideconfig['categories'] = 'courtship'
 config = init_config(configfile=configfile,overrideconfig=overrideconfig)['config']
-if savedir is None:
-    savedir = config['savedir']
 # don't actually need most of this stuff... 
-train_dataset, flyids, track, pose, velocity, sensory, dataset_params, isdata, isstart, useoutputmask, labels, categories = \
+train_dataset, flyids, track, pose, velocity, sensory, dataset_params, isdata, isstart, useoutputmask = \
     make_dataset(config,'intrainfile',return_all=True,debug=debug_uselessdata)
 
 # %%
@@ -163,7 +144,6 @@ for idx,featidx in enumerate(config['discreteidx']):
 ax[-1,POS].set_xlabel('100-Percentile')
 ax[-1,NEG].set_xlabel('Percentile')
 fig.tight_layout()
-fig.savefig(os.path.join(outfigdir,f'{savefilestr}_percentiles.png'))
 
 
 # %%
@@ -261,7 +241,7 @@ for idx,featidx in enumerate(config['discreteidx']):
 
 # %%
 # save results to file
-savefile = os.path.join(savedir,f'{savefilestr}_bininfo.npz')
+savefile = os.path.join(config['savedir'],f'{savefilestr}_bininfo.npz')
 LOG.info(f'Saving binning info to {savefile}')
 for i,featidx in enumerate(config['discreteidx']):
     allbininfo[i]['featidx'] = featidx
@@ -270,12 +250,7 @@ np.savez_compressed(savefile,bininfo=allbininfo)
 
 
 # %%
-# print bin edges so that they can be copy-pasted into config files, and save them to a text file too
-edgesfile = os.path.join(savedir,f'{savefilestr}_bin_edges.txt')
-LOG.info(f'Saving bin edges to {edgesfile}')
-with open(edgesfile,'w') as f:
-    for i,featidx in enumerate(config['discreteidx']):
-        edges = allbininfo[i]['edges']
-        line = f"{featidx}: {np.array2string(edges,separator=', ')}"
-        print(line)
-        f.write(line + '\n')
+# print bin edges so that they can be copy-pasted into config files
+for i,featidx in enumerate(config['discreteidx']):
+    edges = allbininfo[i]['edges']
+    print(f"{featidx}: {np.array2string(edges,separator=', ')}")
