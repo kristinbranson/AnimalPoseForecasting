@@ -32,21 +32,20 @@ For each variant, the flow diagram (left) shows how data is transformed, and the
 
 ### Launching an optimal-binning job
 
-This finds bin edges for a config's discretized outputs, as `notebooks/flyllm_optimal_binning.py` does, but as a batch job on a CPU node.  Using any Python environment with AnimalPoseForecasting installed:
+This finds bin edges for a config's discretized outputs as a batch job on a CPU node.  Using any Python environment with AnimalPoseForecasting installed:
 
 ```bash
 python -m flyllm.launch_optimal_binning <config>.json
 ```
 
-- Its defaults fit the female config: the `local` CPU queue, 16 slots (240 GB) and an 8 h limit.
+- Its defaults to: the `local` CPU queue, 16 slots (240 GB) and an 8 h limit.
   - The job builds the training data itself and doesn't use the dataset cache, so it takes at least as long as a cache build.
   - Use `-n` for more slots, `-q` for another queue and `-W` for another time limit.
   - `--debug-uselessdata` runs on a small subset of the data, which takes about 5 min in the `short` queue.
-- It uses the config's own `categories`.  The notebook overrides them to `["courtship"]`.  To do the same, pass `--overrideconfig '{"categories": ["courtship"]}'`.
 - Everything goes in `--outdir`: logs, figures and the bin edges.  The default is a new numbered directory under `./runs/`.  That directory must not already exist.
   - `*_bin_edges.txt` lists each feature's bin edges, one line per feature, to copy into the config's `bin_edges_absolute`.  In the config, the feature indices are strings, e.g. `"0": [...]`.
   - `*_bininfo.npz` also has each feature's transition matrix and log likelihood.
-- As with training, the job runs with the same `python` you launch it with.  So that environment must be on a filesystem the compute nodes can see.
+- As with training (below), the job runs with the same `python` you launch it with.  So that environment must be on a filesystem the compute nodes can see.
 - New bin edges change the data, so the next training run needs a new dataset cache.
 
 
