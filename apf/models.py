@@ -1165,34 +1165,30 @@ class ResNet2d(torch.nn.Module):
             self.avg_pool = None
             self.fc = torch.nn.Conv2d(channels[-1], d_output, 1)
 
-    def _fc_as_linear(self, x):
-        """ Computes self.fc(x) with F.linear when self.fc is a Conv2d whose kernel spans exactly one full
-        input dimension and is 1 along the other, e.g. kernel (1, 72) on input (N, C, T, 72). cuDNN picks a
-        very slow kernel for the backward pass of such a convolution, while the equivalent matrix multiply is
-        fast. The parameters stay those of the Conv2d, so saved model files are unaffected.
-
-        Returns None if the shortcut does not apply, or is turned off by self.fc_as_linear, in which case the
-        caller should use self.fc(x).
+    def _apply_fc(self, x):
+        """ Returns self.fc(x), computed with F.linear when self.fc_as_linear is true and self.fc is a Conv2d
+        whose kernel spans exactly one full input dimension and is 1 along the other, e.g. kernel (1, 72) on
+        input (N, C, T, 72). cuDNN picks a very slow kernel for the backward pass of such a convolution, while
+        the equivalent matrix multiply is fast. The parameters stay those of the Conv2d, so saved model files
+        are unaffected.
         """
-        if not self.fc_as_linear:
-            return None
         fc = self.fc
-        if not isinstance(fc, torch.nn.Conv2d) or self.collapse_dim not in ([-1], [-2]):
-            return None
+        if not self.fc_as_linear or not isinstance(fc, torch.nn.Conv2d) or self.collapse_dim not in ([-1], [-2]):
+            return fc(x)
         if fc.stride != (1, 1) or fc.dilation != (1, 1) or fc.groups != 1 or fc.padding not in ('valid', (0, 0)):
-            return None
+            return fc(x)
         N, C, H, W = x.shape
         d_out = fc.out_channels
         if self.collapse_dim == [-1]:
             if fc.kernel_size != (1, W):
-                return None
+                return fc(x)
             # (N, C, H, W) -> (N, H, C*W) @ (C*W, d_out) -> (N, d_out, H, 1)
             y = torch.nn.functional.linear(x.permute(0, 2, 1, 3).reshape(N, H, C * W),
                                            fc.weight.reshape(d_out, C * W), fc.bias)
             return y.permute(0, 2, 1).unsqueeze(-1)
         else:
             if fc.kernel_size != (H, 1):
-                return None
+                return fc(x)
             # (N, C, H, W) -> (N, W, C*H) @ (C*H, d_out) -> (N, d_out, 1, W)
             y = torch.nn.functional.linear(x.permute(0, 3, 1, 2).reshape(N, W, C * H),
                                            fc.weight.reshape(d_out, C * H), fc.bias)
@@ -1222,8 +1218,7 @@ class ResNet2d(torch.nn.Module):
             dimout = -1
         else:
             dimout = -3
-        y = self._fc_as_linear(x) if self.avg_pool is None else None
-        x = self.fc(x) if y is None else y
+        x = self._apply_fc(x)
         x = x.reshape(sz0[:dim] + x.shape[dimout:])
         dim_channel = len(sz0[:dim])
         x = torch.squeeze(x, self.collapse_dim)
