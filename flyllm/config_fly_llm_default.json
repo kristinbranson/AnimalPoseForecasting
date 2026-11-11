@@ -155,6 +155,9 @@
     "_comment_use_sdpa_math_kernel": "whether to run training and validation under sdpa_kernel(SDPBackend.MATH), restricting attention to PyTorch's unfused implementation; this was needed to avoid nans in training, but is slower than the fused kernels PyTorch otherwise chooses",
     "use_sdpa_math_kernel": true,
 
+    "_comment_conv2d_fc_as_linear": "whether a conv2d observation embedding computes its final Conv2d layer, whose kernel spans a full input dimension, e.g. (1, 72), as the equivalent F.linear on the same weights (much faster, since cuDNN's backward for that convolution is very slow); false runs the Conv2d itself. Saved models are the same either way",
+    "conv2d_fc_as_linear": true,
+
     "_comment_num_workers": "number of background worker processes for the training and validation DataLoaders (0 = load in the main process)",
     "num_workers": 2,
 

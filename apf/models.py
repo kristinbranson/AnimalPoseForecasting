@@ -649,6 +649,7 @@ class TransformerModel(torch.nn.Module):
                  nlayers: int = 12, dropout: float = 0.1,
                  ntokens_per_timepoint: int = 1,
                  input_idx=None, input_szs=None, embedding_types=None, embedding_params=None,
+                 conv2d_fc_as_linear=True,
                  d_output_discrete=None, nbins=None,
                  dataset_params=None, config=None,
                  decoder_type='linear', # 'diffusion', 'flattened', 'flattened_simple
@@ -682,7 +683,8 @@ class TransformerModel(torch.nn.Module):
         # fully-connected layer from input size to d_model
         if input_idx is not None:
             self.encoder = ObsEmbedding(d_model=d_model, input_idx=input_idx, input_szs=input_szs,
-                                        embedding_types=embedding_types, embedding_params=embedding_params)
+                                        embedding_types=embedding_types, embedding_params=embedding_params,
+                                        conv2d_fc_as_linear=conv2d_fc_as_linear)
         else:
             self.encoder = torch.nn.Linear(d_input, d_model)
 
@@ -810,7 +812,8 @@ class TransformerModel(torch.nn.Module):
 
 
 class ObsEmbedding(torch.nn.Module):
-    def __init__(self, d_model: int, input_idx, input_szs, embedding_types, embedding_params):
+    def __init__(self, d_model: int, input_idx, input_szs, embedding_types, embedding_params,
+                 conv2d_fc_as_linear=True):
 
         super().__init__()
 
@@ -856,7 +859,8 @@ class ObsEmbedding(torch.nn.Module):
                 channels = [input_channels, ] + params['channels']
                 params = {k1: v for k1, v in params.items() if k1 != 'channels'}
                 encodercurr = ResNet2d(channels, d_model, no_input_channels=no_input_channels, d_input=szcurr,
-                                       single_output=True, transpose=True, **params)
+                                       single_output=True, transpose=True, fc_as_linear=conv2d_fc_as_linear,
+                                       **params)
             else:
                 # consider adding graph networks
                 raise ValueError(f'Unknown embedding type {emb}')
@@ -1117,9 +1121,10 @@ class ResNet1d(torch.nn.Module):
 
 class ResNet2d(torch.nn.Module):
     def __init__(self, channels, d_output, d_input=None, no_input_channels=False, single_output=False, transpose=False,
-                 **kwargs):
+                 fc_as_linear=True, **kwargs):
         super().__init__()
         self.channels = channels
+        self.fc_as_linear = fc_as_linear
         self.d_output = d_output
         self.d_input = d_input
         self.no_input_channels = no_input_channels
@@ -1166,8 +1171,11 @@ class ResNet2d(torch.nn.Module):
         very slow kernel for the backward pass of such a convolution, while the equivalent matrix multiply is
         fast. The parameters stay those of the Conv2d, so saved model files are unaffected.
 
-        Returns None if the shortcut does not apply, in which case the caller should use self.fc(x).
+        Returns None if the shortcut does not apply, or is turned off by self.fc_as_linear, in which case the
+        caller should use self.fc(x).
         """
+        if not self.fc_as_linear:
+            return None
         fc = self.fc
         if not isinstance(fc, torch.nn.Conv2d) or self.collapse_dim not in ([-1], [-2]):
             return None
@@ -1331,6 +1339,7 @@ def initialize_model(config, train_dataset, device):
         MODEL_ARGS['input_idx'], MODEL_ARGS['input_szs'] = train_dataset.get_input_shapes()
         MODEL_ARGS['embedding_types'] = config['obs_embedding_types']
         MODEL_ARGS['embedding_params'] = config['obs_embedding_params']
+        MODEL_ARGS['conv2d_fc_as_linear'] = config.get('conv2d_fc_as_linear', True)
     d_input = train_dataset.d_input
     if train_dataset.flatten:
         MODEL_ARGS['ntokens_per_timepoint'] = train_dataset.ntokens_per_timepoint
