@@ -38,7 +38,7 @@ This finds bin edges for a config's discretized outputs as a batch job on a CPU 
 python -m flyllm.launch_optimal_binning <config>.json
 ```
 
-- Its defaults to: the `local` CPU queue, 16 slots (240 GB) and an 8 h limit.
+- It defaults to the `local` CPU queue, 16 slots (240 GB) and an 8 h limit.
   - The job builds the training data itself and doesn't use the dataset cache, so it takes at least as long as a cache build.
   - Use `-n` for more slots, `-q` for another queue and `-W` for another time limit.
   - `--debug-uselessdata` runs on a small subset of the data, which takes about 5 min in the `short` queue.
