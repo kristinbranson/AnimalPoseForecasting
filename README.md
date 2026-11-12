@@ -30,6 +30,23 @@ For each variant, the flow diagram (left) shows how data is transformed, and the
 
 ## How to run some things
 
+### Using the MABe22 mouse data
+
+The binning, dataset-cache and training scripts below work for flies or mice.  A config's `"animal"` entry, `"fly"` (the default) or `"mouse"`, picks the code that reads it and builds its datasets (`flyllm/animals.py`).  Mouse configs are in `mousellm/configs`, and fill in their defaults from `mousellm/config_mouse_llm_default.json`.
+
+The mouse data is the MABe22 mouse triplets (https://data.caltech.edu/records/rdsa8-rde65).  To convert its keypoint files to the files APF reads:
+
+```bash
+python -m mousellm.convert_mabe22 --indir <MABe22 mouse dir> --outdir <out dir>
+```
+
+- This pools the sequences of all four keypoint files and splits them at random, by sequence, into `train.npz`, `val.npz` and `test.npz`, 80/10/10.  `splits.json` lists the sequences in each.
+- It fills keypoint gaps of up to 5 frames, and starts a new track wherever a mouse jumps or flips.  The docstring has the details.
+- Positions are in cm.  The arena's place and size in the image vary between videos and aren't known for the pose-only files, so one pixel-to-cm factor is used throughout, and the mouse model has no wall features.
+- The defaults read from and write to `/nrs/branson/AnimalPoseForecasting`.  It takes about 3 min.
+
+The mouse model's pose is body-centric keypoints, and its sensory inputs are vision and touch of the other two mice (`mousellm/features.py`, `experiments/mouse.py`).
+
 ### Launching an optimal-binning job
 
 This finds bin edges for a config's discretized outputs as a batch job on a CPU node.  Using any Python environment with AnimalPoseForecasting installed:

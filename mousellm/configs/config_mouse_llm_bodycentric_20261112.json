@@ -1,0 +1,10 @@
+{
+    "_comment": "Body-centric keypoint model of the MABe22 mouse triplets.  Settings not here are in mousellm/config_mouse_llm_default.json.",
+
+    "animal": "mouse",
+
+    "_comment_bin_edges_absolute": "to be filled in from optimal binning (python -m flyllm.launch_optimal_binning)",
+    "bin_edges_absolute": {},
+
+    "model_nickname": "bodycentric_20261112"
+}
