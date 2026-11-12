@@ -1,7 +1,7 @@
 {
     "_comment_animal": "which animal the data is: fly or mouse. It picks the modules that read the config and build the datasets (flyllm/animals.py)",
     "animal": "mouse",
-    "datadir": "/nrs/branson/AnimalPoseForecasting/mabe22-mouse-apf",
+    "datadir": "/nrs/branson/AnimalPoseForecasting/mabe22-mouse-apf-ready",
     "_comment_datadir": "parent directory of data",
     "_comment_trainfilestr": "names of files containing training and validation data, made by mousellm/convert_mabe22.py. test.npz, the held-out test set, is not used in training",
     "intrainfilestr": "train.npz",

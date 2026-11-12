@@ -40,7 +40,7 @@ from mousellm.config import ARENA_CENTER_PX, CM_PER_PX, keypointnames, kpheading
 LOG = logging.getLogger('mousellm.convert_mabe22')
 
 DEFAULT_IN_DIR_PATH = '/nrs/branson/AnimalPoseForecasting/mabe22-mouse'
-DEFAULT_OUT_DIR_PATH = '/nrs/branson/AnimalPoseForecasting/mabe22-mouse-apf'
+DEFAULT_OUT_DIR_PATH = '/nrs/branson/AnimalPoseForecasting/mabe22-mouse-apf-ready'
 # The size of the frame each file's keypoint pixels are in
 IN_FILE_FRAME_SIZES_PX = {'mouse_user_train.npy': 512, 'mouse_submission_keypoints.npy': 512,
                           'mouse_triplet_train.npy': 800, 'mouse_triplet_test.npy': 800}
