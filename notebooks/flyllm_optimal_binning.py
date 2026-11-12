@@ -29,7 +29,7 @@ import apf.utils as utils
 
 import flyllm
 from flyllm import optimal_binning
-from tests.flyllm import debug_optimal_binning
+from flyllm import debug_optimal_binning
 
 from flyllm.prepare import init_config
 from experiments.flyllm import make_dataset
