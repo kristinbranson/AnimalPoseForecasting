@@ -592,7 +592,8 @@ def example2discrcont(examplecurr):
 def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None,
                           pred=None, data=None, nsamplesplot=3,
                           h=None, ax=None, fig=None, label_true='True', label_pred='Pred',
-                          ntsplot=3, ntsplot_global=None, ntsplot_relative=None):
+                          ntsplot=3, ntsplot_global=None, ntsplot_relative=None, outnames=posenames):
+    """ outnames: the names of the pose features, for a dataset that is not a FlyMLMDataset. """
     
     isflymlm = isflymlm_dataset(train_dataset)
     
@@ -632,7 +633,6 @@ def debug_plot_batch_traj(example_in, train_dataset, criterion=None, config=None
         featidxglobal = velop.global_inds
         featidxrelative = velop.local_inds
         featidxplot = np.concatenate((featidxglobal,featidxrelative))
-        outnames = posenames
 
         fusionop, fusionidx = apf.dataset.get_operation(examplecurr['labels']['velocity'].operations,'fusion',return_idx=True)
         discrop = apf.dataset.get_operation(fusionop.operations,'discretize')
@@ -773,7 +773,8 @@ def debug_plot_pose(examplein, train_dataset=None, predin=None, data=None,
                     true_discrete_mode='to_discretize',
                     pred_discrete_mode='sample',
                     ntsplot=5, nsamplesplot=3, h=None, ax=None, fig=None,
-                    tsplot=None):
+                    tsplot=None, kptidx=keypointidx, skelidx=skeleton_edges):
+    """ kptidx, skelidx: the keypoints and skeleton edges to plot, as plot_fly takes. """
 
     # keep compatibility with old FlyMLMDataset for now
     isflymlm = isflymlm_dataset(train_dataset)
@@ -884,11 +885,13 @@ def debug_plot_pose(examplein, train_dataset=None, predin=None, data=None,
                 ax[i, j].set_title(f't = {tplot}')
 
             h['kpt0'][i][j], h['edge0'][i][j], _, _, _ = plot_fly(Xkp_true[tplot, :, :],
+                                                                kptidx=kptidx, skelidx=skelidx,
                                                                 skel_lw=2, color=[0, 0, 0],
                                                                 ax=ax[i, j], hkpt=h['kpt0'][i][j],
                                                                 hedge=h['edge0'][i][j])
             if Xkp_pred is not None:
                 h['kpt1'][i][j], h['edge1'][i][j], _, _, _ = plot_fly(Xkp_pred[tplot, :, :],
+                                                                    kptidx=kptidx, skelidx=skelidx,
                                                                     skel_lw=1, color=[0, 1, 1],
                                                                     ax=ax[i, j], hkpt=h['kpt1'][i][j],
                                                                     hedge=h['edge1'][i][j])
@@ -1403,7 +1406,10 @@ def debug_plot_histogram_edges(train_dataset):
 def isflymlm_dataset(dataset):
     return isinstance(dataset, flyllm.dataset.FlyMLMDataset)
 
-def initialize_debug_plots(dataset, dataloader, data, name='', tsplot=None, traj_nsamplesplot=3):
+def initialize_debug_plots(dataset, dataloader, data, name='', tsplot=None, traj_nsamplesplot=3,
+                           kptidx=keypointidx, skelidx=skeleton_edges, outnames=posenames):
+    """ kptidx, skelidx: the keypoints and skeleton edges to plot, as plot_fly takes.  outnames: the pose
+    feature names.  These default to the fly's (flyllm.animals.Animal.debug_plot_kwargs). """
     
     # keep compatibility with old FlyMLMDataset for now
     isflymlm = isflymlm_dataset(dataset)
@@ -1420,14 +1426,15 @@ def initialize_debug_plots(dataset, dataloader, data, name='', tsplot=None, traj
     figsample.suptitle(name)
 
     # plot to check that we can get poses from examples
-    hpose, ax, fig = debug_plot_pose(example, dataset, data=data, tsplot=tsplot)
+    hpose, ax, fig = debug_plot_pose(example, dataset, data=data, tsplot=tsplot, kptidx=kptidx, skelidx=skelidx)
     fig.suptitle(name)
 
     # plot to visualize motion outputs
     axtraj, figtraj = debug_plot_batch_traj(example, dataset, data=data,
                                             label_true='Label',
                                             label_pred='Raw',
-                                            nsamplesplot=traj_nsamplesplot)
+                                            nsamplesplot=traj_nsamplesplot,
+                                            outnames=outnames)
     figtraj.set_figheight(18)
     figtraj.set_figwidth(12)
     axtraj[0].set_title(name)
@@ -1451,7 +1458,8 @@ def initialize_debug_plots(dataset, dataloader, data, name='', tsplot=None, traj
 
 
 def update_debug_plots(hdebug, config, model, dataset, example, pred, criterion=None, name='', tsplot=None,
-                       traj_nsamplesplot=3):
+                       traj_nsamplesplot=3, kptidx=keypointidx, skelidx=skeleton_edges, outnames=posenames):
+    """ kptidx, skelidx, outnames: as for initialize_debug_plots. """
     if config['modelstatetype'] == 'prob':
         pred1 = model.maxpred({k: v.detach() for k, v in pred.items()})
     elif config['modelstatetype'] == 'best':
@@ -1463,9 +1471,9 @@ def update_debug_plots(hdebug, config, model, dataset, example, pred, criterion=
             pred1 = pred.detach().cpu()
     debug_plot_sample(example,dataset,fig=hdebug['figsample'],ax=hdebug['axsample'],pred=pred1)
     debug_plot_pose(example, dataset, predin=pred1, h=hdebug['hpose'], ax=hdebug['axpose'], fig=hdebug['figpose'],
-                          tsplot=tsplot)
+                          tsplot=tsplot, kptidx=kptidx, skelidx=skelidx)
     debug_plot_batch_traj(example, dataset, criterion=criterion, config=config, pred=pred1, ax=hdebug['axtraj'],
-                          fig=hdebug['figtraj'], nsamplesplot=traj_nsamplesplot)
+                          fig=hdebug['figtraj'], nsamplesplot=traj_nsamplesplot, outnames=outnames)
     if config['modelstatetype'] == 'prob':
         hstate, axstate, figstate = debug_plot_batch_state(pred['stateprob'].detach().cpu(), nsamplesplot=3,
                                                            h=hdebug['hstate'], ax=hdebug['axstate'],

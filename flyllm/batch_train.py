@@ -1,7 +1,7 @@
 """
-Train a fly forecasting model from a config file, as notebooks/train_fly_llm.py does, but as a script.  Model
-checkpoints go to <out dir>/models.  The debug and loss figures are saved as PNG files in <out dir>/figs,
-overwritten each time they're updated.
+Train a forecasting model of any animal (flyllm/animals.py) from a config file, as notebooks/train_fly_llm.py
+does for flies, but as a script.  Model checkpoints go to <out dir>/models.  The debug and loss figures are
+saved as PNG files in <out dir>/figs, overwritten each time they're updated.
 
 Trains on all the GPUs CUDA can see, or on the first --gpus of them, with DistributedDataParallel, one process
 per GPU, even for one GPU.  The datasets are loaded first, and then the processes are forked, so they share the
@@ -40,6 +40,7 @@ from torch.utils.data import DataLoader
 import apf.distributed as distributed
 import apf.utils as utils
 from apf.training import scale_learning_rate_bang_bang, train
+from flyllm import animals
 from flyllm.plotting import initialize_debug_plots, initialize_loss_plots, update_debug_plots, update_loss_plots
 from flyllm.prepare import _dataloader_worker_args, init_flyllm, init_model
 
@@ -113,14 +114,15 @@ def train_on_gpu(device: torch.device, res: dict, restartmodelfile_maybe: str | 
     criterion = res['criterion']
     loss_epoch = res['loss_epoch']
 
-    run_name = f"fly{res['modeltype_str']}_{res['model_savetime']}"
+    animal = animals.config_animal(config)
+    run_name = f"{animal.name}{res['modeltype_str']}_{res['model_savetime']}"
 
     # the figures, on rank 0 only
     if rank == 0:
         fig_file_path_prefix = os.path.join(out_fig_dir_path, run_name)
 
         # debug and loss plots, as in the notebook
-        debug_params = {}
+        debug_params = dict(animal.debug_plot_kwargs)
         # if contextl is long, still just look at samples from the first 64 frames
         if config['contextl'] > 64:
             debug_params['tsplot'] = np.round(np.linspace(0, 64, 5)).astype(int)

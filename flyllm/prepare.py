@@ -38,7 +38,7 @@ from apf.models import (
 # from apf.models_unused import compute_loss, stack_batch_list
 from apf.dataset import Dataset, DataLoader
 from apf.training import init_optimizer
-from experiments.flyllm import make_dataset
+from flyllm import animals
 from flyllm.simulation import animate_predict_open_loop
 from flyllm.prediction import predict_all
 from IPython.display import HTML
@@ -67,7 +67,7 @@ def init_config(configfile=None,config=None,mode='train',loadmodelfile=None,over
     
     if config is None:
         assert configfile is not None, "No configuration file provided"        
-        config = read_config(configfile) # flyllm.config.read_config
+        config = animals.read_config(configfile)
         
     if overrideconfig is not None:
         for k in overrideconfig:
@@ -295,19 +295,20 @@ def _dataloader_worker_args(config):
 # are no longer used.
 DATASET_CACHE_VERSION = 2
 
-# Source files, relative to the repository root, whose code builds the datasets init_datasets builds: the
-# files whose functions run while building them, plus flyllm/config.py, whose constants they use. Their
+# Source files, relative to the repository root, whose code builds the datasets init_datasets builds for
+# every animal: the files whose functions run while building them.  Each animal adds its own files, including
+# its config module, whose constants they use (flyllm.animals.Animal.dataset_source_file_names).  Their
 # contents are part of the dataset cache key, so editing any of them gives a new cache file. If
 # dataset-building code starts using another file, add it here.
 DATASET_SOURCE_FILES = [
     'apf/data.py', 'apf/dataset.py', 'apf/features.py', 'apf/io.py', 'apf/utils.py',
-    'experiments/flyllm.py', 'flyllm/config.py', 'flyllm/features.py', 'flyllm/prepare.py',
+    'flyllm/animals.py', 'flyllm/prepare.py',
 ]
 
 # Config entries that affect the datasets init_datasets builds (via make_dataset and load_and_filter_data).
 # If dataset-building code starts reading another config entry, add it here.
 DATASET_CONFIG_KEYS = [
-    'intrainfile', 'invalfile', 'contextl', 'tspred_global', 'dataset_params',
+    'animal', 'intrainfile', 'invalfile', 'contextl', 'tspred_global', 'dataset_params',
     'discreteidx', 'discretize_nbins', 'discretize_epsilon', 'all_discretize_epsilon', 'simplify_out',
     'bin_edges_absolute', 'categories', 'output_categories', 'augment_flip',
 ]
@@ -320,11 +321,12 @@ def _json_default(x):
         return x.item()
     return repr(x)
 
-def dataset_source_hash():
-    """ Returns a SHA-256 hex digest of the names and contents of DATASET_SOURCE_FILES. """
+def dataset_source_hash(config):
+    """ Returns a SHA-256 hex digest of the names and contents of DATASET_SOURCE_FILES and of config's
+    animal's dataset source files. """
     repodir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     h = hashlib.sha256()
-    for relpath in DATASET_SOURCE_FILES:
+    for relpath in DATASET_SOURCE_FILES + animals.config_animal(config).dataset_source_file_names:
         with open(os.path.join(repodir, relpath), 'rb') as f:
             contents = f.read()
         h.update(relpath.encode() + b'\0' + str(len(contents)).encode() + b'\0' + contents)
@@ -345,7 +347,7 @@ def dataset_cache_key(config, needtraindata, needvaldata, debug_uselessdata):
     key['needtraindata'] = needtraindata
     key['needvaldata'] = needvaldata
     key['debug_uselessdata'] = debug_uselessdata
-    key['source_hash'] = dataset_source_hash()
+    key['source_hash'] = dataset_source_hash(config)
     key['version'] = DATASET_CACHE_VERSION
     return key
 
@@ -423,9 +425,11 @@ def load_dataset_cache_bang_bang(config, res, cache_file_path):
 
 def build_datasets_bang_bang(config, res, needtraindata, needvaldata, debug_uselessdata):
     """
-    Builds the training and/or validation datasets with make_dataset, and stores them and their intermediate
-    data in res. Building them also changes config (e.g. dataset_params, discretize_epsilon).
+    Builds the training and/or validation datasets with config's animal's make_dataset, and stores them and
+    their intermediate data in res. Building them also changes config (e.g. dataset_params,
+    discretize_epsilon).
     """
+    make_dataset = animals.config_animal(config).make_dataset
     if needtraindata:
         # create dataset
         res['train_data'] = {}

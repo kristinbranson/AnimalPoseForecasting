@@ -1,10 +1,11 @@
 """
 Find optimal bin edges for the discretized outputs of a config, as notebooks/flyllm_optimal_binning.py does, but as
-a script that runs headless.  Run it as python -m flyllm.batch_optimal_binning.
+a script that runs headless.  Run it as python -m flyllm.batch_optimal_binning.  Works for any animal
+(flyllm/animals.py).
 
 Unlike the notebook, uses the config's own categories (the notebook overrides them to ['courtship']); pass
 --overrideconfig '{"categories": ["courtship"]}' to do as the notebook does.  Everything goes in <out dir>, with
-file names starting flyllm_binning_<model type>_<timestamp>:
+file names starting <animal>llm_binning_<model type>_<timestamp>, e.g. flyllm_binning_...:
     _percentiles.{png,pdf}: percentiles of each discretized feature's velocity
     _<feature index>_<feature name>_K<bin count>.{png,pdf}: each feature's bin widths, edges and transition matrix
     _bininfo.npz: each feature's bin edges, transition matrix and log likelihood
@@ -33,9 +34,8 @@ import numpy as np
 from matplotlib.ticker import SymmetricalLogLocator
 
 from apf.io import get_modeltype_str
-from experiments.flyllm import make_dataset
-from flyllm import optimal_binning
-from flyllm.config import featangle, posenames
+from flyllm import animals, optimal_binning
+from flyllm.animals import Animal
 from flyllm.prepare import init_config
 
 LOG = logging.getLogger('flyllm.batch_optimal_binning')
@@ -48,9 +48,10 @@ def save_figure(fig, file_path_without_extension: str):
     plt.close(fig)
 
 
-def plot_percentiles(config, velocity, isdata, useoutputmask):
+def plot_percentiles(animal: Animal, config, velocity, isdata, useoutputmask):
     """ Returns a figure of the percentiles of the velocity of each of config['discreteidx']'s features, positive
     and negative values separately, on log-log axes. """
+    featangle, posenames = animal.featangle, animal.posenames
     nfeat = len(config['discreteidx'])
     prcts = np.logspace(-5, 2, 100)
     prcts = np.vstack((100 - prcts, prcts)).T
@@ -86,9 +87,10 @@ def plot_percentiles(config, velocity, isdata, useoutputmask):
     return fig
 
 
-def optimize_bins(config, velocity, useoutputmask) -> list[dict]:
+def optimize_bins(animal: Animal, config, velocity, useoutputmask) -> list[dict]:
     """ Returns, for each of config['discreteidx']'s features, a dict of the optimal bin edges for its velocity,
     the transition matrix between the bins, and the log likelihood. """
+    posenames = animal.posenames
     K = config['discretize_nbins']
     allbininfo = []
     for idx, featidx in enumerate(config['discreteidx']):
@@ -132,9 +134,10 @@ def optimize_bins(config, velocity, useoutputmask) -> list[dict]:
     return allbininfo
 
 
-def plot_bininfo(bininfo: dict):
+def plot_bininfo(animal: Animal, bininfo: dict):
     """ Returns a figure of one feature's bin widths vs. index and center, edges vs. index, and transition
     matrix, from bininfo, one of optimize_bins's dicts. """
+    featangle = animal.featangle
     featidx = bininfo['featidx']
     edges = bininfo['edges']
     widths = np.diff(edges)
@@ -145,7 +148,7 @@ def plot_bininfo(bininfo: dict):
         bin_centers = bin_centers * 180 / np.pi
         units = 'deg/fr'
     else:
-        units = 'mm/fr'
+        units = f'{animal.length_unit}/fr'
 
     fig, ax = plt.subplots(4, 1, figsize=(10, 20))
     ax[0].plot(widths, '.')
@@ -194,21 +197,24 @@ def main():
     overrideconfig = {'device': 'cpu', **args.overrideconfig}
 
     config = init_config(configfile=config_file_path, overrideconfig=overrideconfig)['config']
+    animal = animals.config_animal(config)
     _, _, _, _, velocity, _, _, isdata, _, useoutputmask, _, _ = \
-        make_dataset(config, 'intrainfile', return_all=True, debug=args.debug_uselessdata)
+        animal.make_dataset(config, 'intrainfile', return_all=True, debug=args.debug_uselessdata)
     # a fresh config, as the notebook does, in case making the dataset changed it
     config = init_config(configfile=config_file_path, overrideconfig=overrideconfig)['config']
 
     timestamp = time.strftime('%Y%m%dT%H%M%S')
-    out_file_path_prefix = os.path.join(out_dir_path, f'flyllm_binning_{get_modeltype_str(config)}_{timestamp}')
+    out_file_path_prefix = os.path.join(out_dir_path,
+                                        f'{animal.name}llm_binning_{get_modeltype_str(config)}_{timestamp}')
     LOG.info(f'Output file names start with {out_file_path_prefix}')
 
-    save_figure(plot_percentiles(config, velocity, isdata, useoutputmask), f'{out_file_path_prefix}_percentiles')
+    save_figure(plot_percentiles(animal, config, velocity, isdata, useoutputmask),
+                f'{out_file_path_prefix}_percentiles')
 
-    allbininfo = optimize_bins(config, velocity, useoutputmask)
+    allbininfo = optimize_bins(animal, config, velocity, useoutputmask)
     K = config['discretize_nbins']
     for bininfo in allbininfo:
-        save_figure(plot_bininfo(bininfo),
+        save_figure(plot_bininfo(animal, bininfo),
                     f'{out_file_path_prefix}_{bininfo["featidx"]}_{bininfo["posename"]}_K{K}')
 
     bininfo_file_path = f'{out_file_path_prefix}_bininfo.npz'
