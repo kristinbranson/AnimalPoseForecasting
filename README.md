@@ -62,6 +62,7 @@ python -m flyllm.launch_optimal_binning <config>.json
 - Everything goes in `--outdir`: logs, figures and the bin edges.  The default is a new numbered directory under `./runs/`.  That directory must not already exist.
   - `*_bin_edges.txt` lists each feature's bin edges, one line per feature, to copy into the config's `bin_edges_absolute`.  In the config, the feature indices are strings, e.g. `"0": [...]`.
   - `*_bininfo.npz` also has each feature's transition matrix and log likelihood.
+  - `*_histograms.png` shows each feature's histogram with the bin edges drawn over it, and how many samples fall in each bin.  Check it for empty or overloaded end bins.
 - As with training (below), the job runs with the same `python` you launch it with.  So that environment must be on a filesystem the compute nodes can see.
 - New bin edges change the data, so the next training run needs a new dataset cache.
 

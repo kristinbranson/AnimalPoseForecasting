@@ -8,6 +8,7 @@ Unlike the notebook, uses the config's own categories (the notebook overrides th
 file names starting <animal>llm_binning_<model type>_<timestamp>, e.g. flyllm_binning_...:
     _percentiles.{png,pdf}: percentiles of each discretized feature's velocity
     _<feature index>_<feature name>_K<bin count>.{png,pdf}: each feature's bin widths, edges and transition matrix
+    _histograms.{png,pdf}: each feature's velocity histogram with the bin edges overlaid, and samples per bin
     _bininfo.npz: each feature's bin edges, transition matrix and log likelihood
     _bin_edges.txt: each feature's bin edges, as printed, to copy into config files
 
@@ -176,6 +177,46 @@ def plot_bininfo(animal: Animal, bininfo: dict):
     return fig
 
 
+def plot_histograms(animal: Animal, velocity, isdata, useoutputmask, allbininfo: list[dict]):
+    """ Returns a figure with, for each of allbininfo's features, a histogram of its velocity with the optimized
+    bin edges overlaid, and the number of samples in each optimized bin.  Counts are on log axes, so the tails
+    show.  Uses the same samples as plot_percentiles. """
+    featangle, length_unit = animal.featangle, animal.length_unit
+    nfeat = len(allbininfo)
+    fig, ax = plt.subplots(nfeat, 2, figsize=(6 * 2, 4 * nfeat), squeeze=False)
+    for idx, bininfo in enumerate(allbininfo):
+        featidx = bininfo['featidx']
+        feature_data = velocity.array[..., featidx].copy()
+        feature_data = feature_data[(isdata & useoutputmask).T & ~np.isnan(feature_data)]
+        edges = bininfo['edges']
+        # every sample falls in some bin, as when discretizing: the end bins take the values beyond the edges
+        bin_counts = np.bincount(np.clip(np.searchsorted(edges, feature_data, side='right') - 1, 0, len(edges) - 2),
+                                 minlength=len(edges) - 1)
+        if featangle[featidx]:
+            feature_data = feature_data * 180 / np.pi
+            edges = edges * 180 / np.pi
+            units = 'deg/fr'
+        else:
+            units = f'{length_unit}/fr'
+
+        ax[idx, 0].hist(feature_data, bins=500, log=True)
+        # so histogram bins with one sample show
+        ax[idx, 0].set_ylim(bottom=.5)
+        for edge in edges:
+            ax[idx, 0].axvline(edge, color='r', lw=.5, alpha=.5)
+        ax[idx, 0].set_xlabel(f'{bininfo["posename"]} velocity ({units})')
+        ax[idx, 0].set_ylabel('Samples per histogram bin')
+        ax[idx, 0].set_title(f'Feature {featidx}: {len(feature_data):,} samples, optimized edges in red')
+
+        ax[idx, 1].bar(np.arange(len(bin_counts)), bin_counts, log=True)
+        ax[idx, 1].set_ylim(bottom=.5)
+        ax[idx, 1].set_xlabel('Optimized bin index')
+        ax[idx, 1].set_ylabel('Samples per optimized bin')
+        ax[idx, 1].set_title(f'Feature {featidx}: {np.count_nonzero(bin_counts == 0)} empty bins')
+    fig.tight_layout()
+    return fig
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('configfile', help='config file name')
@@ -216,6 +257,8 @@ def main():
     for bininfo in allbininfo:
         save_figure(plot_bininfo(animal, bininfo),
                     f'{out_file_path_prefix}_{bininfo["featidx"]}_{bininfo["posename"]}_K{K}')
+    save_figure(plot_histograms(animal, velocity, isdata, useoutputmask, allbininfo),
+                f'{out_file_path_prefix}_histograms')
 
     bininfo_file_path = f'{out_file_path_prefix}_bininfo.npz'
     LOG.info(f'Saving binning info to {bininfo_file_path}')
