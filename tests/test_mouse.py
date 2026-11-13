@@ -161,5 +161,28 @@ def test_clean_sequence_tracks():
     assert np.allclose(X800, X, atol=CM_PER_PX, equal_nan=True)
 
 
+def test_animate_pose_writes_a_video():
+    """ mousellm.simulation.animate_pose saves one video frame per track frame, skipping NaN keypoints. """
+    import os
+    import subprocess
+    import tempfile
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from mousellm.simulation import animate_pose
+    n_frames = 5
+    X = np.array([[straight_mouse(-10 + t + 8 * m, 5 * m, .3 * m) for t in range(n_frames)] for m in range(3)])
+    X_sim = X.copy()
+    X_sim[2, 3:] = np.nan                                              # an untracked mouse
+    with tempfile.TemporaryDirectory() as dir_path:
+        out_file_path = os.path.join(dir_path, 'anim.mp4')
+        animate_pose({'Real': X, 'Simulated': X_sim}, burn_in=2, out_file_path_maybe=out_file_path)
+        plt.close('all')
+        n_video_frames = subprocess.run(
+            ['ffprobe', '-v', 'error', '-count_frames', '-select_streams', 'v:0', '-show_entries',
+             'stream=nb_read_frames', '-of', 'csv=p=0', out_file_path], capture_output=True, text=True).stdout
+        assert int(n_video_frames) == n_frames
+
+
 if __name__ == '__main__':
     testing_utils.run_as_script(globals())
