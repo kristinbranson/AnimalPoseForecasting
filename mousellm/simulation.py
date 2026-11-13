@@ -33,7 +33,7 @@ def _box(ax, x0, x1, y0, y1, **kwargs):
 
 
 def animate_pose(Xkps: dict, burn_in: int = 0, out_file_path_maybe: str | None = None, fps: float = FPS,
-                 view_scale: float = 2., figsizebase: float = 5., ms: float = 2., lw: float = 1.,
+                 view_scale: float = 2., figsizebase: float = 8., ms: float = 2., lw: float = 1.,
                  trail_len: int = 30) -> animation.FuncAnimation:
     """ Animates mice in the arena, one panel per set of tracks, e.g. {'Real': gt_track, 'Simulated': pred_track}.
 
