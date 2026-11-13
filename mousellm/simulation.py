@@ -41,13 +41,14 @@ def animate_pose(Xkps: dict, burn_in: int = 0, out_file_path_maybe: str | None =
     keypoints as black dots, and a trail of its center keypoint's last trail_len frames.  The square arena
     floor is drawn in grey and the video frame's bounds in black.  The view is the video frame scaled by
     view_scale about its center, the same in every panel, so mice that wander far enough go out of view.  The
-    title gives the frame number and whether it's in the burn-in.  y points down, as in the videos.  A mouse's
+    title gives the frame number, counted from the first frame after the burn-in, so the burn-in's frames are
+    numbered -burn_in to -1.  y points down, as in the videos.  A mouse's
     NaN keypoints aren't drawn, nor are the shapes they're part of.
 
     Args:
         Xkps: Panel title -> (x, y) keypoint positions in cm, (n_agents, n_frames, 2, n_keypoints) float array,
             as apf.simulation.simulate returns them.  All must have the same number of frames.
-        burn_in: Number of leading frames that are real data in every panel, labeled as burn-in.
+        burn_in: Number of leading frames that are real data in every panel, numbered negatively in the title.
         out_file_path_maybe: If not None, the animation is saved to this file, e.g. an .mp4.
         fps: Frames per second of the saved animation.
         view_scale: Size of the view, relative to the video frame.
@@ -94,11 +95,7 @@ def animate_pose(Xkps: dict, burn_in: int = 0, out_file_path_maybe: str | None =
     suptitle = fig.suptitle('')
 
     def update(t):
-        if burn_in > 0:
-            suptitle.set_text(f'Frame {t}, ' + ('burn-in (real data)' if t < burn_in else
-                                                f'{t - burn_in + 1} frames after the burn-in'))
-        else:
-            suptitle.set_text(f'Frame {t}')
+        suptitle.set_text(f'Frame {t - burn_in}')
         changed = [suptitle]
         for name, mice in artists:
             X = Xkps[name]
