@@ -13,15 +13,16 @@ from mousellm.convert_mabe22 import FRAME_SIZE_PX
 MOUSE_COLORS = ['tab:red', 'tab:green', 'tab:orange']
 
 # How a mouse is drawn, after Fig. 1 of the MABe22 paper: a filled head (nose, ears and neck) and a filled
-# body (neck, paws and tail base), with the spine and the tail as lines.  These are for drawing only, and are
-# here rather than in mousellm.config, whose contents are part of the dataset cache key.
+# body (neck, paws and tail base), with the spine as a line.  The tail beyond its base isn't drawn.  These are
+# for drawing only, and are here rather than in mousellm.config, whose contents are part of the dataset cache
+# key.
 _kp = keypointnames.index
 HEAD_POLYGON = [_kp('nose'), _kp('left_ear'), _kp('neck'), _kp('right_ear')]
 BODY_POLYGON = [_kp('neck'), _kp('left_forepaw'), _kp('left_hindpaw'), _kp('tail_base'), _kp('right_hindpaw'),
                 _kp('right_forepaw')]
 LINES = [[_kp('left_ear'), _kp('right_ear')],
-         [_kp('neck'), _kp('center'), _kp('tail_base')],
-         [_kp('tail_base'), _kp('tail_middle'), _kp('tail_tip')]]
+         [_kp('neck'), _kp('center'), _kp('tail_base')]]
+SHOWN_KEYPOINTS = [i for i, name in enumerate(keypointnames) if name not in ['tail_middle', 'tail_tip']]
 
 # The bounds of the 512-px video frame the keypoints were in, in cm: (x0, x1, y0, y1)
 FRAME_BOUNDS_CM = np.array([0 - ARENA_CENTER_PX[0], FRAME_SIZE_PX - ARENA_CENTER_PX[0],
@@ -37,8 +38,8 @@ def animate_pose(Xkps: dict, burn_in: int = 0, out_file_path_maybe: str | None =
                  trail_len: int = 30) -> animation.FuncAnimation:
     """ Animates mice in the arena, one panel per set of tracks, e.g. {'Real': gt_track, 'Simulated': pred_track}.
 
-    Each mouse is drawn in its own color, as a filled head and body with the spine and tail as lines, its
-    keypoints as black dots, and a trail of its center keypoint's last trail_len frames.  The square arena
+    Each mouse is drawn in its own color, as a filled head and body with the spine as a line, its keypoints
+    but the two beyond the tail base as black dots, and a trail of its center keypoint's last trail_len frames.  The square arena
     floor is drawn in grey and the video frame's bounds in black.  The view is the video frame scaled by
     view_scale about its center, the same in every panel, so mice that wander far enough go out of view.  The
     title gives the frame number, counted from the first frame after the burn-in, so the burn-in's frames are
@@ -108,7 +109,7 @@ def animate_pose(Xkps: dict, burn_in: int = 0, out_file_path_maybe: str | None =
                         polygon.set_xy(xy[idx])
                 for line, idx in zip(lines, LINES):
                     line.set_data(xy[idx, 0], xy[idx, 1])
-                kps.set_data(xy[:, 0], xy[:, 1])
+                kps.set_data(xy[SHOWN_KEYPOINTS, 0], xy[SHOWN_KEYPOINTS, 1])
                 t0 = max(0, t - trail_len)
                 trail.set_data(X[m, t0:t + 1, 0, center_idx], X[m, t0:t + 1, 1, center_idx])
                 changed += polygons + lines + [kps, trail]
