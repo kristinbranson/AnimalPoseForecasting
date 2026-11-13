@@ -28,5 +28,8 @@
 	     1.55873576e+00,  1.57080221e+00]
     },
 
+    "_comment_niterplot": "no debug plots during training, which slow it down",
+    "niterplot": 1e100,
+
     "model_nickname": "bodycentric_20261112"
 }
