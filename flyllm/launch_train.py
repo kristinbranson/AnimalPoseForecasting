@@ -3,14 +3,14 @@ Submit a job to the Janelia cluster that trains a model from a config file with 
 python -m flyllm.launch_train.
 
 Submits, from the current dir, the equivalent of:
-    ssh -A login2 bsub -n <slot count> -gpu "num=<GPU count>" -q <queue> -W 72:00 -P branson -cwd <current dir> \\
+    ssh -A login2 bsub -n <slot count> -gpu "num=<GPU count>" -q <queue> -W <run limit> -P branson -cwd <current dir> \\
         -oo <out dir>/out.txt -eo <out dir>/err.txt \\
         <python> -m flyllm.batch_train <config file path> --outdir <out dir> \\
             [--overrideconfig <overrides>] [--debug-uselessdata]
 
 where <out dir> is given by the --outdir option (default: <current dir>/runs/<config name>_batch_train_run_NN),
 <queue> by the -q option (default: gpu_a100), <slot count> and <GPU count> by the -n and --gpus options (default:
-12 and 1), and <overrides> by the --overrideconfig option.  In the default <out dir>, <config name> is the config
+12 and 1), <run limit> by the -W option (default: 72:00), and <overrides> by the --overrideconfig option.  In the default <out dir>, <config name> is the config
 file name without .json, and NN is the smallest run index greater than that of any existing
 <config name>_batch_train_run_NN dir or <config name>_batch_train_run_NN.{out.txt,err.txt,ipynb} file in
 <current dir>/runs (created if needed).
@@ -36,6 +36,7 @@ DEFAULT_QUEUE = 'gpu_a100'
 # 12 slots per GPU is the natural ratio in gpu_a100 and gpu_h100
 DEFAULT_SLOT_COUNT = 12
 DEFAULT_GPU_COUNT = 1
+DEFAULT_RUN_LIMIT = '72:00'
 
 
 def next_run_index(run_dir_path: Path, name: str) -> int:
@@ -64,6 +65,8 @@ def main():
                         help=f'number of slots (default: {DEFAULT_SLOT_COUNT})')
     parser.add_argument('--gpus', type=int, default=DEFAULT_GPU_COUNT,
                         help=f'number of GPUs (default: {DEFAULT_GPU_COUNT})')
+    parser.add_argument('-W', '--runlimit', default=DEFAULT_RUN_LIMIT,
+                        help=f'hard run time limit, as [hours:]minutes (default: {DEFAULT_RUN_LIMIT})')
     parser.add_argument('--overrideconfig', type=json.loads, default=None,
                         help='JSON dict of config entries to override, e.g. \'{"num_train_epochs": 25}\'')
     parser.add_argument('--debug-uselessdata', action='store_true',
@@ -90,7 +93,7 @@ def main():
         '-n', str(args.slots),
         '-gpu', f'num={args.gpus}',
         '-q', args.queue,
-        '-W', '72:00',
+        '-W', args.runlimit,
         '-P', 'branson',
         '-cwd', str(current_dir_path),
         '-oo', str(out_dir_path / 'out.txt'),
