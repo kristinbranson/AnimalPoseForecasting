@@ -84,10 +84,13 @@ class ShardedSampler(torch.utils.data.Sampler):
         self.epoch = epoch
 
     def __len__(self) -> int:
-        n = len(self.dataset)
+        return self.sample_count(len(self.dataset))
+
+    def sample_count(self, dataset_len: int) -> int:
+        """ The number of indices this process samples per epoch from a dataset of length dataset_len. """
         if self.shuffle:
-            return math.ceil(n / self.world_size)
-        return len(range(self.rank, n, self.world_size))
+            return math.ceil(dataset_len / self.world_size)
+        return len(range(self.rank, dataset_len, self.world_size))
 
     def __iter__(self) -> Iterator[int]:
         n = len(self.dataset)

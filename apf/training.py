@@ -1,3 +1,4 @@
+import math
 import sys
 import contextlib
 import torch
@@ -86,6 +87,72 @@ def scale_learning_rate_bang_bang(optimizer: torch.optim.Optimizer, lr_scheduler
             group['initial_lr'] *= factor
     lr_scheduler.base_lrs = [lr * factor for lr in lr_scheduler.base_lrs]
     lr_scheduler._last_lr = [group['lr'] for group in optimizer.param_groups]
+
+
+def chunk_counts_by_start_offset(dataset) -> np.ndarray:
+    """ The number of chunks the dataset has after dataset.recompute_chunk_indices(start_offset), for each
+    start_offset in [0, context_length), by the rules of apf.dataset.compute_chunk_indices: chunks of
+    context_length frames tiling each session from start_offset frames in, kept if they have a frame where
+    dataset.useoutputmask is True.  Computed for all the offsets at once, without retiling the dataset.
+
+    Args:
+        dataset: An apf.dataset.Dataset.
+
+    Returns:
+        counts: (context_length,) int array, counts[start_offset] the number of chunks.
+    """
+    chunk_length = dataset.context_length
+    counts = np.zeros(chunk_length, dtype=int)
+    for session in dataset.sessions:
+        # chunks can start at frames 0 to start_count - 1 of the session, and those starting at frame r are in
+        # the tiling with start offset r % chunk_length
+        start_count = session.duration - chunk_length + 1
+        if start_count <= 0:
+            continue
+        if dataset.useoutputmask is None:
+            is_kept = np.ones(start_count, dtype=int)
+        else:
+            mask = dataset.useoutputmask[session.start_frame:session.start_frame + session.duration,
+                                         session.agent_id]
+            cumulative = np.concatenate([[0], np.cumsum(mask)])
+            is_kept = (cumulative[chunk_length:chunk_length + start_count] - cumulative[:start_count] > 0).astype(int)
+        counts += np.bincount(np.arange(start_count) % chunk_length, weights=is_kept,
+                              minlength=chunk_length).astype(int)
+    return counts
+
+
+def steps_per_epoch(dataloader: DataLoader, dataset_len: int) -> int:
+    """ The number of batches an epoch of dataloader has when its dataset has dataset_len items, i.e.
+    len(dataloader) if len(dataloader.dataset) were dataset_len. """
+    if isinstance(dataloader.sampler, distributed.ShardedSampler):
+        sample_count = dataloader.sampler.sample_count(dataset_len)
+    else:
+        sample_count = dataset_len
+    if dataloader.drop_last:
+        return sample_count // dataloader.batch_size
+    return math.ceil(sample_count / dataloader.batch_size)
+
+
+def count_training_steps(train_dataloader: DataLoader, epoch_count: int) -> int:
+    """ The expected number of training steps in epoch_count epochs of train(), starting now.
+
+    train() retiles the training chunks from a random start offset after each epoch, which changes the
+    number of chunks, and so of steps, per epoch: by 18% for the MABe22 mice, whose tracks are broken into
+    short sessions.  So the first epoch has len(train_dataloader) steps, and each later one the mean over the
+    start offsets.
+
+    Args:
+        train_dataloader: The training dataloader, whose dataset is tiled for the first epoch.
+        epoch_count: Number of epochs.
+
+    Returns:
+        The expected number of steps.
+    """
+    if epoch_count <= 0:
+        return 0
+    counts = chunk_counts_by_start_offset(train_dataloader.dataset)
+    mean_steps = np.mean([steps_per_epoch(train_dataloader, int(count)) for count in counts])
+    return len(train_dataloader) + round((epoch_count - 1) * mean_steps)
 
 
 def train(
@@ -201,7 +268,9 @@ def train(
         train_model = fwd_model
 
     # Optimizer
-    num_training_steps = num_train_epochs * len(train_dataloader)
+    num_training_steps = count_training_steps(train_dataloader, num_train_epochs - start_epoch)
+    LOG.info(f'Expecting {num_training_steps} training steps over {num_train_epochs - start_epoch} epochs, '
+             f'{len(train_dataloader)} in the first')
     if optimizer is None or lr_scheduler is None:
         num_warmup_steps = round(num_warmup_epochs * len(train_dataloader))
         if num_warmup_steps > 0:
