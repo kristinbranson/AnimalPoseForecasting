@@ -423,6 +423,22 @@ def load_dataset_cache_bang_bang(config, res, cache_file_path):
     torch.set_rng_state(cache['rng_state']['torch'])
     LOG.info('Loaded datasets from cache file')
 
+def unpack_make_dataset_output(out: tuple) -> tuple:
+    """
+    Unpacks what an animal's make_dataset(..., return_all=True) returns into (dataset, data, dataset_params),
+    where data is a dict of the intermediate data: 'flyids', 'track', 'pose', 'velocity', 'sensory',
+    'isdata', 'isstart', 'useoutputmask', 'labels' and 'categories', plus the entries of the extra-data
+    dict some animals' make_dataset returns last (e.g. the mice's 'arena_bounds').
+    """
+    dataset, flyids, track, pose, velocity, sensory, dataset_params, isdata, isstart, useoutputmask, labels, \
+        categories = out[:12]
+    data = {'flyids': flyids, 'track': track, 'pose': pose, 'velocity': velocity, 'sensory': sensory,
+            'isdata': isdata, 'isstart': isstart, 'useoutputmask': useoutputmask, 'labels': labels,
+            'categories': categories}
+    if len(out) > 12:
+        data.update(out[12])
+    return dataset, data, dataset_params
+
 def build_datasets_bang_bang(config, res, needtraindata, needvaldata, debug_uselessdata):
     """
     Builds the training and/or validation datasets with config's animal's make_dataset, and stores them and
@@ -432,22 +448,14 @@ def build_datasets_bang_bang(config, res, needtraindata, needvaldata, debug_usel
     make_dataset = animals.config_animal(config).make_dataset
     if needtraindata:
         # create dataset
-        res['train_data'] = {}
-        res['train_dataset'], res['train_data']['flyids'], res['train_data']['track'], res['train_data']['pose'], \
-            res['train_data']['velocity'], res['train_data']['sensory'], res['config']['dataset_params'], \
-            res['train_data']['isdata'], res['train_data']['isstart'], res['train_data']['useoutputmask'], \
-            res['train_data']['labels'], res['train_data']['categories'] = \
-            make_dataset(config,'intrainfile',return_all=True,debug=debug_uselessdata)
+        res['train_dataset'], res['train_data'], res['config']['dataset_params'] = \
+            unpack_make_dataset_output(make_dataset(config,'intrainfile',return_all=True,debug=debug_uselessdata))
         res['dataset_params'] = res['config']['dataset_params']
 
     if needvaldata:
         # create dataset
-        res['val_data'] = {}
-        res['val_dataset'], res['val_data']['flyids'], res['val_data']['track'], res['val_data']['pose'], \
-            res['val_data']['velocity'], res['val_data']['sensory'], res['config']['dataset_params'], \
-            res['val_data']['isdata'], res['val_data']['isstart'], res['val_data']['useoutputmask'], \
-            res['val_data']['labels'], res['val_data']['categories'] = \
-            make_dataset(config,'invalfile',return_all=True,debug=debug_uselessdata)
+        res['val_dataset'], res['val_data'], res['config']['dataset_params'] = \
+            unpack_make_dataset_output(make_dataset(config,'invalfile',return_all=True,debug=debug_uselessdata))
         res['dataset_params'] = res['config']['dataset_params']
 
 def generate_and_save_dataset_cache_bang_bang(config, res, cache_file_path, cachekey, needtraindata, needvaldata,

@@ -10,13 +10,22 @@ import testing_utils  # puts this checkout first on sys.path; must precede the i
 
 import numpy as np
 
-from apf.data import get_flip_idx
+from apf.data import flip_agents, flip_arena_bounds, get_flip_idx
 from experiments.mouse import BodyCentricKP, Sensory
-from mousellm import convert_mabe22
-from mousellm.config import SENSORY_PARAMS, keypointnames, kporigin, kpheading_back, kpheading_front, posenames
-from mousellm.features import body_centric_kp, get_sensory_feature_idx
+from mousellm import arena, convert_mabe22
+from mousellm.config import (
+    SENSORY_PARAMS, keypointnames, kporigin, kpheading_back, kpheading_front, kpwall, posenames
+)
+from mousellm.features import body_centric_kp, compute_wall_distances, get_sensory_feature_idx
 
 N_KEYPOINTS = len(keypointnames)
+# An arena so big that the walls are far from every mouse in the tests of the other sensory features
+BIG_ARENA_BOUNDS = np.array([-1000., 1000., -1000., 1000.])
+
+
+def sensory_in_big_arena(Xkp, **kwargs):
+    """ Sensory features of Xkp, (n_agents, n_frames, 2, n_keypoints), in BIG_ARENA_BOUNDS. """
+    return Sensory()(Xkp, arena_bounds=np.tile(BIG_ARENA_BOUNDS, (Xkp.shape[1], 1)), **kwargs)
 
 
 def straight_mouse(x0, y0, heading, length=6.):
@@ -69,7 +78,7 @@ def test_vision_sees_a_mouse_ahead():
     ahead = straight_mouse(15., 0., np.pi / 2)
     untracked = np.full_like(a, np.nan)
     Xkp = np.stack([a, ahead, untracked])[:, None]                       # (3 mice, 1 frame, 2, n_keypoints)
-    sensory = Sensory()(Xkp)
+    sensory = sensory_in_big_arena(Xkp)
     s = get_sensory_feature_idx()['othermice_vision']
     vision = sensory[0, 0, s[0]:s[1]]
     n_oma = SENSORY_PARAMS['n_oma']
@@ -83,7 +92,7 @@ def test_vision_wraps_behind():
     """ A mouse straight behind, which spans the angle -pi = pi, lights up bins at both ends. """
     a = straight_mouse(0., 0., 0.)
     behind = straight_mouse(-15., 0., np.pi / 2)
-    sensory = Sensory()(np.stack([a, behind])[:, None])
+    sensory = sensory_in_big_arena(np.stack([a, behind])[:, None])
     s = get_sensory_feature_idx()['othermice_vision']
     lit = np.nonzero(sensory[0, 0, s[0]:s[1]] > 0)[0]
     n_oma = SENSORY_PARAMS['n_oma']
@@ -94,9 +103,9 @@ def test_touch_is_zero_far_away_and_high_close():
     """ Touch is 0 when the other mouse is well over a body length away, and near 1 for touching. """
     a = straight_mouse(0., 0., 0.)
     s = get_sensory_feature_idx()['othermice_touch']
-    far = Sensory()(np.stack([a, straight_mouse(0., 30., 0.)])[:, None])[0, 0, s[0]:s[1]]
+    far = sensory_in_big_arena(np.stack([a, straight_mouse(0., 30., 0.)])[:, None])[0, 0, s[0]:s[1]]
     assert np.all(far == 0)
-    near = Sensory()(np.stack([a, straight_mouse(0., .5, 0.)])[:, None])[0, 0, s[0]:s[1]]
+    near = sensory_in_big_arena(np.stack([a, straight_mouse(0., .5, 0.)])[:, None])[0, 0, s[0]:s[1]]
     assert near.max() > .8
 
 
@@ -106,9 +115,95 @@ def test_sensory_nan_iff_no_data():
     Xkp = np.stack([np.stack([straight_mouse(*rng.uniform(-20, 20, 2), rng.uniform(-np.pi, np.pi))
                               for _ in range(10)]) for _ in range(3)])    # (3, 10, 2, n_keypoints)
     isdata = rng.uniform(size=(10, 3)) > .3
-    sensory = Sensory()(Xkp, isdata=isdata)
+    sensory = sensory_in_big_arena(Xkp, isdata=isdata)
     assert np.array_equal(np.isnan(sensory).any(-1), ~isdata.T)
     assert not np.isnan(sensory[isdata.T]).any()
+
+
+def wall_distances(Xkp, arena_bounds):
+    """ The arena_walls sensory features of one mouse, Xkp (2, n_keypoints), alone in arena_bounds (4,). """
+    sensory = Sensory()(Xkp[None, None], arena_bounds=arena_bounds[None])
+    s = get_sensory_feature_idx()['arena_walls']
+    return sensory[0, 0, s[0]:s[1]]
+
+
+def test_wall_distances_straight_and_diagonal():
+    """ For a mouse facing +x well inside the arena, the straight-ahead ray hits the +x wall at the
+    distance from the neck to it, and the rays at +-45 degrees hit it sqrt(2) times as far away, and a ray
+    toward a nearer side wall hits that instead. """
+    bounds = np.array([-26., 26., -26., 26.])
+    a = straight_mouse(0., 0., 0.)
+    neck = a[:, kpwall]
+    assert SENSORY_PARAMS['wall_ray_angles'] == [0., np.pi / 4, -np.pi / 4]
+    assert np.allclose(wall_distances(a, bounds), (26. - neck[0]) * np.array([1., np.sqrt(2.), np.sqrt(2.)]))
+    # 5 cm from the +y wall, the +45 degree ray hits it first
+    b = straight_mouse(0., 21. - neck[1], 0.)
+    d = wall_distances(b, bounds)
+    assert np.isclose(d[1], 5. * np.sqrt(2.)) and np.isclose(d[2], (26. - b[0, kpwall]) * np.sqrt(2.))
+
+
+def test_wall_distances_negative_past_the_wall():
+    """ A neck past the wall it faces gets negative distances: minus how far past it is, for the
+    straight-ahead ray. """
+    bounds = np.array([-26., 26., -26., 26.])
+    a = straight_mouse(0., 0., 0.)
+    a[0] += 28. - a[0, kpwall]                                          # neck 2 cm past the +x wall
+    d = wall_distances(a, bounds)
+    assert np.isclose(d[0], -2.) and np.all(d < 0)
+
+
+def test_wall_distances_are_continuous():
+    """ The distances change by little for a small move or turn, everywhere, including near and past the
+    walls and at the corners, where a ray switches from one wall to another. """
+    bounds = np.tile([-26., 26., -26., 26.], (4000, 1))
+    rng = np.random.default_rng(2)
+    point = rng.uniform(-30., 30., (4000, 2))
+    facing = rng.uniform(-np.pi, np.pi, 4000)
+    d = compute_wall_distances(point, facing, bounds)
+    moved = compute_wall_distances(point + rng.normal(scale=1e-4, size=point.shape), facing, bounds)
+    turned = compute_wall_distances(point, facing + 1e-5, bounds)
+    # a ray's length changes by up to its length / sin(grazing angle) per radian of turn
+    assert np.abs(moved - d).max() < 1e-2 and np.abs(turned - d).max() < 1e-1
+
+
+def test_flipped_mouse_in_flipped_arena_swaps_side_rays():
+    """ Flipping a mouse, as flip augmentation does, along with its arena swaps its +-45 degree rays and
+    leaves its straight-ahead one. """
+    bounds = np.array([-20., 30., -24., 27.])
+    a = straight_mouse(4., -9., .8)
+    flipped = flip_agents(a.T[:, :, None], keypointnames)[:, :, 0].T   # flip_agents takes (n_kp, 2, T)
+    flipped_bounds = flip_arena_bounds(bounds[None])[0]
+    assert np.allclose(flipped_bounds, [-30., 20., -24., 27.])
+    d, df = wall_distances(a, bounds), wall_distances(flipped, flipped_bounds)
+    assert np.allclose(df, d[[0, 2, 1]])
+
+
+def test_placements_and_assignment():
+    """ estimate_arena_bounds groups video floor boxes into placements, and assigns sequences without videos
+    to the placement whose walls their keypoints run along. """
+    rng = np.random.default_rng(3)
+    placement_bounds = np.array([[-26., 26., -26., 26.], [-23., 29., -21., 31.], [-28., 24., -30., 22.]])
+    n_per = 3 * arena.MIN_PLACEMENT_N_SEQS
+    true_placement = np.repeat(np.arange(3), 2 * n_per)
+    hists, video_bounds = [], []
+    for i, p in enumerate(true_placement):
+        x0, x1, y0, y1 = placement_bounds[p]
+        # keypoints mostly near the walls, some anywhere inside
+        n = 2000
+        X = np.stack([rng.uniform(x0, x1, n), rng.uniform(y0, y1, n)])
+        wall = rng.integers(4, size=n // 2)
+        X[0, :n // 2] = np.where(wall == 0, x0 + rng.uniform(0, 2, n // 2), np.where(wall == 1, x1 - rng.uniform(0, 2, n // 2), X[0, :n // 2]))
+        X[1, :n // 2] = np.where(wall == 2, y0 + rng.uniform(0, 2, n // 2), np.where(wall == 3, y1 - rng.uniform(0, 2, n // 2), X[1, :n // 2]))
+        hists.append(arena.keypoint_histograms(X[None, :, :, None]))
+        # every other sequence has a video, whose floor box is measured with a little noise
+        video_bounds.append(placement_bounds[p] + rng.normal(scale=.1, size=4) if i % 2 == 0 else np.full(4, np.nan))
+    out = arena.estimate_arena_bounds(np.array(hists), np.array(video_bounds))
+    assert len(out['placement_bounds']) == 3
+    # placements are numbered in their own order; map them to the true ones by their arenas
+    found = np.array([np.argmin(np.abs(placement_bounds - b).sum(1)) for b in out['placement_bounds']])
+    assert np.allclose(out['placement_bounds'], placement_bounds[found], atol=.2)
+    assert np.mean(found[out['placement']] == true_placement) > .95
+    assert np.allclose(out['arena_bounds'], out['placement_bounds'][out['placement']])
 
 
 def test_short_gaps_are_filled():

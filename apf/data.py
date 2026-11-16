@@ -432,6 +432,24 @@ def flip_agents(X, keypointnames, arena_center=[0, 0], flipdim=0, inplace=False,
         return flipX
 
 
+def flip_arena_bounds(arena_bounds, arena_center=[0, 0], flipdim=0):
+    """ The arena bounds of keypoints flipped as flip_agents flips them.
+
+    Args:
+        arena_bounds: T x 4 array of axis-aligned arena walls, (x0, x1, y0, y1)
+        arena_center: center of arena to flip around
+        flipdim: dimension to flip over, 0 for x-axis, 1 for y-axis
+
+    Returns:
+        T x 4 array of the flipped arena walls
+    """
+    flipped = arena_bounds.copy()
+    lo, hi = 2 * flipdim, 2 * flipdim + 1
+    flipped[:, lo] = arena_center[flipdim] - arena_bounds[:, hi]
+    flipped[:, hi] = arena_center[flipdim] - arena_bounds[:, lo]
+    return flipped
+
+
 def split_data_by_id(data):
     splitdata = []
     n_agents = data['X'].shape[-1]
@@ -504,6 +522,8 @@ def debug_less_data(data, n_frames_per_video=10000, max_n_videos=1):
     data['isdata'] = data['isdata'][frame_ids, :]
     data['isstart'] = data['isstart'][frame_ids, :]
     data['useoutputmask'] = data['useoutputmask'][frame_ids, :]
+    if 'arenabounds' in data:
+        data['arenabounds'] = data['arenabounds'][frame_ids, :]
     nframes = np.count_nonzero(data['isdata'])
     nids = len(np.unique(data['ids'][data['isdata']]))
     LOG.info(f'After less data: nframes = {nframes}, nids = {nids}, X.shape = {data["X"].shape}')
@@ -526,6 +546,8 @@ def load_raw_npz_data(infile: str, debug: bool = False, n_frames_per_video: int 
             'y': ncategories x T x max_n_agents binary matrix indicating supervised behavior categories
             'categories': ncategories list of category names
             'kpnames': nkpts list of keypoint names
+            and optionally
+            'arenabounds': T x 4 array of floats, the axis-aligned arena walls (x0, x1, y0, y1) at each frame
 
     Returns
         A dictionary with the fields contained in the infile with these additional fields:

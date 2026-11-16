@@ -34,12 +34,12 @@ def _box(ax, x0, x1, y0, y1, **kwargs):
 
 def animate_pose(Xkps: dict, burn_in: int = 0, out_file_path_maybe: str | None = None, fps: float = FPS,
                  view_scale: float = 2., figsizebase: float = 8., ms: float = 2., lw: float = 1.,
-                 trail_len: int = 30) -> animation.FuncAnimation:
+                 trail_len: int = 30, arena_bounds_maybe: np.ndarray | None = None) -> animation.FuncAnimation:
     """ Animates mice in the arena, one panel per set of tracks, e.g. {'Real': gt_track, 'Simulated': pred_track}.
 
     Each mouse is drawn in its own color, as a filled head and body with the spine and tail as lines, its
-    keypoints as black dots, and a trail of its center keypoint's last trail_len frames.  The square arena
-    floor is drawn in grey and the video frame's bounds in black.  The view is the video frame scaled by
+    keypoints as black dots, and a trail of its center keypoint's last trail_len frames.  The arena floor is
+    drawn in grey, and the video frame's bounds in black.  The view is the video frame scaled by
     view_scale about its center, the same in every panel, so mice that wander far enough go out of view.  The
     title gives the frame number, counted from the first frame after the burn-in, so the burn-in's frames are
     numbered -burn_in to -1.  y points down, as in the videos.  A mouse's
@@ -56,6 +56,8 @@ def animate_pose(Xkps: dict, burn_in: int = 0, out_file_path_maybe: str | None =
         ms: Marker size of the keypoints.
         lw: Line width of the mice's outlines and lines.
         trail_len: Number of past frames of each mouse's center keypoint to draw as a trail.
+        arena_bounds_maybe: The arena, (x0, x1, y0, y1) in cm, as mousellm/arena.py estimates it, or None for
+            the typical arena, ARENA_SIZE_CM across about the origin.
 
     Returns:
         The animation.
@@ -73,7 +75,8 @@ def animate_pose(Xkps: dict, burn_in: int = 0, out_file_path_maybe: str | None =
     artists = []
     for ax, name in zip(axs, names):
         half = ARENA_SIZE_CM / 2
-        _box(ax, -half, half, -half, half, color=[.6, .6, .6], lw=1)
+        arena_bounds = (-half, half, -half, half) if arena_bounds_maybe is None else arena_bounds_maybe
+        _box(ax, *arena_bounds, color=[.6, .6, .6], lw=1)
         _box(ax, x0, x1, y0, y1, color='k', lw=1)
         ax.set_xlim(view_center[0] - view_half_size[0], view_center[0] + view_half_size[0])
         ax.set_ylim(view_center[1] + view_half_size[1], view_center[1] - view_half_size[1])

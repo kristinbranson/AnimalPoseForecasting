@@ -18,12 +18,14 @@ at random into train, val and test sets, by sequence.  For each sequence and mou
   than a mouse runs, so is an identity swap or a tracking error, or where the heading, from the tail base
   to the neck, turns more than MAX_TURN_RAD in one frame, which is a pose flip, and
 - converts pixels to cm about the typical arena center (mousellm.config).
+Then it estimates each sequence's arena, the axis-aligned box of its walls (mousellm/arena.py).
 
 The output files have the fields apf.data.load_raw_npz_data reads.  'ids' numbers each track: a run of
 tracked frames of one mouse with no jumps.  It is -1 for untracked frames, whose keypoints are NaN.
-'videoidx' is the sequence's index in the file, and 'frames' the frame within the sequence.  There are no
-categories.  The files also have 'seqnames' and 'seqsourcefiles', the MABe22 name and file of each
-sequence, by videoidx.  A JSON file lists the sequences in each split.
+'videoidx' is the sequence's index in the file, and 'frames' the frame within the sequence.
+'arenabounds' is the arena at each frame, (x0, x1, y0, y1) in cm.  There are no categories.  The files
+also have 'seqnames' and 'seqsourcefiles', the MABe22 name and file of each sequence, by videoidx.  A JSON
+file lists the sequences in each split, with their arena placements, and the placements' arenas.
 
 Run it as python -m mousellm.convert_mabe22.
 """
@@ -35,12 +37,13 @@ import os
 
 import numpy as np
 
+from mousellm import arena
 from mousellm.config import ARENA_CENTER_PX, CM_PER_PX, keypointnames, kpheading_back, kpheading_front, kporigin
 
 LOG = logging.getLogger('mousellm.convert_mabe22')
 
 DEFAULT_IN_DIR_PATH = '/nrs/branson/AnimalPoseForecasting/mabe22-mouse'
-DEFAULT_OUT_DIR_PATH = '/nrs/branson/AnimalPoseForecasting/mabe22-mouse-apf-ready'
+DEFAULT_OUT_DIR_PATH = '/nrs/branson/AnimalPoseForecasting/mabe22-mouse-apf-ready-v2'
 # The size of the frame each file's keypoint pixels are in
 IN_FILE_FRAME_SIZES_PX = {'mouse_user_train.npy': 512, 'mouse_submission_keypoints.npy': 512,
                           'mouse_triplet_train.npy': 800, 'mouse_triplet_test.npy': 800}
@@ -156,9 +159,11 @@ def split_sequences(n_seqs: int, seed: int) -> list[np.ndarray]:
     return [np.sort(perm[s:e]) for s, e in zip(np.r_[0, ends[:-1]], ends)]
 
 
-def convert_split(seqs: list[tuple[str, str, np.ndarray]]) -> tuple[dict, dict]:
-    """ Converts a list of (name, file name, keypoints) sequences to the fields of one output file. """
-    Xs, idss = [], []
+def convert_split(seqs: list[tuple[str, str, np.ndarray]]) -> tuple[dict, dict, np.ndarray]:
+    """ Converts a list of (name, file name, keypoints) sequences to the fields of one output file, but for
+    'arenabounds'.  Also returns the stats, and the sequences' keypoint histograms, (n_seqs, 2, n_bins), for
+    estimating their arenas. """
+    Xs, idss, hists = [], [], []
     stats = {}
     next_id = 0
     for name, file_name, kp in seqs:
@@ -166,6 +171,7 @@ def convert_split(seqs: list[tuple[str, str, np.ndarray]]) -> tuple[dict, dict]:
         next_id = max(next_id, ids.max() + 1)
         Xs.append(X)
         idss.append(ids)
+        hists.append(arena.keypoint_histograms(X))
         for k, v in s.items():
             stats[k] = stats.get(k, 0) + v
     n_frames_per_seq = [X.shape[2] for X in Xs]
@@ -183,7 +189,7 @@ def convert_split(seqs: list[tuple[str, str, np.ndarray]]) -> tuple[dict, dict]:
     stats['n_seqs'] = len(seqs)
     stats['n_frames'] = sum(n_frames_per_seq)
     stats['n_tracks'] = int(next_id)
-    return data, stats
+    return data, stats, np.array(hists)
 
 
 def main():
@@ -199,9 +205,27 @@ def main():
     manifest = {'seed': args.seed, 'max_gap_n_frames': MAX_GAP_N_FRAMES, 'max_step_px': MAX_STEP_PX,
                 'max_turn_rad': MAX_TURN_RAD,
                 'cm_per_px': CM_PER_PX, 'arena_center_px': ARENA_CENTER_PX.tolist(), 'splits': {}}
-    for split_name, idx in zip(SPLIT_NAMES, split_sequences(len(seqs), args.seed)):
+    split_idxs = split_sequences(len(seqs), args.seed)
+    converted = [convert_split([seqs[i] for i in idx]) for idx in split_idxs]
+
+    # each sequence's arena, from its video's floor where it has one, and all the sequences' keypoints
+    LOG.info('Measuring the arena floor in the videos...')
+    video_bounds = np.full((len(seqs), 4), np.nan)
+    for i, (name, file_name, _) in enumerate(seqs):
+        path_maybe = arena.video_file_path_maybe(args.indir, name, file_name)
+        if path_maybe is not None:
+            video_bounds[i] = arena.video_floor_bounds(path_maybe)
+    hists = np.zeros((len(seqs),) + converted[0][2].shape[1:], dtype=np.int64)
+    for idx, (_, _, split_hists) in zip(split_idxs, converted):
+        hists[idx] = split_hists
+    arenas = arena.estimate_arena_bounds(hists, video_bounds)
+    manifest['arena'] = {'cv_accuracy': arenas['cv_accuracy'], 'cv_frac_wall_off_2cm': arenas['cv_frac_wall_off_2cm'],
+                         'placement_bounds': arenas['placement_bounds'].round(3).tolist()}
+
+    for split_name, idx, (data, stats, _) in zip(SPLIT_NAMES, split_idxs, converted):
         split_seqs = [seqs[i] for i in idx]
-        data, stats = convert_split(split_seqs)
+        # by sequence, then by frame
+        data['arenabounds'] = arenas['arena_bounds'][idx][data['videoidx'][:, 0]].astype(np.float32)
         out_file_path = os.path.join(args.outdir, f'{split_name}.npz')
         # write to a temporary file and rename, so an interrupted run never leaves a partial file
         tmp_file_path = f'{out_file_path}.{os.getpid()}.tmp.npz'
@@ -212,8 +236,11 @@ def main():
                  f"{stats['n_tracks']} tracks, {stats['n_mouse_frames_untracked'] / n_mouse_frames:.1%} of "
                  f"mouse-frames untracked, {stats['n_keypoints_filled']} of {stats['n_keypoints_missing']} "
                  f"missing keypoints filled, {stats['n_jumps']} jumps or flips")
-        manifest['splits'][split_name] = {'stats': stats,
-                                          'sequences': [[name, file_name] for name, file_name, _ in split_seqs]}
+        # each sequence as [name, file name, arena placement, confidence in the placement]
+        manifest['splits'][split_name] = {
+            'stats': stats,
+            'sequences': [[name, file_name, int(arenas['placement'][i]), round(float(arenas['confidence'][i]), 3)]
+                          for (name, file_name, _), i in zip(split_seqs, idx)]}
     manifest_file_path = os.path.join(args.outdir, 'splits.json')
     with open(manifest_file_path, 'w') as f:
         json.dump(manifest, f, indent=1)

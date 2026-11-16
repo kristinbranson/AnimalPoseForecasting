@@ -1,7 +1,8 @@
 """Functions for running mouse experiments, on the MABe22 mouse triplets.
 
 The counterpart of experiments/flyllm.py.  Pose is body-centric keypoints (mousellm.features), the inputs
-are the previous movement, the pose and the other mice's sensory features, and the labels are the next
+are the previous movement, the pose and the sensory features (the other mice, and the distances to the
+arena walls), and the labels are the next
 movement: forward, sideways and turn of the body frame, discretized, and the change in the body-frame
 keypoints, continuous.
 """
@@ -23,7 +24,8 @@ LOG = logging.getLogger(__name__)
 
 @dataclass
 class Sensory(Operation):
-    """ Computes the mice's sensory features: vision and touch of the other mice.
+    """ Computes the mice's sensory features: vision and touch of the other mice, and the distances to the
+    arena walls.
 
     NOTE: this operation is not invertible.
     Attributes:
@@ -33,11 +35,12 @@ class Sensory(Operation):
     localattrs = ['idxinfo']
     idxinfo: dict | None = None
 
-    def apply(self, Xkp: np.ndarray, isdata: np.ndarray | None = None) -> np.ndarray:
+    def apply(self, Xkp: np.ndarray, arena_bounds: np.ndarray, isdata: np.ndarray | None = None) -> np.ndarray:
         """ Computes sensory features from keypoints.
 
         Args:
             Xkp: (x, y) positions of the agents' keypoints, (n_agents, n_frames, 2, n_keypoints) float array.
+            arena_bounds: the arena walls at each frame, (x0, x1, y0, y1), (n_frames, 4) float array.
             isdata: whether each agent has data at each frame, (n_frames, n_agents) bool array.  Other frames'
                 features are NaN.  None for all frames.
 
@@ -47,7 +50,7 @@ class Sensory(Operation):
         self.idxinfo = get_sensory_feature_idx()
         sensory_data = None
         for mousenum in range(Xkp.shape[0]):
-            feat = compute_sensory(Xkp, mousenum, None if isdata is None else isdata[:, mousenum])
+            feat = compute_sensory(Xkp, mousenum, arena_bounds, None if isdata is None else isdata[:, mousenum])
             if sensory_data is None:
                 sensory_data = np.empty((Xkp.shape[0],) + feat.shape, dtype=feat.dtype)
             sensory_data[mousenum] = feat
@@ -81,7 +84,7 @@ def load_data(
         config: dict,
         filename: str,
         debug: bool = False,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, list]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, list, np.ndarray]:
     """ Loads a data file made by mousellm/convert_mabe22.py, filtered and flip-augmented as config says.
 
     Args:
@@ -97,6 +100,7 @@ def load_data(
         useoutputmask: whether each frame's output may be used for the loss, (n_frames, n_agents) bool array
         labels: (n_categories, n_frames, n_agents) category labels; the mouse data has none
         categories: category names
+        arena_bounds: the arena walls at each frame, (x0, x1, y0, y1), (n_frames, 4) float array
     """
     # No scale per agent: body-centric keypoints don't use one, and computing it for every track is slow.
     data, _ = load_and_filter_data(
@@ -107,8 +111,10 @@ def load_data(
         n_frames_per_video=15000,
         max_n_videos=5
     )
+    if 'arenabounds' not in data:
+        raise ValueError(f'{filename} has no arena bounds; make it with the current mousellm/convert_mabe22.py')
     return data['X'], data['ids'], data['isstart'], data['isdata'], data['useoutputmask'], data['y'], \
-        data['categories']
+        data['categories'], data['arenabounds']
 
 
 def make_dataset(
@@ -140,16 +146,20 @@ def make_dataset(
         dataset_params: The dataset's operations' parameters
         isdata, isstart, useoutputmask: (n_frames, n_agents) bool arrays
         labels, categories: category labels and names
+        extra_data: {'arena_bounds': the arena walls at each frame, (x0, x1, y0, y1), (n_frames, 4) float
+            array}, which simulation needs to recompute the sensory features
         ]
-        The same as experiments.flyllm.make_dataset returns, so flyllm.prepare can use either.
+        The same as experiments.flyllm.make_dataset returns, plus extra_data, which flyllm.prepare adds to its
+        data dict.
     """
-    Xkp, ids, isstart, isdata, useoutputmask, labels, categories = load_data(config, config[filename], debug=debug)
+    Xkp, ids, isstart, isdata, useoutputmask, labels, categories, arena_bounds = \
+        load_data(config, config[filename], debug=debug)
 
     LOG.info('Computing input and label features for dataset...')
     track = Data('keypoints', Xkp.T, [])
 
     LOG.info('Computing sensory features...')
-    sensory = Sensory()(track, isdata=isdata)
+    sensory = Sensory()(track, arena_bounds=arena_bounds, isdata=isdata)
 
     LOG.info('Computing body-centric keypoint pose features...')
     pose = BodyCentricKP()(track)
@@ -227,6 +237,6 @@ def make_dataset(
     dataset_params = dataset.get_params()
     if return_all:
         return dataset, ids, track, pose, velocity, sensory, dataset_params, isdata, isstart, useoutputmask, \
-            labels, categories
+            labels, categories, {'arena_bounds': arena_bounds}
     else:
         return dataset

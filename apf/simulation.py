@@ -25,6 +25,7 @@ def simulate(
     start_frame: int = 1000,
     transformed_cache: np.ndarray = None,
     sanity_check_gt_labels: bool = False,
+    arena_bounds: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """ Simulates an agent given model and some initialization.
 
@@ -42,6 +43,9 @@ def simulate(
         start_frame: First frame of the burn-in. The returned tracks cover frames
             [start_frame, start_frame + track_len); their first burn_in frames are real data, and
             prediction starts at frame start_frame + burn_in.
+        arena_bounds: For animals whose sensory features depend on an arena that varies, such as the mice's,
+            the arena at each frame of track, (n_frames, 4), as the animal's make_dataset returns it.  None for
+            animals with a fixed arena, such as the flies.
 
     Returns:
         gt_track: ground truth 2d track at each frame. Used for first burn_in frames.
@@ -152,7 +156,12 @@ def simulate(
 
         # Compute sensory information
         sensory_op = get_operation(dataset.inputs['sensory'].operations, 'sensory')
-        sensory = sensory_op.apply(pred_track[:, curr_frame:curr_frame+1])
+        if arena_bounds is None:
+            sensory = sensory_op.apply(pred_track[:, curr_frame:curr_frame+1])
+        else:
+            frame = start_frame + curr_frame
+            sensory = sensory_op.apply(pred_track[:, curr_frame:curr_frame+1],
+                                       arena_bounds=arena_bounds[frame:frame+1])
 
         # Assemble inputs and apply the same preproc operations to the data as the training data
         inputs = {'velocity': velocity[:, :1, :],

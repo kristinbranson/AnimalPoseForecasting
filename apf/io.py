@@ -7,7 +7,7 @@ import pathlib
 import logging
 import tqdm
 
-from apf.data import flip_agents, filter_data_by_categories, load_raw_npz_data
+from apf.data import flip_agents, flip_arena_bounds, filter_data_by_categories, load_raw_npz_data
 from apf.utils import tic, toc
 
 DOTIME = False
@@ -451,6 +451,8 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
         data['isstart'] = data['isstart'][keepidx,:]
         data['isdata'] = data['isdata'][keepidx,:]    
         data['useoutputmask'] = data['useoutputmask'][keepidx,:]
+        if 'arenabounds' in data:
+            data['arenabounds'] = data['arenabounds'][keepidx,:]
     if DOTIME:
         LOG.info(f"data condensing took {toc(start_time):.2f} seconds")
 
@@ -483,6 +485,8 @@ def load_and_filter_data(infile, config, compute_scale_per_agent=None, compute_n
         data['isdata'] = np.tile(data['isdata'], (2, 1))
         data['isstart'] = np.tile(data['isstart'], (2, 1))
         data['useoutputmask'] = np.tile(data['useoutputmask'], (2, 1))
+        if 'arenabounds' in data:
+            data['arenabounds'] = np.concatenate([data['arenabounds'], flip_arena_bounds(data['arenabounds'])])
         nframespost = np.count_nonzero(data['isdata']&data['useoutputmask'])
         nidspost = len(np.unique(data['ids'][data['isdata']&data['useoutputmask']]))
         LOG.info(f"After flip augmentation nids {nidspre} -> {nidspost}, nframes {nframespre} -> {nframespost}")

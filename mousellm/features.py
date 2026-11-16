@@ -1,8 +1,8 @@
 """Pose and sensory features of the MABe22 mice, computed from keypoints.
 
 Keypoint arrays here are (n_agents, n_frames, 2, n_keypoints), the layout of the 'keypoints' Data in
-experiments/mouse.py, with positions in cm.  There are no wall features: the arena's position and size
-vary between videos and aren't known for the pose-only data (see mousellm/convert_mabe22.py).
+experiments/mouse.py, with positions in cm.  The arena's walls are an axis-aligned box per frame,
+(x0, x1, y0, y1) in cm, which mousellm/arena.py estimates for each sequence.
 """
 import warnings
 
@@ -11,7 +11,7 @@ import numpy as np
 from apf.utils import modrange, rotate_2d_points
 from mousellm.config import (
     SENSORY_PARAMS, kporigin, kpheading_back, kpheading_front, kprelative,
-    kphead, kpvision_other, kptouch, kptouch_other,
+    kphead, kpvision_other, kptouch, kptouch_other, kpwall,
 )
 
 # compute_sensory computes this many frames at a time
@@ -139,19 +139,55 @@ def compute_othermice_touch(Xtouch: np.ndarray, Xtouch_other: np.ndarray) -> np.
     return touch.reshape((touch.shape[0], -1)).T
 
 
+def compute_wall_distances(point: np.ndarray, facing: np.ndarray, arena_bounds: np.ndarray) -> np.ndarray:
+    """Distances from a point on the mouse to the arena walls, along rays at SENSORY_PARAMS['wall_ray_angles']
+    from the direction it faces.
+
+    So that the distances change smoothly as the mouse moves and turns, even when the point is near or past a
+    wall (as the neck often is when a mouse rears against one), each ray starts from the point moved to at
+    least inset = SENSORY_PARAMS['wall_ray_inset'] cm inside the walls, and the distance it was moved is
+    subtracted.  So a ray's distance is the distance to the wall it hits, exactly so for a point more than
+    inset inside the walls, or for a ray straight at a wall, and is negative for a point past the wall.
+
+    Args:
+        point: (n_frames, 2) position of the point the rays start from.
+        facing: (n_frames,) direction the mouse faces, in radians from +x toward +y.
+        arena_bounds: (n_frames, 4) the arena walls, (x0, x1, y0, y1).
+
+    Returns:
+        distances: (n_rays, n_frames)
+    """
+    inset = SENSORY_PARAMS['wall_ray_inset']
+    x0, x1, y0, y1 = arena_bounds.T
+    qx = np.clip(point[:, 0], x0 + inset, x1 - inset)
+    qy = np.clip(point[:, 1], y0 + inset, y1 - inset)
+    moved = np.hypot(point[:, 0] - qx, point[:, 1] - qy)
+    angle = facing[None] + np.array(SENSORY_PARAMS['wall_ray_angles'])[:, None]   # (n_rays, n_frames)
+    dx, dy = np.cos(angle), np.sin(angle)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        tx = np.where(dx > 0, (x1 - qx) / dx, np.where(dx < 0, (x0 - qx) / dx, np.inf))
+        ty = np.where(dy > 0, (y1 - qy) / dy, np.where(dy < 0, (y0 - qy) / dy, np.inf))
+    return np.minimum(tx, ty) - moved[None]
+
+
 def get_sensory_feature_idx() -> dict[str, list[int]]:
     """ The [start, end) feature indices of each kind of sensory feature compute_sensory returns. """
     n_vision = SENSORY_PARAMS['n_oma']
     n_touch = len(kptouch) * len(kptouch_other)
-    return {'othermice_vision': [0, n_vision], 'othermice_touch': [n_vision, n_vision + n_touch]}
+    n_wall = len(SENSORY_PARAMS['wall_ray_angles'])
+    return {'othermice_vision': [0, n_vision], 'othermice_touch': [n_vision, n_vision + n_touch],
+            'arena_walls': [n_vision + n_touch, n_vision + n_touch + n_wall]}
 
 
-def compute_sensory(Xkp: np.ndarray, mousenum: int, isdata: np.ndarray | None = None) -> np.ndarray:
-    """Sensory features of one mouse: vision of the other mice, then touch of the other mice.
+def compute_sensory(Xkp: np.ndarray, mousenum: int, arena_bounds: np.ndarray,
+                    isdata: np.ndarray | None = None) -> np.ndarray:
+    """Sensory features of one mouse: vision of the other mice, touch of the other mice, then the distances to
+    the arena walls.
 
     Args:
         Xkp: (n_agents, n_frames, 2, n_keypoints) keypoint positions of all the mice.
         mousenum: index of the mouse to compute the features of.
+        arena_bounds: (n_frames, 4) the arena walls at each frame, (x0, x1, y0, y1).
         isdata: (n_frames,) whether the mouse has data at each frame.  Other frames are NaN.  None for all.
 
     Returns:
@@ -167,6 +203,7 @@ def compute_sensory(Xkp: np.ndarray, mousenum: int, isdata: np.ndarray | None = 
         return sensory
     sv = idx['othermice_vision']
     st = idx['othermice_touch']
+    sw = idx['arena_walls']
     frames = np.nonzero(isdata)[0]
     # in chunks of frames, since the intermediate arrays take a few kB per frame
     for i0 in range(0, len(frames), SENSORY_CHUNK_N_FRAMES):
@@ -180,8 +217,11 @@ def compute_sensory(Xkp: np.ndarray, mousenum: int, isdata: np.ndarray | None = 
         other = np.moveaxis(other, 0, -1)                               # (n, 2, n_keypoints, n_other)
         _, _, theta = body_centric_kp(main[None])
         head = main[..., kphead].mean(axis=-1)
-        vision = compute_othermice_vision(head, theta[0] + np.pi / 2, other[:, :, kpvision_other])
+        facing = theta[0] + np.pi / 2
+        vision = compute_othermice_vision(head, facing, other[:, :, kpvision_other])
         touch = compute_othermice_touch(main[..., kptouch], other[:, :, kptouch_other])
+        walls = compute_wall_distances(main[..., kpwall], facing, arena_bounds[framescurr])
         sensory[framescurr, sv[0]:sv[1]] = vision.T
         sensory[framescurr, st[0]:st[1]] = touch.T
+        sensory[framescurr, sw[0]:sw[1]] = walls.T
     return sensory

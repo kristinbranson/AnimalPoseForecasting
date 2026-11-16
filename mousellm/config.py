@@ -66,7 +66,7 @@ nfeatures = len(posenames)
 
 # Pixel to cm conversion, for pixels in the 512 x 512 frame of the MABe22 files with videos.  The 52 cm x
 # 52 cm arena floor is 379 px across in the median video, centered at (256, 239) px, though both vary from
-# video to video (step0/arena_bounds_from_video.py in the project dir).
+# one four-day experiment to another (mousellm/arena.py finds each sequence's arena).
 ARENA_SIZE_CM = 52.
 ARENA_SIZE_PX = 379.43
 CM_PER_PX = ARENA_SIZE_CM / ARENA_SIZE_PX
@@ -84,6 +84,12 @@ SENSORY_PARAMS = {
     'touch_kpnames': keypointnames,
     'touch_other_kpnames': ['nose', 'neck', 'center', 'tail_base', 'tail_middle'],
     'othermice_touch_exp': 1.3,
+    # the arena walls: the distance from the wall keypoint to the walls along rays at these angles, in
+    # radians, from the direction the mouse faces (positive turns from +x toward +y), measured from a point
+    # at least wall_ray_inset cm inside the walls (mousellm.features.compute_wall_distances)
+    'wall_kpname': 'neck',
+    'wall_ray_angles': [0., np.pi / 4, -np.pi / 4],
+    'wall_ray_inset': 1.,
 }
 # Vision reaches across the arena diagonal, and touch one body length.
 SENSORY_PARAMS['othermice_vision_mult'] = 1. / ((np.sqrt(2.) * ARENA_SIZE_CM) ** SENSORY_PARAMS['othermice_vision_exp'])
@@ -94,6 +100,7 @@ kphead = [keypointnames.index(x) for x in ['nose', 'left_ear', 'right_ear']]
 kpvision_other = [keypointnames.index(x) for x in SENSORY_PARAMS['vision_kpnames']]
 kptouch = [keypointnames.index(x) for x in SENSORY_PARAMS['touch_kpnames']]
 kptouch_other = [keypointnames.index(x) for x in SENSORY_PARAMS['touch_other_kpnames']]
+kpwall = keypointnames.index(SENSORY_PARAMS['wall_kpname'])
 
 
 def read_config(configfile, **kwargs):

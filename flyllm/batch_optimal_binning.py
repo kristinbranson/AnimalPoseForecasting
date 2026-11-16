@@ -239,8 +239,9 @@ def main():
 
     config = init_config(configfile=config_file_path, overrideconfig=overrideconfig)['config']
     animal = animals.config_animal(config)
+    # some animals' make_dataset returns an extra-data dict after these
     _, _, _, _, velocity, _, _, isdata, _, useoutputmask, _, _ = \
-        animal.make_dataset(config, 'intrainfile', return_all=True, debug=args.debug_uselessdata)
+        animal.make_dataset(config, 'intrainfile', return_all=True, debug=args.debug_uselessdata)[:12]
     # a fresh config, as the notebook does, in case making the dataset changed it
     config = init_config(configfile=config_file_path, overrideconfig=overrideconfig)['config']
 
