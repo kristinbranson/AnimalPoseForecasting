@@ -1,8 +1,8 @@
 """Functions for running mouse experiments, on the MABe22 mouse triplets.
 
 The counterpart of experiments/flyllm.py.  Pose is body-centric keypoints (mousellm.features), the inputs
-are the previous movement, the pose and the sensory features (the other mice, and the distances to the
-arena walls), and the labels are the next
+are the previous movement, the pose and the sensory features (vision and touch of the other mice, and vision
+of the arena walls), and the labels are the next
 movement: forward, sideways and turn of the body frame, discretized, and the change in the body-frame
 keypoints, continuous.
 """
@@ -24,8 +24,8 @@ LOG = logging.getLogger(__name__)
 
 @dataclass
 class Sensory(Operation):
-    """ Computes the mice's sensory features: vision and touch of the other mice, and the distances to the
-    arena walls.
+    """ Computes the mice's sensory features: vision and touch of the other mice, and vision of the arena
+    walls.
 
     NOTE: this operation is not invertible.
     Attributes:

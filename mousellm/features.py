@@ -11,7 +11,7 @@ import numpy as np
 from apf.utils import modrange, rotate_2d_points
 from mousellm.config import (
     SENSORY_PARAMS, kporigin, kpheading_back, kpheading_front, kprelative,
-    kphead, kpvision_other, kptouch, kptouch_other, kpwall,
+    kphead, kpvision_other, kptouch, kptouch_other,
 )
 
 # compute_sensory computes this many frames at a time
@@ -139,50 +139,56 @@ def compute_othermice_touch(Xtouch: np.ndarray, Xtouch_other: np.ndarray) -> np.
     return touch.reshape((touch.shape[0], -1)).T
 
 
-def compute_wall_distances(point: np.ndarray, facing: np.ndarray, arena_bounds: np.ndarray) -> np.ndarray:
-    """Distances from a point on the mouse to the arena walls, along rays at SENSORY_PARAMS['wall_ray_angles']
-    from the direction it faces.
+def compute_wall_vision(head: np.ndarray, theta: np.ndarray, arena_bounds: np.ndarray) -> np.ndarray:
+    """How near the arena walls look in each direction, from one mouse's head, in the direction bins of
+    compute_othermice_vision.
 
-    So that the distances change smoothly as the mouse moves and turns, even when the point is near or past a
-    wall (as the neck often is when a mouse rears against one), each ray starts from the point moved to at
-    least inset = SENSORY_PARAMS['wall_ray_inset'] cm inside the walls, and the distance it was moved is
-    subtracted.  So a ray's distance is the distance to the wall it hits, exactly so for a point more than
-    inset inside the walls, or for a ray straight at a wall, and is negative for a point past the wall.
+    A bin's distance is the shortest distance from the head to a wall within the bin's 360 / n_oma degrees of
+    directions.  For a wall with perpendicular distance D, seen at angles phi from its normal, that is D /
+    max(cos(phi)) over the bin: D if the normal is in the bin, else at the bin's edge nearer the normal.  A
+    head past a wall, as a simulated mouse's can be, is moved onto it first, so the bins facing that wall see
+    it at distance 0.  The feature is 1 - min(1, mult * d ** exp), as for the other mice, with
+    SENSORY_PARAMS['wall_vision_mult'] and ['wall_vision_exp'].
 
     Args:
-        point: (n_frames, 2) position of the point the rays start from.
-        facing: (n_frames,) direction the mouse faces, in radians from +x toward +y.
+        head: (n_frames, 2) head position.
+        theta: (n_frames,) heading angle, the direction the mouse faces.
         arena_bounds: (n_frames, 4) the arena walls, (x0, x1, y0, y1).
 
     Returns:
-        distances: (n_rays, n_frames)
+        vision: (n_oma, n_frames)
     """
-    inset = SENSORY_PARAMS['wall_ray_inset']
+    n_oma = SENSORY_PARAMS['n_oma']
+    step = 2. * np.pi / n_oma
     x0, x1, y0, y1 = arena_bounds.T
-    qx = np.clip(point[:, 0], x0 + inset, x1 - inset)
-    qy = np.clip(point[:, 1], y0 + inset, y1 - inset)
-    moved = np.hypot(point[:, 0] - qx, point[:, 1] - qy)
-    angle = facing[None] + np.array(SENSORY_PARAMS['wall_ray_angles'])[:, None]   # (n_rays, n_frames)
-    dx, dy = np.cos(angle), np.sin(angle)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        tx = np.where(dx > 0, (x1 - qx) / dx, np.where(dx < 0, (x0 - qx) / dx, np.inf))
-        ty = np.where(dy > 0, (y1 - qy) / dy, np.where(dy < 0, (y0 - qy) / dy, np.inf))
-    return np.minimum(tx, ty) - moved[None]
+    hx = np.clip(head[:, 0], x0, x1)
+    hy = np.clip(head[:, 1], y0, y1)
+    # each wall's perpendicular distance and the direction of its normal, away from the arena's inside
+    wall_dist = np.stack([x1 - hx, hx - x0, y1 - hy, hy - y0])             # (4, n_frames)
+    wall_normal = np.array([0., np.pi, np.pi / 2, -np.pi / 2])
+    # bin b covers the directions theta - pi + [b, b + 1) * step
+    lo = theta[None] - np.pi + np.arange(n_oma)[:, None] * step            # (n_oma, n_frames)
+    lo = lo[None] - wall_normal[:, None, None]                              # (4, n_oma, n_frames), from each normal
+    normal_in_bin = np.mod(-lo, 2. * np.pi) < step
+    max_cos = np.where(normal_in_bin, 1., np.maximum(np.cos(lo), np.cos(lo + step)))
+    # a bin only grazing a wall, at an edge parallel to it, doesn't see it, though rounding leaves its cos > 0
+    sees = max_cos > 1e-9
+    dist = np.where(sees, wall_dist[:, None] / np.where(sees, max_cos, 1.), np.inf).min(axis=0)
+    return 1. - np.minimum(1., SENSORY_PARAMS['wall_vision_mult'] * dist ** SENSORY_PARAMS['wall_vision_exp'])
 
 
 def get_sensory_feature_idx() -> dict[str, list[int]]:
     """ The [start, end) feature indices of each kind of sensory feature compute_sensory returns. """
     n_vision = SENSORY_PARAMS['n_oma']
     n_touch = len(kptouch) * len(kptouch_other)
-    n_wall = len(SENSORY_PARAMS['wall_ray_angles'])
     return {'othermice_vision': [0, n_vision], 'othermice_touch': [n_vision, n_vision + n_touch],
-            'arena_walls': [n_vision + n_touch, n_vision + n_touch + n_wall]}
+            'wall_vision': [n_vision + n_touch, 2 * n_vision + n_touch]}
 
 
 def compute_sensory(Xkp: np.ndarray, mousenum: int, arena_bounds: np.ndarray,
                     isdata: np.ndarray | None = None) -> np.ndarray:
-    """Sensory features of one mouse: vision of the other mice, touch of the other mice, then the distances to
-    the arena walls.
+    """Sensory features of one mouse: vision of the other mice, touch of the other mice, then vision of the
+    arena walls.
 
     Args:
         Xkp: (n_agents, n_frames, 2, n_keypoints) keypoint positions of all the mice.
@@ -203,7 +209,7 @@ def compute_sensory(Xkp: np.ndarray, mousenum: int, arena_bounds: np.ndarray,
         return sensory
     sv = idx['othermice_vision']
     st = idx['othermice_touch']
-    sw = idx['arena_walls']
+    sw = idx['wall_vision']
     frames = np.nonzero(isdata)[0]
     # in chunks of frames, since the intermediate arrays take a few kB per frame
     for i0 in range(0, len(frames), SENSORY_CHUNK_N_FRAMES):
@@ -220,7 +226,7 @@ def compute_sensory(Xkp: np.ndarray, mousenum: int, arena_bounds: np.ndarray,
         facing = theta[0] + np.pi / 2
         vision = compute_othermice_vision(head, facing, other[:, :, kpvision_other])
         touch = compute_othermice_touch(main[..., kptouch], other[:, :, kptouch_other])
-        walls = compute_wall_distances(main[..., kpwall], facing, arena_bounds[framescurr])
+        walls = compute_wall_vision(head, facing, arena_bounds[framescurr])
         sensory[framescurr, sv[0]:sv[1]] = vision.T
         sensory[framescurr, st[0]:st[1]] = touch.T
         sensory[framescurr, sw[0]:sw[1]] = walls.T

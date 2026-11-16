@@ -14,9 +14,9 @@ from apf.data import flip_agents, flip_arena_bounds, get_flip_idx
 from experiments.mouse import BodyCentricKP, Sensory
 from mousellm import arena, convert_mabe22
 from mousellm.config import (
-    SENSORY_PARAMS, keypointnames, kporigin, kpheading_back, kpheading_front, kpwall, posenames
+    SENSORY_PARAMS, keypointnames, kphead, kporigin, kpheading_back, kpheading_front, posenames
 )
-from mousellm.features import body_centric_kp, compute_wall_distances, get_sensory_feature_idx
+from mousellm.features import body_centric_kp, compute_wall_vision, get_sensory_feature_idx
 
 N_KEYPOINTS = len(keypointnames)
 # An arena so big that the walls are far from every mouse in the tests of the other sensory features
@@ -120,62 +120,81 @@ def test_sensory_nan_iff_no_data():
     assert not np.isnan(sensory[isdata.T]).any()
 
 
-def wall_distances(Xkp, arena_bounds):
-    """ The arena_walls sensory features of one mouse, Xkp (2, n_keypoints), alone in arena_bounds (4,). """
+def wall_vision(Xkp, arena_bounds):
+    """ The wall_vision sensory features of one mouse, Xkp (2, n_keypoints), alone in arena_bounds (4,). """
     sensory = Sensory()(Xkp[None, None], arena_bounds=arena_bounds[None])
-    s = get_sensory_feature_idx()['arena_walls']
+    s = get_sensory_feature_idx()['wall_vision']
     return sensory[0, 0, s[0]:s[1]]
 
 
-def test_wall_distances_straight_and_diagonal():
-    """ For a mouse facing +x well inside the arena, the straight-ahead ray hits the +x wall at the
-    distance from the neck to it, and the rays at +-45 degrees hit it sqrt(2) times as far away, and a ray
-    toward a nearer side wall hits that instead. """
+def nearness(d):
+    """ The vision feature for distance d. """
+    return 1. - np.minimum(1., SENSORY_PARAMS['wall_vision_mult'] * d ** SENSORY_PARAMS['wall_vision_exp'])
+
+
+def brute_force_wall_vision(head, theta, arena_bounds, n_rays_per_bin=400):
+    """ compute_wall_vision for one frame, by casting n_rays_per_bin rays across each bin from the head moved
+    inside the arena, and taking the shortest. """
+    x0, x1, y0, y1 = arena_bounds
+    h = np.clip(head, [x0, y0], [x1, y1])
+    n_oma = SENSORY_PARAMS['n_oma']
+    step = 2. * np.pi / n_oma
+    out = []
+    for b in range(n_oma):
+        angle = theta - np.pi + (b + np.linspace(0., 1., n_rays_per_bin)) * step
+        dx, dy = np.cos(angle), np.sin(angle)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            tx = np.where(dx > 0, (x1 - h[0]) / dx, np.where(dx < 0, (x0 - h[0]) / dx, np.inf))
+            ty = np.where(dy > 0, (y1 - h[1]) / dy, np.where(dy < 0, (y0 - h[1]) / dy, np.inf))
+        out.append(np.minimum(tx, ty).min())
+    return nearness(np.array(out))
+
+
+def test_wall_vision_ahead_and_behind():
+    """ A mouse facing +x in a square arena sees the +x wall straight ahead, in the bin starting at straight
+    ahead, at the head's perpendicular distance to it, and the -x wall straight behind, in the first bin. """
     bounds = np.array([-26., 26., -26., 26.])
     a = straight_mouse(0., 0., 0.)
-    neck = a[:, kpwall]
-    assert SENSORY_PARAMS['wall_ray_angles'] == [0., np.pi / 4, -np.pi / 4]
-    assert np.allclose(wall_distances(a, bounds), (26. - neck[0]) * np.array([1., np.sqrt(2.), np.sqrt(2.)]))
-    # 5 cm from the +y wall, the +45 degree ray hits it first
-    b = straight_mouse(0., 21. - neck[1], 0.)
-    d = wall_distances(b, bounds)
-    assert np.isclose(d[1], 5. * np.sqrt(2.)) and np.isclose(d[2], (26. - b[0, kpwall]) * np.sqrt(2.))
+    head = a[:, kphead].mean(axis=-1)
+    v = wall_vision(a, bounds)
+    n_oma = SENSORY_PARAMS['n_oma']
+    assert np.isclose(v[n_oma // 2], nearness(26. - head[0]))
+    assert np.isclose(v[0], nearness(26. + head[0]))
+    assert np.all((v > 0) & (v < 1))
 
 
-def test_wall_distances_negative_past_the_wall():
-    """ A neck past the wall it faces gets negative distances: minus how far past it is, for the
-    straight-ahead ray. """
+def test_wall_vision_matches_brute_force():
+    """ compute_wall_vision matches casting many rays across each bin, for heads anywhere, including near
+    and past the walls, facing any way. """
+    rng = np.random.default_rng(3)
+    bounds = np.array([-20., 30., -24., 27.])
+    n = 40
+    head = rng.uniform(-28., 34., (n, 2))
+    theta = rng.uniform(-np.pi, np.pi, n)
+    v = compute_wall_vision(head, theta, np.tile(bounds, (n, 1)))
+    expected = np.stack([brute_force_wall_vision(head[i], theta[i], bounds) for i in range(n)], axis=1)
+    assert np.abs(v - expected).max() < 1e-3
+
+
+def test_wall_vision_is_one_toward_a_wall_the_head_is_past():
+    """ A head past the +x wall sees it at distance 0, so with nearness 1, in every bin with a direction
+    within 90 degrees of +x, and less near in the others. """
     bounds = np.array([-26., 26., -26., 26.])
-    a = straight_mouse(0., 0., 0.)
-    a[0] += 28. - a[0, kpwall]                                          # neck 2 cm past the +x wall
-    d = wall_distances(a, bounds)
-    assert np.isclose(d[0], -2.) and np.all(d < 0)
+    v = compute_wall_vision(np.array([[28., 0.]]), np.array([0.]), bounds[None])[:, 0]
+    n_oma = SENSORY_PARAMS['n_oma']
+    ahead = np.arange(n_oma // 4, 3 * n_oma // 4)                       # bins from -90 to +90 degrees
+    assert np.allclose(v[ahead], 1.) and np.all(np.delete(v, ahead) < 1.)
 
 
-def test_wall_distances_are_continuous():
-    """ The distances change by little for a small move or turn, everywhere, including near and past the
-    walls and at the corners, where a ray switches from one wall to another. """
-    bounds = np.tile([-26., 26., -26., 26.], (4000, 1))
-    rng = np.random.default_rng(2)
-    point = rng.uniform(-30., 30., (4000, 2))
-    facing = rng.uniform(-np.pi, np.pi, 4000)
-    d = compute_wall_distances(point, facing, bounds)
-    moved = compute_wall_distances(point + rng.normal(scale=1e-4, size=point.shape), facing, bounds)
-    turned = compute_wall_distances(point, facing + 1e-5, bounds)
-    # a ray's length changes by up to its length / sin(grazing angle) per radian of turn
-    assert np.abs(moved - d).max() < 1e-2 and np.abs(turned - d).max() < 1e-1
-
-
-def test_flipped_mouse_in_flipped_arena_swaps_side_rays():
-    """ Flipping a mouse, as flip augmentation does, along with its arena swaps its +-45 degree rays and
-    leaves its straight-ahead one. """
+def test_flipped_mouse_in_flipped_arena_mirrors_wall_vision():
+    """ Flipping a mouse, as flip augmentation does, along with its arena reverses its wall vision bins. """
     bounds = np.array([-20., 30., -24., 27.])
     a = straight_mouse(4., -9., .8)
     flipped = flip_agents(a.T[:, :, None], keypointnames)[:, :, 0].T   # flip_agents takes (n_kp, 2, T)
     flipped_bounds = flip_arena_bounds(bounds[None])[0]
     assert np.allclose(flipped_bounds, [-30., 20., -24., 27.])
-    d, df = wall_distances(a, bounds), wall_distances(flipped, flipped_bounds)
-    assert np.allclose(df, d[[0, 2, 1]])
+    v, vf = wall_vision(a, bounds), wall_vision(flipped, flipped_bounds)
+    assert np.allclose(vf, v[::-1], atol=1e-6)
 
 
 def test_placements_and_assignment():

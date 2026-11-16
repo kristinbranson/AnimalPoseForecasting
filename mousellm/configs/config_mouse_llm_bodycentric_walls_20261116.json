@@ -1,5 +1,5 @@
 {
-    "_comment": "Body-centric keypoint model of the MABe22 mouse triplets, with the distances to the arena walls among the sensory features.  The same as config_mouse_llm_bodycentric_with_bins_20261112.json but for the data, converted with each sequence's arena.  Settings not here are in mousellm/config_mouse_llm_default.json.",
+    "_comment": "Body-centric keypoint model of the MABe22 mouse triplets, with the distances to the arena walls among the sensory features.  The same as config_mouse_llm_bodycentric_with_bins_20261112.json but for the data, converted with each sequence's arena.  Settings not here are in mousellm/config_mouse_llm_default.json.  Its model, runs/mouse-train-walls, was trained at APF commit b1747f8; from the commit that added wall vision on, this config gets wall vision instead of the three wall distances, with a linear embedding.",
 
     "_comment_datadir": "made by python -m mousellm.convert_mabe22, which estimates each sequence's arena",
     "datadir": "/nrs/branson/AnimalPoseForecasting/mabe22-mouse-apf-ready-v2",

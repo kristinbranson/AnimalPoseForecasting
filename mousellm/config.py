@@ -89,15 +89,13 @@ SENSORY_PARAMS = {
     'touch_kpnames': keypointnames,
     'touch_other_kpnames': ['nose', 'neck', 'center', 'tail_base', 'tail_middle'],
     'othermice_touch_exp': 1.3,
-    # the arena walls: the distance from the wall keypoint to the walls along rays at these angles, in
-    # radians, from the direction the mouse faces (positive turns from +x toward +y), measured from a point
-    # at least wall_ray_inset cm inside the walls (mousellm.features.compute_wall_distances)
-    'wall_kpname': 'neck',
-    'wall_ray_angles': [0., np.pi / 4, -np.pi / 4],
-    'wall_ray_inset': 1.,
+    # vision of the arena walls, from the head, in the same n_oma direction bins, with the shortest distance
+    # to a wall in each bin (mousellm.features.compute_wall_vision)
+    'wall_vision_exp': .6,
 }
-# Vision reaches across the arena diagonal, and touch one body length.
+# Vision, of the other mice and of the walls, reaches across the arena diagonal, and touch one body length.
 SENSORY_PARAMS['othermice_vision_mult'] = 1. / ((np.sqrt(2.) * ARENA_SIZE_CM) ** SENSORY_PARAMS['othermice_vision_exp'])
+SENSORY_PARAMS['wall_vision_mult'] = 1. / ((np.sqrt(2.) * ARENA_SIZE_CM) ** SENSORY_PARAMS['wall_vision_exp'])
 SENSORY_PARAMS['othermice_touch_mult'] = 1. / (BODY_LENGTH_CM ** SENSORY_PARAMS['othermice_touch_exp'])
 
 # The head point vision is from: the mean of these keypoints.
@@ -105,7 +103,6 @@ kphead = [keypointnames.index(x) for x in ['nose', 'left_ear', 'right_ear']]
 kpvision_other = [keypointnames.index(x) for x in SENSORY_PARAMS['vision_kpnames']]
 kptouch = [keypointnames.index(x) for x in SENSORY_PARAMS['touch_kpnames']]
 kptouch_other = [keypointnames.index(x) for x in SENSORY_PARAMS['touch_other_kpnames']]
-kpwall = keypointnames.index(SENSORY_PARAMS['wall_kpname'])
 
 
 def read_config(configfile, **kwargs):
