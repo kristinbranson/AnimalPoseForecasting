@@ -20,6 +20,9 @@ for all of a node's GPUs and slots (4 and 48 on gpu_a100 nodes) gets the whole n
 affect its speed.  <python> is the running Python, so the job runs in the
 same environment.
 
+Refuses to submit if this checkout has uncommitted changes, since flyllm.batch_train would then refuse to train
+(and checks again when the job starts, in case the code has changed since).
+
 Everything the run writes goes in <out dir>: the job's logs, models in <out dir>/models, and figures in
 <out dir>/figs.  <out dir> must not already exist, so that runs can't overwrite each other's files.
 """
@@ -30,6 +33,7 @@ import re
 import sys
 from pathlib import Path
 
+from apf.code_version import UncommittedChangesError, committed_code_version
 from apf.lsf import submit_job
 
 DEFAULT_QUEUE = 'gpu_a100'
@@ -83,6 +87,10 @@ def main():
         out_dir_path = default_out_dir_path(f'{config_file_path.stem}_batch_train')
     if out_dir_path.exists():
         parser.error(f'output dir {out_dir_path} already exists')
+    try:
+        committed_code_version()
+    except UncommittedChangesError as e:
+        parser.error(str(e))
 
     # LSF writes the logs into the output dir, so it must exist before the job starts.  Creating it also reserves its
     # run index for later submissions.

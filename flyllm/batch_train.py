@@ -14,6 +14,9 @@ config['train_gpu_count'], and when restarting from a model file trained on a di
 with a different rule, the restored learning rate is rescaled to what this run's rule and GPU count give.
 Only rank 0 makes the figures and saves models.
 
+It refuses to train if this checkout has uncommitted changes, and saves the commit it's at, and that commit's
+time, in the models' configs, as config['code_version'] (apf.code_version.committed_code_version).
+
 Run it as python -m flyllm.batch_train.
 """
 
@@ -23,6 +26,7 @@ import logging
 import math
 import os
 
+from apf.code_version import committed_code_version
 from apf.lsf import limit_threads_to_lsf_slots
 
 limit_threads_to_lsf_slots()
@@ -193,6 +197,9 @@ def main():
         parser.error('--overrideconfig must be a JSON dict')
 
     logging.basicConfig(level=logging.INFO)
+    # before anything slow, and raises if there are uncommitted changes
+    code_version = committed_code_version()
+    LOG.info(f"Code at commit {code_version['commit']}, of {code_version['commit_time']}")
     out_dir_path = os.path.abspath(args.outdir)
     out_model_dir_path = os.path.join(out_dir_path, 'models')
     out_fig_dir_path = os.path.join(out_dir_path, 'figs')
@@ -206,6 +213,8 @@ def main():
                       debug_uselessdata=args.debug_uselessdata, overrideconfig=args.overrideconfig, doinitmodel=False)
     if not res['success']:
         raise RuntimeError('init_flyllm failed')
+    # saved with the models, via model.config
+    res['config']['code_version'] = code_version
     gpu_count = args.gpus if args.gpus is not None else torch.cuda.device_count()
     LOG.info(f'Training on {gpu_count} GPU(s), with an effective batch size of '
              f'{gpu_count * res["config"]["batch_size"]}')
