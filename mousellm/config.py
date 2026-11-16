@@ -1,6 +1,6 @@
 """Constants for modeling the MABe22 mouse triplets: keypoints, pose features, sensory parameters.
 
-Positions are in cm, in a frame centered on the typical arena center, with x to the right and y down in
+Positions are in cm, in a frame centered on the video frame's center, with x to the right and y down in
 the video image.  See mousellm/convert_mabe22.py for how the MABe22 pixel coordinates are converted.
 """
 import os
@@ -66,11 +66,16 @@ nfeatures = len(posenames)
 
 # Pixel to cm conversion, for pixels in the 512 x 512 frame of the MABe22 files with videos.  The 52 cm x
 # 52 cm arena floor is 379 px across in the median video, centered at (256, 239) px, though both vary from
-# one four-day experiment to another (mousellm/arena.py finds each sequence's arena).
+# one four-day experiment to another (mousellm/arena.py finds each sequence's arena).  Positions in cm are
+# about the frame's center, ORIGIN_PX.
+FRAME_SIZE_PX = 512
+ORIGIN_PX = np.array([FRAME_SIZE_PX / 2, FRAME_SIZE_PX / 2])
 ARENA_SIZE_CM = 52.
 ARENA_SIZE_PX = 379.43
 CM_PER_PX = ARENA_SIZE_CM / ARENA_SIZE_PX
 ARENA_CENTER_PX = np.array([256., 238.86])
+# The median arena's center, in cm
+ARENA_CENTER_CM = (ARENA_CENTER_PX - ORIGIN_PX) * CM_PER_PX
 
 # Typical nose to tail base distance, in cm (44 px, median over user train)
 BODY_LENGTH_CM = 6.

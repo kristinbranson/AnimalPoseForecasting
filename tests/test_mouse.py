@@ -248,9 +248,10 @@ def test_clean_sequence_tracks():
     flipped[17:] = flipped[17:, :, ::-1]
     _, ids, stats = convert_mabe22.clean_sequence(flipped, 512, first_id=7)
     assert ids[16, 0] == 9 and ids[17, 0] == 10 and stats['n_jumps'] == 2
-    from mousellm.config import ARENA_CENTER_PX, CM_PER_PX
-    assert np.allclose(X[:, 0, 0, 0], (200 + np.arange(N_KEYPOINTS) - ARENA_CENTER_PX[0]) * CM_PER_PX)
-    assert np.allclose(X[:, 1, 0, 0], (250 - ARENA_CENTER_PX[1]) * CM_PER_PX)
+    from mousellm.config import CM_PER_PX
+    # cm about the frame's center
+    assert np.allclose(X[:, 0, 0, 0], (200 + np.arange(N_KEYPOINTS) - 256) * CM_PER_PX)
+    assert np.allclose(X[:, 1, 0, 0], (250 - 256) * CM_PER_PX)
     # the same sequence in the 800-pixel frame gives the same cm
     X800, _, _ = convert_mabe22.clean_sequence(np.round(kp * 800 / 512).astype(np.int32), 800, first_id=7)
     assert np.allclose(X800, X, atol=CM_PER_PX, equal_nan=True)

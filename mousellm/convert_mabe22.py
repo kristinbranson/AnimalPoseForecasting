@@ -17,7 +17,7 @@ at random into train, val and test sets, by sequence.  For each sequence and mou
 - starts a new track where the center keypoint jumps more than MAX_STEP_PX in one frame, which is faster
   than a mouse runs, so is an identity swap or a tracking error, or where the heading, from the tail base
   to the neck, turns more than MAX_TURN_RAD in one frame, which is a pose flip, and
-- converts pixels to cm about the typical arena center (mousellm.config).
+- converts pixels to cm about the frame's center (mousellm.config).
 Then it estimates each sequence's arena, the axis-aligned box of its walls (mousellm/arena.py).
 
 The output files have the fields apf.data.load_raw_npz_data reads.  'ids' numbers each track: a run of
@@ -38,7 +38,7 @@ import os
 import numpy as np
 
 from mousellm import arena
-from mousellm.config import ARENA_CENTER_PX, CM_PER_PX, keypointnames, kpheading_back, kpheading_front, kporigin
+from mousellm.config import CM_PER_PX, FRAME_SIZE_PX, ORIGIN_PX, keypointnames, kpheading_back, kpheading_front, kporigin
 
 LOG = logging.getLogger('mousellm.convert_mabe22')
 
@@ -48,8 +48,6 @@ DEFAULT_OUT_DIR_PATH = '/nrs/branson/AnimalPoseForecasting/mabe22-mouse-apf-read
 IN_FILE_FRAME_SIZES_PX = {'mouse_user_train.npy': 512, 'mouse_submission_keypoints.npy': 512,
                           'mouse_triplet_train.npy': 800, 'mouse_triplet_test.npy': 800}
 IN_FILE_NAMES = list(IN_FILE_FRAME_SIZES_PX)
-# The frame size mousellm.config's pixel units are in
-FRAME_SIZE_PX = 512
 SPLIT_NAMES = ['train', 'val', 'test']
 SPLIT_FRACTIONS = [.8, .1, .1]
 
@@ -123,7 +121,7 @@ def clean_sequence(kp: np.ndarray, frame_size_px: int, first_id: int) -> tuple[n
         ids[tracked[:, m], m] = next_id + trackidx[tracked[:, m]]
         next_id += int(isstart.sum())
     stats['n_mouse_frames_untracked'] = int((~tracked).sum())
-    X = (xy - ARENA_CENTER_PX) * CM_PER_PX
+    X = (xy - ORIGIN_PX) * CM_PER_PX
     X[~tracked] = np.nan
     return np.transpose(X, (2, 3, 0, 1)).astype(np.float32), ids, stats
 
@@ -204,7 +202,7 @@ def main():
     os.makedirs(args.outdir, exist_ok=True)
     manifest = {'seed': args.seed, 'max_gap_n_frames': MAX_GAP_N_FRAMES, 'max_step_px': MAX_STEP_PX,
                 'max_turn_rad': MAX_TURN_RAD,
-                'cm_per_px': CM_PER_PX, 'arena_center_px': ARENA_CENTER_PX.tolist(), 'splits': {}}
+                'cm_per_px': CM_PER_PX, 'origin_px': ORIGIN_PX.tolist(), 'splits': {}}
     split_idxs = split_sequences(len(seqs), args.seed)
     converted = [convert_split([seqs[i] for i in idx]) for idx in split_idxs]
 

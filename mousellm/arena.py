@@ -34,7 +34,7 @@ from scipy.cluster.hierarchy import fcluster, linkage
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_predict
 
-from mousellm.config import ARENA_CENTER_PX, CM_PER_PX
+from mousellm.config import CM_PER_PX, FRAME_SIZE_PX, ORIGIN_PX
 
 LOG = logging.getLogger(__name__)
 
@@ -43,7 +43,6 @@ VIDEO_DIR_NAMES = {'mouse_user_train.npy': 'mouse_userTrain_videos_resized_224',
                    'mouse_submission_keypoints.npy': 'mouse_submission_videos_resized_224'}
 # The MABe22 videos are resized to this many pixels across, from the keypoints' 512
 VIDEO_FRAME_SIZE_PX = 224
-KEYPOINT_FRAME_SIZE_PX = 512
 # Number of frames of each video whose max is taken, to remove the dark mice from the bright floor
 N_FLOOR_FRAMES = 9
 # Video floor boxes within this distance of each other, in cm, in each wall (complete linkage), are the
@@ -75,8 +74,8 @@ def video_floor_bounds(video_file_path: str) -> np.ndarray:
     floor = im > .5 * np.percentile(im, 95)
     rows = np.nonzero(floor.mean(1) > .5)[0]
     cols = np.nonzero(floor.mean(0) > .5)[0]
-    bounds_px = np.array([cols[0], cols[-1] + 1, rows[0], rows[-1] + 1]) * KEYPOINT_FRAME_SIZE_PX / VIDEO_FRAME_SIZE_PX
-    return (bounds_px - ARENA_CENTER_PX[[0, 0, 1, 1]]) * CM_PER_PX
+    bounds_px = np.array([cols[0], cols[-1] + 1, rows[0], rows[-1] + 1]) * FRAME_SIZE_PX / VIDEO_FRAME_SIZE_PX
+    return (bounds_px - ORIGIN_PX[[0, 0, 1, 1]]) * CM_PER_PX
 
 
 def video_file_path_maybe(in_dir_path: str, seq_name: str, file_name: str) -> str | None:

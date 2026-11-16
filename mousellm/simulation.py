@@ -6,8 +6,7 @@ from matplotlib import animation
 from matplotlib.patches import Polygon
 
 from apf.utils import save_animation
-from mousellm.config import ARENA_CENTER_PX, ARENA_SIZE_CM, CM_PER_PX, FPS, keypointnames
-from mousellm.convert_mabe22 import FRAME_SIZE_PX
+from mousellm.config import ARENA_CENTER_CM, ARENA_SIZE_CM, CM_PER_PX, FPS, FRAME_SIZE_PX, keypointnames
 
 # One color per mouse slot
 MOUSE_COLORS = ['tab:red', 'tab:green', 'tab:orange']
@@ -24,8 +23,7 @@ LINES = [[_kp('left_ear'), _kp('right_ear')],
          [_kp('tail_base'), _kp('tail_middle'), _kp('tail_tip')]]
 
 # The bounds of the 512-px video frame the keypoints were in, in cm: (x0, x1, y0, y1)
-FRAME_BOUNDS_CM = np.array([0 - ARENA_CENTER_PX[0], FRAME_SIZE_PX - ARENA_CENTER_PX[0],
-                            0 - ARENA_CENTER_PX[1], FRAME_SIZE_PX - ARENA_CENTER_PX[1]]) * CM_PER_PX
+FRAME_BOUNDS_CM = np.array([-1, 1, -1, 1]) * FRAME_SIZE_PX / 2 * CM_PER_PX
 
 
 def _box(ax, x0, x1, y0, y1, **kwargs):
@@ -57,7 +55,7 @@ def animate_pose(Xkps: dict, burn_in: int = 0, out_file_path_maybe: str | None =
         lw: Line width of the mice's outlines and lines.
         trail_len: Number of past frames of each mouse's center keypoint to draw as a trail.
         arena_bounds_maybe: The arena, (x0, x1, y0, y1) in cm, as mousellm/arena.py estimates it, or None for
-            the typical arena, ARENA_SIZE_CM across about the origin.
+            the median arena, ARENA_SIZE_CM across about ARENA_CENTER_CM.
 
     Returns:
         The animation.
@@ -75,7 +73,8 @@ def animate_pose(Xkps: dict, burn_in: int = 0, out_file_path_maybe: str | None =
     artists = []
     for ax, name in zip(axs, names):
         half = ARENA_SIZE_CM / 2
-        arena_bounds = (-half, half, -half, half) if arena_bounds_maybe is None else arena_bounds_maybe
+        cx, cy = ARENA_CENTER_CM
+        arena_bounds = (cx - half, cx + half, cy - half, cy + half) if arena_bounds_maybe is None else arena_bounds_maybe
         _box(ax, *arena_bounds, color=[.6, .6, .6], lw=1)
         _box(ax, x0, x1, y0, y1, color='k', lw=1)
         ax.set_xlim(view_center[0] - view_half_size[0], view_center[0] + view_half_size[0])
