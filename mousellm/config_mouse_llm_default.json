@@ -70,7 +70,7 @@
     "discretize_nbins": 25,
     "p_add_input_noise": 0,
     "input_noise_sigma": null,
-    "_comment_all_discretize_epsilon": "smallest bin for each label, related to tracking noise, in cm/frame and rad/frame: about the still-mouse noise in a center step, 0.27 px or 0.037 cm per frame (step0/tracking_noise.py in the project dir)",
+    "_comment_all_discretize_epsilon": "smallest bin for each label, related to tracking noise, in cm/frame and rad/frame: about the still-mouse noise in a center step, 0.27 px or 0.037 cm per frame (data-checks/tracking_noise.py in the project dir)",
     "all_discretize_epsilon": [0.03, 0.03, 0.01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     "_comment_discretize_epsilon": "smallest bin for discretized outputs. if null, will use all_discretize_epsilon",
     "discretize_epsilon": null,
