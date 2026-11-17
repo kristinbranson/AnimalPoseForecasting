@@ -45,7 +45,7 @@ def test_clean_checkout_gives_its_commit():
         head = subprocess.run(['git', '-C', repo_dir_path, 'rev-parse', 'HEAD'], check=True, capture_output=True,
                               text=True).stdout.strip()
         version = code_version.code_version()
-        assert version['commit'] == head and not version['uncommitted']
+        assert version['commit'] == head and not version['has_uncommitted_changes']
         assert version['commit_time'][:4].isdigit() and 'T' in version['commit_time']
     in_throwaway_repo(check)
 
@@ -76,8 +76,8 @@ def test_allowed_changes_are_recorded():
             f.write('y = 1\n')
         with open(os.path.join(repo_dir_path, 'big.bin'), 'wb') as f:
             f.write(b'\0' * 10)
-        version = code_version.code_version(allow_uncommitted=True)
-        assert version['uncommitted']
+        version = code_version.code_version(allow_uncommitted_changes=True)
+        assert version['has_uncommitted_changes']
         assert '-x = 1' in version['diff'] and '+x = 2' in version['diff']
         assert version['untracked_files'] == {'b.py': 'y = 1\n', 'big.bin': None}
         assert 'uncommitted changes to 3 file(s)' in code_version.describe_code_version(version)

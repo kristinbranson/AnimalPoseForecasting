@@ -6,7 +6,7 @@ Submits, from the current dir, the equivalent of:
     ssh -A login2 bsub -n <slot count> -gpu "num=<GPU count>" -q <queue> -W <run limit> -P branson -cwd <current dir> \\
         -oo <out dir>/out.txt -eo <out dir>/err.txt \\
         <python> -m flyllm.batch_train <config file path> --outdir <out dir> \\
-            [--overrideconfig <overrides>] [--debug-uselessdata] [--allow-uncommitted]
+            [--overrideconfig <overrides>] [--debug-uselessdata] [--allow-uncommitted-changes]
 
 where <out dir> is given by the --outdir option (default: <current dir>/runs/<config name>_batch_train_run_NN),
 <queue> by the -q option (default: gpu_a100), <slot count> and <GPU count> by the -n and --gpus options (default:
@@ -21,8 +21,8 @@ affect its speed.  <python> is the running Python, so the job runs in the
 same environment.
 
 Refuses to submit if this checkout has uncommitted changes, since flyllm.batch_train would then refuse to train
-(and checks again when the job starts, in case the code has changed since), unless --allow-uncommitted is given,
-which is passed on to it.
+(and checks again when the job starts, in case the code has changed since), unless --allow-uncommitted-changes is
+given, which is passed on to it.
 
 Everything the run writes goes in <out dir>: the job's logs, models in <out dir>/models, and figures in
 <out dir>/figs.  <out dir> must not already exist, so that runs can't overwrite each other's files.
@@ -76,7 +76,7 @@ def main():
                         help='JSON dict of config entries to override, e.g. \'{"num_train_epochs": 25}\'')
     parser.add_argument('--debug-uselessdata', action='store_true',
                         help='train on a small subset of the data, for quick debugging runs')
-    parser.add_argument('--allow-uncommitted', action='store_true',
+    parser.add_argument('--allow-uncommitted-changes', action='store_true',
                         help='train even if the code has uncommitted changes, which are then saved with the models')
     args = parser.parse_args()
     if args.overrideconfig is not None and not isinstance(args.overrideconfig, dict):
@@ -91,7 +91,7 @@ def main():
     if out_dir_path.exists():
         parser.error(f'output dir {out_dir_path} already exists')
     try:
-        code_version(allow_uncommitted=args.allow_uncommitted)
+        code_version(allow_uncommitted_changes=args.allow_uncommitted_changes)
     except UncommittedChangesError as e:
         parser.error(str(e))
 
@@ -114,8 +114,8 @@ def main():
     ]
     if args.debug_uselessdata:
         bsub_args.append('--debug-uselessdata')
-    if args.allow_uncommitted:
-        bsub_args.append('--allow-uncommitted')
+    if args.allow_uncommitted_changes:
+        bsub_args.append('--allow-uncommitted-changes')
     if args.overrideconfig:
         bsub_args += ['--overrideconfig', json.dumps(args.overrideconfig)]
     print(f'Output dir: {out_dir_path}')

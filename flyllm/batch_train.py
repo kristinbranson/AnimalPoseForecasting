@@ -14,9 +14,9 @@ config['train_gpu_count'], and when restarting from a model file trained on a di
 with a different rule, the restored learning rate is rescaled to what this run's rule and GPU count give.
 Only rank 0 makes the figures and saves models.
 
-It refuses to train if this checkout has uncommitted changes, unless --allow-uncommitted is given, and saves the
-version of the code, in the models' configs, as config['code_version'] (apf.code_version.code_version): the commit
-it's at and that commit's time, and, with uncommitted changes, whether there were any and what they were.
+It refuses to train if this checkout has uncommitted changes, unless --allow-uncommitted-changes is given, and saves
+the version of the code, in the models' configs, as config['code_version'] (apf.code_version.code_version): the
+commit it's at and that commit's time, and, with uncommitted changes, whether there were any and what they were.
 
 Run it as python -m flyllm.batch_train.
 """
@@ -191,7 +191,7 @@ def main():
     parser.add_argument('--debug-uselessdata', action='store_true',
                         help='train on a small subset of the data, for quick debugging runs')
     parser.add_argument('--outdir', default='.', help='directory for the models and figs dirs (default: .)')
-    parser.add_argument('--allow-uncommitted', action='store_true',
+    parser.add_argument('--allow-uncommitted-changes', action='store_true',
                         help='train even if the code has uncommitted changes, which are then saved with the models')
     parser.add_argument('--gpus', type=int, default=None,
                         help='number of GPUs to train on (default: all the GPUs CUDA can see)')
@@ -201,7 +201,7 @@ def main():
 
     logging.basicConfig(level=logging.INFO)
     # before anything slow, and raises if there are uncommitted changes
-    version = code_version(allow_uncommitted=args.allow_uncommitted)
+    version = code_version(allow_uncommitted_changes=args.allow_uncommitted_changes)
     LOG.info(f'Code at {describe_code_version(version)}')
     out_dir_path = os.path.abspath(args.outdir)
     out_model_dir_path = os.path.join(out_dir_path, 'models')

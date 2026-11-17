@@ -36,7 +36,7 @@ def _untracked_file_contents_maybe(file_name: str) -> str | None:
         return None
 
 
-def code_version(allow_uncommitted: bool = False) -> dict:
+def code_version(allow_uncommitted_changes: bool = False) -> dict:
     """ The version of this checkout's code, enough to rebuild it: check out 'commit', git apply 'diff', and write
     out 'untracked_files'.
 
@@ -44,25 +44,25 @@ def code_version(allow_uncommitted: bool = False) -> dict:
         dict with
             commit: the hash of the commit the checkout is at.
             commit_time: that commit's time, ISO 8601.
-            uncommitted: whether the checkout has changes that aren't committed, including untracked files that
-                aren't ignored.
-        and, if uncommitted,
+            has_uncommitted_changes: whether the checkout has changes that aren't committed, including untracked
+                files that aren't ignored.
+        and, if has_uncommitted_changes,
             status: the output of git status --porcelain.
             diff: the output of git diff HEAD, the changes to tracked files, staged or not.
             untracked_files: {file name, relative to the repo: its contents, or None if it's over
                 MAX_UNTRACKED_FILE_SIZE bytes or isn't text}.
 
     Raises:
-        UncommittedChangesError: if there are uncommitted changes and not allow_uncommitted.
+        UncommittedChangesError: if there are uncommitted changes and not allow_uncommitted_changes.
         RuntimeError: if git can't tell.
     """
     try:
         status = _git('status', '--porcelain')
         version = {'commit': _git('rev-parse', 'HEAD').strip(),
                    'commit_time': _git('show', '-s', '--format=%cI', 'HEAD').strip(),
-                   'uncommitted': bool(status)}
+                   'has_uncommitted_changes': bool(status)}
         if status:
-            if not allow_uncommitted:
+            if not allow_uncommitted_changes:
                 raise UncommittedChangesError(
                     f'{REPO_DIR_PATH} has uncommitted changes, so a model trained now would not record the code it '
                     f'was trained with.  Commit them first, or allow them explicitly:\n{status}')
@@ -78,6 +78,6 @@ def code_version(allow_uncommitted: bool = False) -> dict:
 def describe_code_version(version: dict) -> str:
     """ A one-line description of a code_version, for logs. """
     s = f"commit {version['commit']}, of {version['commit_time']}"
-    if version['uncommitted']:
+    if version['has_uncommitted_changes']:
         s += f", with uncommitted changes to {len(version['status'].splitlines())} file(s)"
     return s
