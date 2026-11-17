@@ -7,8 +7,10 @@ of three mice, 1800 frames at 30 Hz, as (frame, mouse, keypoint, (y, x)) int pix
 in a 512 x 512 frame in the files with videos, and in the camera's 800 x 800 frame in the pose-only
 files (IN_FILE_FRAME_SIZES_PX).  Missing keypoints are (0, 0).
 
-This pools the sequences of all four files, drops all-zero and duplicate sequences, and splits the rest
-at random into train, val and test sets, by sequence.  For each sequence and mouse, it:
+This pools the sequences of all four files and drops all-zero and duplicate sequences.  It splits those
+from the files given by --split-files, by default the two pose-only files (DEFAULT_SPLIT_FILE_NAMES), at
+random into train, val and test sets, by sequence.  The others are only used to estimate the arenas.  For
+each sequence and mouse, it:
 - marks keypoints that are (0, 0) or outside the frame as missing,
 - scales the pose-only files' pixels to the 512 x 512 frame,
 - fills gaps of up to MAX_GAP_N_FRAMES frames in each keypoint by linear interpolation, if the keypoint
@@ -18,7 +20,8 @@ at random into train, val and test sets, by sequence.  For each sequence and mou
   than a mouse runs, so is an identity swap or a tracking error, or where the heading, from the tail base
   to the neck, turns more than MAX_TURN_RAD in one frame, which is a pose flip, and
 - converts pixels to cm about the frame's center (mousellm.config).
-Then it estimates each sequence's arena, the axis-aligned box of its walls (mousellm/arena.py).
+Then it estimates each sequence's arena, the axis-aligned box of its walls (mousellm/arena.py), from all
+the sequences, since the camera placements are found from the videos.
 
 The output files have the fields apf.data.load_raw_npz_data reads.  'ids' numbers each track: a run of
 tracked frames of one mouse with no jumps.  It is -1 for untracked frames, whose keypoints are NaN.
@@ -43,11 +46,13 @@ from mousellm.config import CM_PER_PX, FRAME_SIZE_PX, ORIGIN_PX, keypointnames, 
 LOG = logging.getLogger('mousellm.convert_mabe22')
 
 DEFAULT_IN_DIR_PATH = '/nrs/branson/AnimalPoseForecasting/mabe22-mouse'
-DEFAULT_OUT_DIR_PATH = '/nrs/branson/AnimalPoseForecasting/mabe22-mouse-apf-ready-v2'
+DEFAULT_OUT_DIR_PATH = '/nrs/branson/AnimalPoseForecasting/mabe22-mouse-apf-ready-v3'
 # The size of the frame each file's keypoint pixels are in
 IN_FILE_FRAME_SIZES_PX = {'mouse_user_train.npy': 512, 'mouse_submission_keypoints.npy': 512,
                           'mouse_triplet_train.npy': 800, 'mouse_triplet_test.npy': 800}
 IN_FILE_NAMES = list(IN_FILE_FRAME_SIZES_PX)
+# The files whose sequences are split into train, val and test by default: the pose-only ones
+DEFAULT_SPLIT_FILE_NAMES = ['mouse_triplet_train.npy', 'mouse_triplet_test.npy']
 SPLIT_NAMES = ['train', 'val', 'test']
 SPLIT_FRACTIONS = [.8, .1, .1]
 
@@ -195,16 +200,25 @@ def main():
     parser.add_argument('--indir', default=DEFAULT_IN_DIR_PATH, help=f'MABe22 mouse data dir (default: {DEFAULT_IN_DIR_PATH})')
     parser.add_argument('--outdir', default=DEFAULT_OUT_DIR_PATH, help=f'output dir (default: {DEFAULT_OUT_DIR_PATH})')
     parser.add_argument('--seed', type=int, default=0, help='random seed for the split (default: 0)')
+    parser.add_argument('--split-files', nargs='+', choices=IN_FILE_NAMES, default=DEFAULT_SPLIT_FILE_NAMES,
+                        help='the MABe22 files whose sequences are split into train, val and test '
+                             f'(default: {" ".join(DEFAULT_SPLIT_FILE_NAMES)})')
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
     seqs = load_sequences(args.indir)
     os.makedirs(args.outdir, exist_ok=True)
-    manifest = {'seed': args.seed, 'max_gap_n_frames': MAX_GAP_N_FRAMES, 'max_step_px': MAX_STEP_PX,
-                'max_turn_rad': MAX_TURN_RAD,
+    manifest = {'seed': args.seed, 'split_file_names': args.split_files, 'max_gap_n_frames': MAX_GAP_N_FRAMES,
+                'max_step_px': MAX_STEP_PX, 'max_turn_rad': MAX_TURN_RAD,
                 'cm_per_px': CM_PER_PX, 'origin_px': ORIGIN_PX.tolist(), 'splits': {}}
-    split_idxs = split_sequences(len(seqs), args.seed)
+    issplit = np.array([file_name in args.split_files for _, file_name, _ in seqs])
+    split_pool_idx = np.nonzero(issplit)[0]
+    split_idxs = [split_pool_idx[idx] for idx in split_sequences(len(split_pool_idx), args.seed)]
+    LOG.info(f'Splitting the {len(split_pool_idx)} sequences of {", ".join(args.split_files)}')
     converted = [convert_split([seqs[i] for i in idx]) for idx in split_idxs]
+    # the other sequences are converted only for their keypoint histograms, for the arenas
+    other_idx = np.nonzero(~issplit)[0]
+    other_hists = convert_split([seqs[i] for i in other_idx])[2] if len(other_idx) > 0 else None
 
     # each sequence's arena, from its video's floor where it has one, and all the sequences' keypoints
     LOG.info('Measuring the arena floor in the videos...')
@@ -216,6 +230,8 @@ def main():
     hists = np.zeros((len(seqs),) + converted[0][2].shape[1:], dtype=np.int64)
     for idx, (_, _, split_hists) in zip(split_idxs, converted):
         hists[idx] = split_hists
+    if other_hists is not None:
+        hists[other_idx] = other_hists
     arenas = arena.estimate_arena_bounds(hists, video_bounds)
     manifest['arena'] = {'cv_accuracy': arenas['cv_accuracy'], 'cv_frac_wall_off_2cm': arenas['cv_frac_wall_off_2cm'],
                          'placement_bounds': arenas['placement_bounds'].round(3).tolist()}
