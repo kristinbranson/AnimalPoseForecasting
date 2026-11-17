@@ -14,8 +14,9 @@ config['train_gpu_count'], and when restarting from a model file trained on a di
 with a different rule, the restored learning rate is rescaled to what this run's rule and GPU count give.
 Only rank 0 makes the figures and saves models.
 
-It refuses to train if this checkout has uncommitted changes, and saves the commit it's at, and that commit's
-time, in the models' configs, as config['code_version'] (apf.code_version.committed_code_version).
+It refuses to train if this checkout has uncommitted changes, unless --allow-uncommitted is given, and saves the
+version of the code, in the models' configs, as config['code_version'] (apf.code_version.code_version): the commit
+it's at and that commit's time, and, with uncommitted changes, whether there were any and what they were.
 
 Run it as python -m flyllm.batch_train.
 """
@@ -26,7 +27,7 @@ import logging
 import math
 import os
 
-from apf.code_version import committed_code_version
+from apf.code_version import code_version, describe_code_version
 from apf.lsf import limit_threads_to_lsf_slots
 
 limit_threads_to_lsf_slots()
@@ -190,6 +191,8 @@ def main():
     parser.add_argument('--debug-uselessdata', action='store_true',
                         help='train on a small subset of the data, for quick debugging runs')
     parser.add_argument('--outdir', default='.', help='directory for the models and figs dirs (default: .)')
+    parser.add_argument('--allow-uncommitted', action='store_true',
+                        help='train even if the code has uncommitted changes, which are then saved with the models')
     parser.add_argument('--gpus', type=int, default=None,
                         help='number of GPUs to train on (default: all the GPUs CUDA can see)')
     args = parser.parse_args()
@@ -198,8 +201,8 @@ def main():
 
     logging.basicConfig(level=logging.INFO)
     # before anything slow, and raises if there are uncommitted changes
-    code_version = committed_code_version()
-    LOG.info(f"Code at commit {code_version['commit']}, of {code_version['commit_time']}")
+    version = code_version(allow_uncommitted=args.allow_uncommitted)
+    LOG.info(f'Code at {describe_code_version(version)}')
     out_dir_path = os.path.abspath(args.outdir)
     out_model_dir_path = os.path.join(out_dir_path, 'models')
     out_fig_dir_path = os.path.join(out_dir_path, 'figs')
@@ -214,7 +217,7 @@ def main():
     if not res['success']:
         raise RuntimeError('init_flyllm failed')
     # saved with the models, via model.config
-    res['config']['code_version'] = code_version
+    res['config']['code_version'] = version
     gpu_count = args.gpus if args.gpus is not None else torch.cuda.device_count()
     LOG.info(f'Training on {gpu_count} GPU(s), with an effective batch size of '
              f'{gpu_count * res["config"]["batch_size"]}')

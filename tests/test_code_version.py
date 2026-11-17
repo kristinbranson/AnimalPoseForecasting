@@ -34,7 +34,7 @@ def in_throwaway_repo(check):
 
 def raises_uncommitted(repo_dir_path):
     try:
-        code_version.committed_code_version()
+        code_version.code_version()
     except code_version.UncommittedChangesError:
         return True
     return False
@@ -44,8 +44,8 @@ def test_clean_checkout_gives_its_commit():
     def check(repo_dir_path):
         head = subprocess.run(['git', '-C', repo_dir_path, 'rev-parse', 'HEAD'], check=True, capture_output=True,
                               text=True).stdout.strip()
-        version = code_version.committed_code_version()
-        assert version['commit'] == head
+        version = code_version.code_version()
+        assert version['commit'] == head and not version['uncommitted']
         assert version['commit_time'][:4].isdigit() and 'T' in version['commit_time']
     in_throwaway_repo(check)
 
@@ -63,6 +63,24 @@ def test_untracked_file_is_refused():
         with open(os.path.join(repo_dir_path, 'b.py'), 'w') as f:
             f.write('y = 1\n')
         assert raises_uncommitted(repo_dir_path)
+    in_throwaway_repo(check)
+
+
+def test_allowed_changes_are_recorded():
+    """ With uncommitted changes allowed, the version records the diff of the tracked files and the contents of
+    the untracked ones, enough to rebuild the checkout. """
+    def check(repo_dir_path):
+        with open(os.path.join(repo_dir_path, 'a.py'), 'w') as f:
+            f.write('x = 2\n')
+        with open(os.path.join(repo_dir_path, 'b.py'), 'w') as f:
+            f.write('y = 1\n')
+        with open(os.path.join(repo_dir_path, 'big.bin'), 'wb') as f:
+            f.write(b'\0' * 10)
+        version = code_version.code_version(allow_uncommitted=True)
+        assert version['uncommitted']
+        assert '-x = 1' in version['diff'] and '+x = 2' in version['diff']
+        assert version['untracked_files'] == {'b.py': 'y = 1\n', 'big.bin': None}
+        assert 'uncommitted changes to 3 file(s)' in code_version.describe_code_version(version)
     in_throwaway_repo(check)
 
 
