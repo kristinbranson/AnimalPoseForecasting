@@ -1,13 +1,35 @@
 {
-    "_comment": "Body-centric keypoint model of the MABe22 mouse triplets, with vision of the arena walls, trained only on the pose-only MABe22 files (mouse_triplet_train.npy and mouse_triplet_test.npy), which have no videos, with a d_model of 256 instead of 2048.  The same as config_mouse_llm_bodycentric_wallvision_20261116.json but for those, and its bin edges.  Settings not here are in mousellm/config_mouse_llm_default.json.",
+    "_comment": "Body-centric keypoint model of the MABe22 mouse triplets, with vision of the arena walls, trained only on the pose-only MABe22 files (mouse_triplet_train.npy and mouse_triplet_test.npy), which have no videos, with a d_model of 256 instead of 2048.  The same as config_mouse_llm_bodycentric_wallvision_20261116.json but for those, and its bin edges, from the pose-only data.  Settings not here are in mousellm/config_mouse_llm_default.json.",
 
     "_comment_datadir": "made by python -m mousellm.convert_mabe22, which splits only the pose-only files, and estimates each sequence's arena from all of them",
     "datadir": "/nrs/branson/AnimalPoseForecasting/mabe22-mouse-apf-ready-v3",
 
     "animal": "mouse",
 
-    "_comment_bin_edges_absolute": "to be filled in from optimal binning of the train split (python -m flyllm.launch_optimal_binning)",
-    "bin_edges_absolute": {},
+    "_comment_bin_edges_absolute": "from optimal binning of the train split, runs/2026-11-16-mouse-binning-pose-only-dmodel-256/mousellm_binning_clm_all_20261117T004645 (LSF job 155422006)",
+    "bin_edges_absolute": {
+	"0": [-4.09093809e+00, -3.74630833e+00, -2.43541983e+00, -1.90105959e+00,
+	    -1.55452555e+00, -1.15434628e+00, -8.27710440e-01, -6.39236290e-01,
+	    -4.49198530e-01, -3.20289750e-01, -1.97385100e-01, -1.25713390e-01,
+	    -3.70614900e-02,  4.43667000e-03,  1.30661320e-01,  2.79114340e-01,
+	     4.52056810e-01,  6.42606200e-01,  8.12088600e-01,  1.06777587e+00,
+	     1.34211093e+00,  1.58828804e+00,  2.02515155e+00,  2.56170297e+00,
+	     3.96552730e+00,  4.08200407e+00],
+	"1": [-3.94713950e+00, -3.74673604e+00, -1.61391266e+00, -1.00178919e+00,
+	    -7.23966676e-01, -5.58269411e-01, -4.60584242e-01, -3.66291674e-01,
+	    -2.78365264e-01, -1.96384427e-01, -1.33015594e-01, -8.95581186e-02,
+	    -3.77834655e-02,  2.31003291e-03,  9.12897036e-02,  1.39495420e-01,
+	     1.98952887e-01,  2.79616070e-01,  3.72173504e-01,  4.71784478e-01,
+	     6.14417401e-01,  7.99336631e-01,  1.27573608e+00,  2.02802556e+00,
+	     3.74673604e+00,  4.04056835e+00],
+	"2": [-1.57079935e+00, -1.55488303e+00, -8.49003610e-01, -4.65399940e-01,
+	    -2.90722850e-01, -2.04137690e-01, -1.42639600e-01, -1.04543670e-01,
+	    -7.71794400e-02, -5.55126600e-02, -4.03499400e-02, -2.57196300e-02,
+	    -8.22162000e-03,  5.18365000e-03,  2.60287700e-02,  3.90012200e-02,
+	     5.38107500e-02,  7.41081300e-02,  1.00441540e-01,  1.36528130e-01,
+	     1.97454790e-01,  2.89855870e-01,  4.87921660e-01,  8.52813240e-01,
+	     1.55446537e+00,  1.57080412e+00]
+    },
 
     "_comment_d_model": "embedding dimension, smaller than the default 2048",
     "d_model": 256,
