@@ -1,0 +1,33 @@
+{
+    "_comment": "Body-centric keypoint model of the MABe22 mouse triplets, with vision of the arena walls, trained only on the pose-only MABe22 files (mouse_triplet_train.npy and mouse_triplet_test.npy), which have no videos, with a d_model of 256 instead of 2048.  The same as config_mouse_llm_bodycentric_wallvision_20261116.json but for those, and its bin edges.  Settings not here are in mousellm/config_mouse_llm_default.json.",
+
+    "_comment_datadir": "made by python -m mousellm.convert_mabe22, which splits only the pose-only files, and estimates each sequence's arena from all of them",
+    "datadir": "/nrs/branson/AnimalPoseForecasting/mabe22-mouse-apf-ready-v3",
+
+    "animal": "mouse",
+
+    "_comment_bin_edges_absolute": "to be filled in from optimal binning of the train split (python -m flyllm.launch_optimal_binning)",
+    "bin_edges_absolute": {},
+
+    "_comment_d_model": "embedding dimension, smaller than the default 2048",
+    "d_model": 256,
+
+    "_comment_niterplot": "no debug plots during training, which slow it down",
+    "niterplot": 1e100,
+
+    "_comment_obs_embedding": "wall vision is embedded as the other mice's vision is",
+    "obs_embedding_types": {
+        "wall_vision": "conv2d"
+    },
+    "obs_embedding_params": {
+        "wall_vision": {
+            "channels": [
+                8,
+                16,
+                32
+            ]
+        }
+    },
+
+    "model_nickname": "bodycentric_wallvision_poseonly_dmodel256_20261116"
+}
