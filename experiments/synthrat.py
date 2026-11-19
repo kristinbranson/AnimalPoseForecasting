@@ -707,8 +707,15 @@ def simulate(
     agent_ids: list[int] | None = None,
     start_frame: int | None = None,
     progress_bar: bool = True,
+    n_samples: int = 1,
 ) -> tuple[np.ndarray, np.ndarray]:
     """ Simulates an agent given model and some initialization.
+
+    Each simulated agent is repeated `n_samples` times along the batch dimension, so one
+    model forward pass per frame draws `n_samples` independent futures for every agent:
+    the velocity is sampled from the model's predicted distribution, so the repeats
+    diverge. Sampling draws on both the numpy and torch global generators
+    (apf.dataset.sample_discrete_labels), so seed both to reproduce a set of futures.
 
     Args:
         dataset: Dataset that defines which operations need to be applied to the data, also used for burn-in.
@@ -723,10 +730,14 @@ def simulate(
         start_frame: First frame of the burn-in. The returned tracks cover frames
             [start_frame, start_frame + track_len); their first burn_in frames are real data, and
             prediction starts at frame start_frame + burn_in.
+        n_samples: Number of independent futures to draw per simulated agent.
 
     Returns:
-        gt_track: ground truth 2d track at each frame. Used for first burn_in frames.
-        pred_track: 2d track at each frame based on open loop simulation.
+        gt_track: (len(agent_ids) * n_samples, track_len, 3) ground truth poses. Rows are
+            agent-major: row i belongs to agent agent_ids[i // n_samples]. Only the first
+            burn_in frames are used by the simulation.
+        pred_track: same shape and row order. Frames [0, burn_in) equal gt_track; the rest
+            are simulated, and stay NaN after a NaN prediction aborts a run.
     """
     
     if burn_in is None:
@@ -739,7 +750,10 @@ def simulate(
     if agent_ids is None:
         n_agents = pose.array.shape[0]
         agent_ids = np.arange(n_agents)
-    n_sim_agents = len(agent_ids)
+    # One row per future: agent-major, so rows [i*n_samples, (i+1)*n_samples) are agent i's.
+    agent_ids = np.asarray(agent_ids)
+    row_agent_ids = np.repeat(agent_ids, n_samples)                 # (n_rows,)
+    n_rows = len(row_agent_ids)
 
     # Extract ground truth
     gt_input = []
@@ -747,19 +761,19 @@ def simulate(
         # Get data input chunk for this agent
         gt_chunk = dataset.get_chunk(start_frame=start_frame, duration=track_len, agent_id=agent_idx)
         gt_input.append(gt_chunk['input'])
-    gt_input = np.array(gt_input)
-    gt_pose = pose.array[:, start_frame:start_frame + track_len]
+    gt_input = np.repeat(np.array(gt_input), n_samples, axis=0)     # (n_rows, track_len, n_features)
+    gt_pose = pose.array[row_agent_ids, start_frame:start_frame + track_len]  # (n_rows, track_len, 3)
 
     # Initialize model input
     device = next(model.parameters()).device
-    model_input = torch.full((n_sim_agents, track_len, gt_input.shape[-1]),torch.nan)
+    model_input = torch.full((n_rows, track_len, gt_input.shape[-1]),torch.nan)
     curr_frame = burn_in
     model_input[:, :curr_frame, :] = torch.from_numpy(gt_input[:, :curr_frame])
     model_input = model_input.to(device)
 
-    # Initialize tracks (set the future to nan for all agents to be simulated)
+    # Initialize tracks (set the future to nan; every row is simulated)
     pred_pose = copy.deepcopy(gt_pose)
-    pred_pose[agent_ids, curr_frame + 1:] = np.nan
+    pred_pose[:, curr_frame + 1:] = np.nan
 
     if progress_bar:
         pbar = tqdm.trange(curr_frame, track_len, desc='Simulating')
@@ -792,11 +806,11 @@ def simulate(
         velocity =  apf.dataset.apply_inverse_operations(proc_velocity, preproc_opers)
 
         # Apply velocity to current pose
-        curr_pose = pred_pose[agent_ids, curr_frame - 1]
+        curr_pose = pred_pose[:, curr_frame - 1]                       # (n_rows, 3)
         velocity_op =  apf.dataset.get_operation(velocity_operations, 'globalvelocity')
         velocity = np.concatenate([velocity, np.zeros_like(velocity)], axis=1)
-        new_pose = velocity_op.invert(velocity, x0=curr_pose)[:, -1, :]
-        pred_pose[agent_ids, curr_frame] = new_pose
+        new_pose = velocity_op.invert(velocity, x0=curr_pose)[:, -1, :]  # (n_rows, 3)
+        pred_pose[:, curr_frame] = new_pose
 
         if np.isnan(new_pose).sum() > 0:
             print(f"Predicted pose contains a NaN, aborting at frame {curr_frame}.")
@@ -808,7 +822,7 @@ def simulate(
 
         # Assemble inputs and apply the same preproc operations to the data as the training data
         inputs = {'velocity': velocity[:, :1, :],
-                  'sensory': sensory[agent_ids]}
+                  'sensory': sensory}
         inputs_proc = {}
         preproc_operations = apf.dataset.get_post_operations(dataset.inputs['velocity'].operations, 'roll')
         inputs_proc['velocity'] = apf.dataset.apply_operations(inputs['velocity'], preproc_operations)
