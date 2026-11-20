@@ -17,7 +17,7 @@
 # %% [markdown]
 # # Same-start divergence: model futures vs. RatInABox futures
 #
-# For each val episode, `synthrat/samestart_rollouts.py` took the same 16-frame
+# For each val episode, `synthrat/scripts/samestart_rollouts.py` took the same 16-frame
 # burn-in and drew K futures from the trained model and 2K futures from the
 # RatInABox policy. Here we measure how far the model's distribution of futures
 # is from RatInABox's, at several horizons, with three comparisons per episode
@@ -71,7 +71,7 @@ else:
 
 # %%
 SYNTHRAT_DIR = synthrat.__path__[0]
-# Output folder of synthrat/samestart_rollouts.py
+# Output folder of synthrat/scripts/samestart_rollouts.py
 ROLLOUT_DIR = os.path.join(
     SYNTHRAT_DIR, 'data',
     'synthratdefault_20260430T003318_bestepoch100_ratinabox_rl_valdata_20260423_samestart_K20_H80')

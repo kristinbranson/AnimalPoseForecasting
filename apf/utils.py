@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import inspect
 from typing import Callable
+import logging
 import matplotlib
 import matplotlib.pyplot as plt
 import tqdm
@@ -10,6 +11,8 @@ import h5py
 import scipy.io
 import gc
 import time
+
+LOG = logging.getLogger(__name__)
 
 def modrange(x, l, u):
     return np.mod(x - l, u - l) + l
@@ -445,9 +448,51 @@ def save_animation(ani, filename, writer=None, codec='h264', bitrate=None, fps=3
         progress_callback=progress_callback)
     progress_bar.close()
     
-def get_cuda_device():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    return device
+def get_cuda_device(required_bytes: int | None = None, requested: str = 'auto') -> torch.device:
+    """Choose a torch device, optionally requiring enough free GPU memory.
+
+    Args:
+        required_bytes: GPU memory the caller needs, in bytes, for instance twice a model's
+            parameter bytes plus a margin for activations. None skips the check and takes CUDA
+            whenever it is available, which is what a caller that cannot estimate its own
+            footprint wants, such as one choosing a device before building its model.
+        requested: 'auto' takes CUDA when it is usable and has required_bytes free and falls
+            back to CPU otherwise without raising; 'cpu' always returns CPU; 'cuda' raises
+            rather than falling back, so a job meant for a GPU node does not run for hours on
+            CPU instead.
+
+    Returns:
+        A torch.device for CUDA or CPU. The reason for the choice is logged: at INFO when a
+        device is taken, at WARNING when CUDA is passed over, since that one costs the caller
+        a lot of time and is worth seeing without turning on INFO.
+
+    Raises:
+        RuntimeError: if requested is 'cuda' and CUDA is unusable or short of memory.
+    """
+    if requested == 'cpu':
+        LOG.info('Using CPU: cpu requested')
+        return torch.device('cpu')
+    try:
+        if not torch.cuda.is_available():
+            reason = 'torch.cuda.is_available() is False'
+        else:
+            name = torch.cuda.get_device_name()
+            if required_bytes is None:
+                LOG.info(f'Using CUDA: {name}, no memory requirement given')
+                return torch.device('cuda')
+            free_bytes, total_bytes = torch.cuda.mem_get_info()
+            if free_bytes >= required_bytes:
+                LOG.info(f'Using CUDA: {name}, {free_bytes / 1e9:.1f} GB free of '
+                         f'{total_bytes / 1e9:.1f} GB, need {required_bytes / 1e9:.1f} GB')
+                return torch.device('cuda')
+            reason = (f'{name} has only {free_bytes / 1e9:.1f} GB free, '
+                      f'need {required_bytes / 1e9:.1f} GB')
+    except Exception as error:  # e.g. a driver and library version mismatch
+        reason = f'CUDA failed to initialize: {error!r}'
+    if requested == 'cuda':
+        raise RuntimeError(f'CUDA requested but unusable: {reason}')
+    LOG.warning(f'Falling back to CPU: {reason}')
+    return torch.device('cpu')
 
 def matstruct_to_dict(mat):
     """

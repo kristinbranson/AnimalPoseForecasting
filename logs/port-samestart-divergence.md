@@ -10,16 +10,23 @@ Five files came over. Two are new library-level changes to tracked files; the re
 | file | what it is |
 | --- | --- |
 | `synthrat/trajectory_divergence.py` | the divergence metrics |
-| `synthrat/samestart_rollouts.py` | draws the futures, one pickle per episode |
-| `synthrat/run_samestart_rollouts.sh` | conda + cluster wrapper |
+| `synthrat/scripts/samestart_rollouts.py` | draws the futures, one pickle per episode |
+| `synthrat/scripts/run_samestart_rollouts.sh` | conda + cluster wrapper |
 | `notebooks/evaluate_synthrat.py` | reads the pickles, makes the tables and figures |
 | `tests/synthrat/test_trajectory_divergence.py` | metric checks on hand-built inputs |
+
+The two run-only files went into a new `synthrat/scripts/`, whose `__init__.py` states the
+rule: a module belongs there if nothing imports it. The wrapper is a shell script, which has
+no business in an importable package, and the rollout module is the only one here that is run
+rather than called. `generate_data.py` has a command line interface too, but five files import
+it, so it stays in `synthrat/`.
 
 The functions they called were rewired to main's layout: `compute_velocity`, `load_state`,
 `rehydrate_policy` and `run_policy_from_burn_in` from `synthrat/generate_data.py`,
 `rehydrate_env`/`rehydrate_data` from `synthrat/sensory.py`, `make_dataset_cache_wrapper` and
-`simulate` from `experiments/synthrat.py`. `select_device`, which main does not have, moved
-into `samestart_rollouts.py`, its only caller.
+`simulate` from `experiments/synthrat.py`. The clone's `select_device` folded into
+`apf.utils.get_cuda_device`, which was already the weaker version of the same decision: see
+below.
 
 Because main's `run_policy_from_burn_in` returns exactly `n_frames` of continuation, the
 caller's compensation for the old `n_frames - 1` behaviour — asking for one extra frame and
@@ -52,6 +59,36 @@ converting the recorded head direction into the dataset convention and back out 
 `pose_to_kinematics` reproduces `compute_velocity` to 3.6e-14 on all three components. Mean
 |forward| is 0.0063 m per frame against mean |sideways| 0.0014 m, i.e. forward dominates 4.5:1,
 which is what the unfixed code would have inverted.
+
+## Issue: two functions for choosing a device, the weaker one already in the library
+
+The ported code brought its own `select_device`, which takes a byte budget and picks CUDA only
+if that much is free, raising instead of falling back when CUDA is demanded outright. But
+`apf/utils.py` already had
+
+```python
+def get_cuda_device():
+    return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+```
+
+the same decision without the memory check, called three times in `apf/pose.py`. Keeping both
+would have left a general GPU helper inside a rollout script, where the next person writing a
+cluster job would re-implement it rather than find it.
+
+**Fix**: `get_cuda_device` takes the byte budget as an optional argument and works either way.
+`get_cuda_device()` behaves as before, taking CUDA whenever it is available, which is what a
+caller that cannot estimate its own footprint needs — anything choosing a device before its
+model exists. `get_cuda_device(required_bytes)` adds the free-memory check, and `requested='cuda'`
+raises rather than falling back, so a GPU job fails in seconds instead of running for hours on
+CPU. It returns a device rather than a (device, reason) pair, and logs its reasoning instead: at
+INFO when it takes a device, at WARNING when it passes CUDA over, since that is the case worth
+seeing without turning INFO on. `samestart_rollouts.py` calls it and sets `basicConfig(INFO)` so
+a job log records the margin.
+
+**Not changed**: the four other places that choose a device — `flyllm/prepare.py:107`,
+`notebooks/choose_discretize_bins.py:113`, `notebooks/agent_synthrat.py:94` and `apf/pose.py`'s
+three call sites. All of them pick the device before the model is built, so they have no budget
+to pass and would gain only a log line; `flyllm/prepare.py` already asserts for a missing GPU.
 
 ## Issue: isstart has a different layout on main, so every episode looked zero-length
 

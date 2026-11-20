@@ -32,12 +32,13 @@ worker that is killed leaves its lock behind; rerun once without `--claim`
 afterwards to fill any such gaps, then delete leftover .lock files.
 
 Usage (repo root on PYTHONPATH, env transformer312):
-    python synthrat/samestart_rollouts.py --episode-start 0 --episode-stop 200
-On the Janelia cluster, submit synthrat/run_samestart_rollouts.sh with the
+    python -m synthrat.scripts.samestart_rollouts --episode-start 0 --episode-stop 200
+On the Janelia cluster, submit synthrat/scripts/run_samestart_rollouts.sh with the
 same arguments.
 """
 
 import argparse
+import logging
 import os
 import pickle
 import socket
@@ -53,6 +54,7 @@ import apf.dataset
 import apf.io
 from apf.io import load_model
 from apf.models import initialize_model
+from apf.utils import get_cuda_device
 import experiments.synthrat as synthrat_exp
 
 REPO_ROOT = os.path.dirname(synthrat.__path__[0])
@@ -66,47 +68,6 @@ DEFAULT_MODEL_FILE = os.path.join(REPO_ROOT, 'notebooks', 'synthrat_models',
 GPU_MARGIN_BYTES = int(1e9)
 # Seed offset between episodes for the RatInABox samples; must exceed 2K.
 RATINABOX_SEED_STRIDE = 10000
-
-
-def select_device(required_bytes, requested='auto'):
-    """Choose a torch device for inference without failing on a missing or small GPU.
-
-    Parameters
-    ----------
-    required_bytes : int
-        GPU memory the job needs, in bytes (e.g. 2 x model parameter bytes
-        plus a margin for activations).
-    requested : str
-        'auto': use CUDA if it initializes and has `required_bytes` free,
-            otherwise fall back to CPU. Never raises.
-        'cpu': always CPU.
-        'cuda': CUDA, raising RuntimeError if it is unusable, so a job
-            meant for a GPU node does not silently run for hours on CPU.
-
-    Returns
-    -------
-    device : torch.device
-    reason : str, human-readable explanation of the choice (for logs).
-    """
-    if requested == 'cpu':
-        return torch.device('cpu'), 'cpu requested'
-    try:
-        if not torch.cuda.is_available():
-            reason = 'torch.cuda.is_available() is False'
-        else:
-            free_bytes, total_bytes = torch.cuda.mem_get_info()
-            name = torch.cuda.get_device_name()
-            if free_bytes >= required_bytes:
-                return torch.device('cuda'), (f'{name}: {free_bytes/1e9:.1f} GB free of '
-                                              f'{total_bytes/1e9:.1f} GB, need {required_bytes/1e9:.1f} GB')
-            reason = (f'{name} has only {free_bytes/1e9:.1f} GB free, '
-                      f'need {required_bytes/1e9:.1f} GB')
-    except Exception as error:  # e.g. driver/library version mismatch
-        reason = f'CUDA failed to initialize: {error!r}'
-    if requested == 'cuda':
-        raise RuntimeError(f'CUDA requested but unusable: {reason}')
-    print(f'Falling back to CPU: {reason}', flush=True)
-    return torch.device('cpu'), f'cpu fallback ({reason})'
 
 
 def parse_args():
@@ -301,6 +262,8 @@ def claim_episode(lock_path, out_path):
 
 def main():
     """Load everything, then simulate and save each selected episode."""
+    # INFO so a job log records which device was chosen and with how much room to spare.
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s: %(message)s')
     args = parse_args()
     loaded = load_model_and_data(args.config_file, args.model_file, args.data_file)
     config, dataset, pose = loaded['config'], loaded['dataset'], loaded['pose']
@@ -312,8 +275,8 @@ def main():
 
     model = loaded['model']
     param_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
-    device, reason = select_device(2 * param_bytes + GPU_MARGIN_BYTES, args.device)
-    print(f'model parameters: {param_bytes / 1e9:.2f} GB; device: {device} ({reason})', flush=True)
+    device = get_cuda_device(2 * param_bytes + GPU_MARGIN_BYTES, args.device)
+    print(f'model parameters: {param_bytes / 1e9:.2f} GB; device: {device}', flush=True)
     state = {'model': model.to(device), 'device': device,
              'rows_per_call': args.rows_per_call or args.n_samples}
 
