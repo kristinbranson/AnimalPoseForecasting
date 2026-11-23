@@ -122,7 +122,21 @@ Every other live `torch.load` in the repository already passes `weights_only=Fal
 (`apf/io.py:45`, `apf/io.py:72`, `synthrat/convert_orientation_convention.py:183`), so this one
 was simply missed; any caller in test mode hits it, including `flyllm.prepare.init_config`.
 
-**Fix**: `weights_only=False` with `map_location='cpu'`, since only the config is read here.
+Merging main landed on the same lines from the other side: it had made `weights_only` a
+parameter of `load_model`, `modernize_model_file` and `load_config_from_model_file`, defaulting
+to `True`, where the first two had passed `False`. That default reaches further than this one
+function. `save_model` stores the config and `dataset_params` beside the tensors, so with it
+every caller loading a checkpoint this repository wrote raises — four sites in
+`flyllm/run_flyllm.py`, `flyllm/prepare.py:406`, the restart paths in
+`notebooks/agent_synthrat.py` and `notebooks/choose_discretize_bins.py`, and
+`test_models_from_the_old_orientation_convention_are_refused`, which saves a checkpoint and
+loads it back.
+
+**Fix**: keep main's parameter, restore its default to `False`, and add `map_location='cpu'` in
+`load_config_from_model_file`, since only the config is read there and the tensors would
+otherwise be moved to the GPU. `weights_only=True` is for a checkpoint from an untrusted
+source, whose unpickling is free to execute arbitrary code, so it belongs to the caller that
+knows where the file came from; `flyllm/prepare.py` already threads it through for that.
 
 ## The model had to be converted, and the old numbers do not transfer
 

@@ -145,7 +145,7 @@ def fly_data() -> dict:
     for key in ['datadir', 'intrainfile', 'invalfile']:
         config[key] = str(testing_utils.REPO_DIR / config[key])
     testing_utils.require_file(config['intrainfile'], 'fly test data')
-    (dataset, flyids, track, pose, velocity, sensory, _, isdata, isstart, useoutputmask) = \
+    (dataset, flyids, track, pose, velocity, sensory, _, isdata, isstart, useoutputmask, labels, categories) = \
         fly_experiment.make_dataset(config, 'intrainfile', return_all=True, debug=False)
     scale_perfly = apf.dataset.get_operation(pose.operations, 'pose').scale_perfly
     return dict(config=config, dataset=dataset, flyids=flyids, track=track, pose=pose, velocity=velocity,

@@ -2,6 +2,7 @@ import numpy as np
 import math
 import typing
 import torch
+from apf.data import weighted_sample
 
 def CrossEntropyLossEps(eps=1e-8,**kwargs):
     ce = torch.nn.CrossEntropyLoss(**kwargs)
@@ -59,7 +60,9 @@ def mixed_causal_criterion(tgt, pred, weight_discrete=.5, extraout=False):
     if iscontinuous:
         n = np.prod(tgt_continuous.shape[:-1])
     else:
-        n = np.prod(tgt_discrete.shape[:-2])
+        # Note that tgt_discrete stores bins and features flattened, but pred_discrete does not.
+        # TODO: Modify upstream pred to be flattened or target to not be flattened for consistency?
+        n = np.prod(pred_discrete.shape[:-2])
     assert n > 0, 'no examples in batch'
     if iscontinuous:
         err_continuous = lossfcn_continuous(pred_continuous, tgt_continuous.to(device=pred_continuous.device)) * n
@@ -495,6 +498,143 @@ class myTransformerEncoderLayer(torch.nn.TransformerEncoderLayer):
         self.need_weights = need_weights
 
 
+class FlattenedDecoderSimple(torch.nn.Module):
+    # This assumes all outputs are discretized
+    #
+    # How it works
+    # - from the hidden state (d_model), predict the first feature (n_bins).
+    # - embed the true bin on the first feature into a d_model and add it to the hidden state
+    #   (this is a learned n_bins to d_model mapping)
+    # - combine h and this embedding: either sum or do it in a multiplicative manner
+    # - this means we have to learn n_feat x (n_bins x d_model) * 2 models (encode and decode)
+    def __init__(self, d_model, n_feat, n_bins):
+        super().__init__()
+        self.d_model = d_model
+        self.n_feat = n_feat
+        self.n_bins = n_bins
+
+        self.encoders = torch.nn.ModuleList([torch.nn.Linear(n_bins, d_model) for _ in range(n_feat-1)])
+        self.decoders = torch.nn.ModuleList([torch.nn.Linear(d_model, n_bins) for _ in range(n_feat)])
+
+    def forward(self, hidden, gt=None):
+        """
+        Args:
+            hidden: shape (batch_size, seq_len, n_model)
+            gt: shape (batch_size, seq_len, n_feat * n_bins)
+        """
+        hidden_ = hidden
+        batch_size, seq_len = hidden.shape[:2]
+        out = torch.zeros((batch_size, seq_len, self.n_feat, self.n_bins)).to(hidden.device)
+        if gt is not None:
+            gt_ = gt.reshape(out.shape)
+        for i in range(self.n_feat):
+            out[:, :, i] = self.decoders[i](hidden_)
+            if gt is not None:
+                out_i = gt_[:, :, i]
+            else:
+                # shape of out[i] is (batch_size, seq_len, n_bins)
+                # shape of samples is (batch_size, seq_len), with entries corresponding to the selected bin
+                samples = weighted_sample(torch.softmax(out[:, :, i], dim=-1), 1)[0]
+                cols, rows = np.indices(samples.shape)
+                out_i = torch.zeros_like(out[:, :, i])
+                out_i[cols, rows, samples] = 1
+                out[:, :, i] = out_i
+
+            if i < self.n_feat-1:
+                hidden_ = hidden_ + self.encoders[i](out_i)
+        return out.reshape((batch_size, seq_len, -1))
+
+
+class FlattenedDecoderTransformer(torch.nn.Module):
+    """Autoregressive decoder over the discretized features of one time step.
+
+    For each (batch, time) step, a small transformer runs over a sequence of n_feat tokens.
+    Token k is the sum of:
+      - the embedded value of feature k-1 (each feature has its own encoder; token 0 gets zeros)
+      - feat_pos[k]: which feature this token predicts
+      - ctx: the encoder's hidden state, projected from d_model to d_dec
+    A causal mask lets token k see tokens 0..k only, so the prediction for feature k
+    depends on hidden and on features 0..k-1. Each feature has its own output head.
+
+    forward(hidden, gt)  -> logits (B, T, n_feat * n_bins)    (teacher forcing, for training)
+    forward(hidden)      -> samples (B, T, n_feat * n_bins)   (one-hot, features sampled in order)
+    """
+
+    def __init__(self, d_model, n_feat, n_bins, d_dec=256, nhead=4, nlayers=2, d_hid=512, dropout=0.1, embed_pos=False):
+        super().__init__()
+        self.n_feat, self.n_bins, self.d_dec, self.embed_pos = n_feat, n_bins, d_dec, embed_pos
+
+        self.ctx_proj = torch.nn.Linear(d_model, d_dec)
+        # One encoder per feature whose value is fed forward (the last feature never is).
+        self.value_encoders = torch.nn.ModuleList([torch.nn.Linear(n_bins, d_dec) for _ in range(n_feat - 1)])
+
+        # Feature positional encoding (this can be learned by the value_encoders' bias)
+        if embed_pos:
+            self.feat_pos = torch.nn.Embedding(n_feat, d_dec)
+
+        layer = torch.nn.TransformerEncoderLayer(d_dec, nhead, d_hid, dropout, batch_first=True, norm_first=True)
+        self.transformer = torch.nn.TransformerEncoder(layer, nlayers, enable_nested_tensor=False)
+        self.final_norm = torch.nn.LayerNorm(d_dec)
+        self.heads = torch.nn.ModuleList([torch.nn.Linear(d_dec, n_bins) for _ in range(n_feat)])
+
+        mask = torch.nn.Transformer.generate_square_subsequent_mask(n_feat)
+        self.register_buffer("mask", mask, persistent=False)
+
+    def decode(self, ctx, y):
+        """
+        Args:
+            ctx: (B, T, d_dec)
+            y: (B, T, n_feat, n_bins) one-hot.
+
+        Returns:
+            logits: (B, T, n_feat, n_bins).
+        """
+        B, T = y.shape[:2]
+        # Shift right: token k carries the value of feature k-1; token 0 carries nothing.
+        prev = [torch.zeros(B, T, self.d_dec, device=y.device, dtype=ctx.dtype)]
+        prev += [enc(y[:, :, k]) for k, enc in enumerate(self.value_encoders)]
+        if self.embed_pos:
+            z = torch.stack(prev, dim=2) + self.feat_pos.weight + ctx.unsqueeze(2)    # (B, T, n_feat, d_dec)
+        else:
+            z = torch.stack(prev, dim=2) + ctx.unsqueeze(2)
+        z = self.transformer(z.reshape(B * T, self.n_feat, self.d_dec), mask=self.mask, is_causal=True)
+        z = self.final_norm(z).view(B, T, self.n_feat, self.d_dec)
+        return torch.stack([head(z[:, :, k]) for k, head in enumerate(self.heads)], dim=2)
+
+    def forward(self, hidden, gt=None, temperature=1.0, sample_last_only=True):
+        """
+        Args:
+            hidden: (B, T, d_model) from the temporal encoder.
+            gt: (B, T, n_feat * n_bins) one-hot targets, or None to sample.
+            temperature: sampling temperature; 0 means argmax.
+            sample_last_only: If true, decodes and samples only the last timestep in the input
+        """
+        B, T, _ = hidden.shape
+        if gt is not None:
+            y = gt.reshape(B, T, self.n_feat, self.n_bins)
+            return self.decode(self.ctx_proj(hidden), y).reshape(B, T, -1)
+        else:
+            if sample_last_only:
+                return self.sample(self.ctx_proj(hidden[:, -1:]), temperature).reshape(B, 1, -1)
+            else:
+                return self.sample(self.ctx_proj(hidden), temperature).reshape(B, T, -1)
+
+    @torch.no_grad()
+    def sample(self, ctx, temperature):
+        """Sample features one at a time. For rollouts, pass ctx[:, -1:] to sample only the next step."""
+        B, T, _ = ctx.shape
+        y = ctx.new_zeros(B, T, self.n_feat, self.n_bins)
+        for k in range(self.n_feat):
+            logits = self.decode(ctx, y)[:, :, k]                 # (B, T, n_bins), uses features < k only
+            if temperature == 0:
+                idx = logits.argmax(-1)
+            else:
+                probs = (logits.float() / temperature).softmax(-1)
+                idx = torch.multinomial(probs.reshape(-1, self.n_bins), 1).view(B, T)
+            y[:, :, k] = torch.nn.functional.one_hot(idx, self.n_bins).to(y.dtype)
+        return y
+
+
 class TransformerModel(torch.nn.Module):
 
     def __init__(self, d_input: int, d_output: int,
@@ -503,7 +643,10 @@ class TransformerModel(torch.nn.Module):
                  ntokens_per_timepoint: int = 1,
                  input_idx=None, input_szs=None, embedding_types=None, embedding_params=None,
                  d_output_discrete=None, nbins=None,
-                 dataset_params=None, config=None):
+                 dataset_params=None, config=None,
+                 decoder_type='linear', # 'diffusion', 'flattened', 'flattened_simple
+                 decoder_kwargs=None,
+                 ):
         super().__init__()
         self.model_type = 'Transformer'
 
@@ -530,19 +673,35 @@ class TransformerModel(torch.nn.Module):
 
         # encoder and decoder are currently not tied together, but maybe they should be?
         # fully-connected layer from input size to d_model
-
         if input_idx is not None:
             self.encoder = ObsEmbedding(d_model=d_model, input_idx=input_idx, input_szs=input_szs,
                                         embedding_types=embedding_types, embedding_params=embedding_params)
         else:
             self.encoder = torch.nn.Linear(d_input, d_model)
 
-        # fully-connected layer from d_model to input size
-        self.decoder = torch.nn.Linear(d_model, d_output)
+        self.input_gt_for_training=False
+        if decoder_type == 'linear':
+            # fully-connected layer from d_model to input size
+            self.decoder = torch.nn.Linear(d_model, d_output)
+        elif decoder_type == 'flattened':
+            # This assumes all outputs are discretized
+            # .forward requires ground truth output at train time
+            if decoder_kwargs == None:
+                decoder_kwargs = {}
+            self.decoder = FlattenedDecoderTransformer(d_model, d_output_discrete, nbins, **decoder_kwargs)
+            self.input_gt_for_training=True
+        elif decoder_type == 'flattened_simple':
+            # This assumes all outputs are discretized
+            # .forward requires ground truth output at train time
+            self.decoder = FlattenedDecoderSimple(d_model, d_output_discrete, nbins)
+            self.input_gt_for_training=True
+        else:
+            assert False, f"Decoder type '{decoder_type}' is not supported"
+        self.output_softmax = not self.input_gt_for_training
 
         # store hyperparameters
         self.d_model = d_model
-        
+
         # dataset parameters
         self.dataset_params = dataset_params
 
@@ -550,21 +709,22 @@ class TransformerModel(torch.nn.Module):
         self.config = config
 
         self.init_weights()
-        
+
     def init_weights(self) -> None:
         pass
 
     def forward(
-            self, src: torch.Tensor, mask: torch.Tensor = None, is_causal: bool = False, return_hidden: bool = False
+            self, src: torch.Tensor, mask: torch.Tensor = None, is_causal: bool = False,
+            return_hidden: bool = False, gt: torch.Tensor = None,
     ) -> torch.Tensor:
         """
     Args:
-      src: Tensor, shape [seq_len,batch_size,dinput]
-      src_mask: Tensor, shape [seq_len,seq_len]
+      src: Tensor, shape [batch_size, seq_len, dinput]
+      src_mask: Tensor, shape [seq_len, seq_len]
       return_hidden: Whether to include hidden states in the output. Hidden states are stored as a list of float arrays
         of shape (batch_size, seq_len, d_model).
     Returns:
-      output Tensor of shape [seq_len, batch_size, ntoken]
+      output Tensor of shape [batch_size, seq_len, ntoken]
     """
 
         # project input into d_model space, multiple by sqrt(d_model) for reasons?
@@ -589,8 +749,11 @@ class TransformerModel(torch.nn.Module):
         else:
             output = self.transformer_encoder(src, mask=mask, is_causal=is_causal)
 
-        # project back to d_input space
-        output = self.decoder(output)
+        # project back to d_output space
+        if gt is not None:
+            output = self.decoder(output, gt=gt)
+        else:
+            output = self.decoder(output)
 
         if self.is_mixed:
             output_continuous = output[..., :self.d_output_continuous]
@@ -612,10 +775,11 @@ class TransformerModel(torch.nn.Module):
     def output(self, *args, **kwargs):
 
         output = self.forward(*args, **kwargs)
-        if self.is_mixed:
+        if self.is_mixed and self.output_softmax:
             output['discrete'] = torch.softmax(output['discrete'], dim=-1)
 
         return output
+
 
 class ObsEmbedding(torch.nn.Module):
     def __init__(self, d_model: int, input_idx, input_szs, embedding_types, embedding_params):
@@ -1119,7 +1283,13 @@ def initialize_model(config, train_dataset, device):
         d_output = train_dataset.d_output_continuous
     else:
         d_output = train_dataset.d_output
-        
+
+    if 'decoder_type' in config:
+        MODEL_ARGS['decoder_type'] = config['decoder_type']
+    if 'decoder_kwargs' in config:
+
+        MODEL_ARGS['decoder_kwargs'] = config['decoder_kwargs']
+
     if config['modelstatetype'] == 'prob':
         model = TransformerStateModel(d_input, d_output, **MODEL_ARGS).to(device)
         criterion = prob_causal_criterion
@@ -1197,7 +1367,7 @@ def compute_loss(model, dataloader, dataset, device, mask, criterion, config):
             return loss
 
 
-def compute_loss_mixed(model, dataloader, device, mask, weight_discrete):
+def compute_loss_mixed(model, dataloader, device, mask, weight_discrete, input_gt=False):
     model.eval()
     with torch.no_grad():
         all_loss = torch.zeros(len(dataloader), device=device)
@@ -1206,7 +1376,11 @@ def compute_loss_mixed(model, dataloader, device, mask, weight_discrete):
         loss_continuous = torch.tensor(0.0).to(device)
         nmask = 0
         for i, example in enumerate(dataloader):
-            pred = model(example['input'].to(device=device), mask=mask, is_causal=True)
+            if input_gt:
+                pred = model(example['input'].to(device=device), mask=mask, is_causal=True,
+                             gt=example['labels_discrete'].to(device=device))
+            else:
+                pred = model(example['input'].to(device=device), mask=mask, is_causal=True)
             loss_curr, loss_discrete_curr, loss_continuous_curr = mixed_causal_criterion(
                 example, pred, weight_discrete=weight_discrete, extraout=True
             )
