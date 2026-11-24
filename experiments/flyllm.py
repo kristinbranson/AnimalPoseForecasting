@@ -58,16 +58,19 @@ class Sensory(Operation):
             Xkp = Xkp[None, ...]                                 # (1, n_frames, 2, n_keypoints)
             if isdata is not None:
                 isdata = np.asarray(isdata).reshape((-1, 1))
-        feats = []
+        # fill one preallocated output, rather than stacking per-fly arrays, to avoid a full-size copy
+        sensory_data = None
         for flyid in range(Xkp.shape[0]):
             if isdata is not None:
                 isdatacurr = isdata[:, flyid]
             else:
                 isdatacurr = None
             feat, idxinfo = compute_sensory_wrapper(Xkp.T, flyid, returnidx=True, isdata=isdatacurr)
-            feats.append(feat.T)
+            if sensory_data is None:
+                # (n_agents, n_frames, n_sensory_features)
+                sensory_data = np.empty((Xkp.shape[0],) + feat.T.shape, dtype=feat.dtype)
+            sensory_data[flyid] = feat.T
         self.idxinfo = idxinfo
-        sensory_data = np.array(feats)                           # (n_agents, n_frames, n_sensory_features)
         if not ismultiagent:
             sensory_data = sensory_data[0]
         return sensory_data

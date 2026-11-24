@@ -60,7 +60,8 @@ EXACT_TOLERANCE = 1e-9
 # deviations as small as ~0.04, the differences are ~1e-6.
 SENSORY_TOLERANCE = 1e-6
 ZSCORED_SENSORY_TOLERANCE = 1e-4
-# simulate() stores model inputs as float32.
+# The dataset and simulate() store model inputs as float32. Measured errors in un-z-scored
+# velocity inputs are ~1e-8; a one-frame shift of the synthetic movement is off by ~1e-3.
 FLOAT32_TOLERANCE = 1e-4
 
 # Number of frames, spread evenly over the data, at which single-frame sensory is compared against
@@ -328,7 +329,7 @@ def test_inputs_and_labels_time_alignment():
     constructed trajectory, whose orientation the test writes out as heading − π/2), computes the
     true movement m[t] from each frame to the next with `GlobalVelocity.apply()`. Undoes the
     velocity input's z-scoring (`invert_to_named(..., 'roll')`, i.e. `Zscore.invert()`): at frame t
-    it must equal m[t−1] exactly. Decodes the labels without sampling (`Discretize.invert()`, then
+    it must equal m[t−1] to float32 precision. Decodes the labels without sampling (`Discretize.invert()`, then
     `Zscore.invert()`): at frame t they must equal m[t] to within the widest interior bin. The test
     also checks that the steps vary enough that a one-frame shift would fail, so it cannot pass
     vacuously. Same purpose as `test_inputs_and_labels_time_alignment` in test_fly.py, for
@@ -347,7 +348,7 @@ def test_inputs_and_labels_time_alignment():
 
     velocity_input = apf.dataset.invert_to_named(dataset.inputs['velocity'], 'roll')[0]   # (n_frames, 3)
     error = np.abs(velocity_input[1:] - movement).max()
-    assert error < EXACT_TOLERANCE, f'velocity input at t vs m[t - 1]: error {error:.3g}'
+    assert error < FLOAT32_TOLERANCE, f'velocity input at t vs m[t - 1]: error {error:.3g}'
 
     labels = dataset.labels['velocity']
     decoded = apf.dataset.invert_to_named(labels, 'globalvelocity', discretize={'do_sampling': False})[0, :-1]
@@ -527,9 +528,10 @@ def test_models_from_the_old_orientation_convention_are_refused():
         current_file, old_file = os.path.join(directory, 'current.pth'), os.path.join(directory, 'old.pth')
         apf.io.save_model(current_file, torch.nn.Linear(2, 2), config=data['config'])
         apf.io.save_model(old_file, torch.nn.Linear(2, 2), config=old_config)
-        apf.io.load_model(current_file, torch.nn.Linear(2, 2), 'cpu', check_state=check)
+        # the saved configs hold numpy arrays (e.g. discreteidx), which weights_only=True refuses
+        apf.io.load_model(current_file, torch.nn.Linear(2, 2), 'cpu', check_state=check, weights_only=False)
         try:
-            apf.io.load_model(old_file, torch.nn.Linear(2, 2), 'cpu', check_state=check)
+            apf.io.load_model(old_file, torch.nn.Linear(2, 2), 'cpu', check_state=check, weights_only=False)
         except ValueError:
             return
     raise AssertionError('a model saved without the current orientation convention was loaded')
