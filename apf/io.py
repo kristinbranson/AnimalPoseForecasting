@@ -41,7 +41,7 @@ def save_model(savefile, model, lr_optimizer=None, scheduler=None, loss=None, co
     return
 
 
-def modernize_model_file(loadfile,dataset,config,device, weights_only=True):
+def modernize_model_file(loadfile,dataset,config,device, weights_only=False):
     LOG.info(f'Loading model from file {loadfile}...')
     state = torch.load(loadfile, map_location=device, weights_only=weights_only)
     if 'model' not in state:
@@ -53,7 +53,7 @@ def modernize_model_file(loadfile,dataset,config,device, weights_only=True):
     return state    
     
 
-def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, config=None, check_state=None, weights_only=True):
+def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, config=None, check_state=None, weights_only=False):
     """Restores a model, and optionally its optimizer, scheduler and config, from a saved checkpoint.
 
     Args:
@@ -65,6 +65,11 @@ def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, confi
         check_state: optional function called with the loaded checkpoint dict before anything is
             restored; it should raise if the checkpoint must not be used (e.g. it was trained
             with a different data convention).
+        weights_only: passed to torch.load. False by default because save_model stores the
+            config and dataset_params alongside the tensors, and those hold numpy arrays,
+            which torch.load refuses under weights_only=True from torch 2.6 on. Pass True for
+            a checkpoint from an untrusted source, whose unpickling would otherwise be free to
+            execute arbitrary code.
 
     Returns:
         loss: dict with 'train' and 'val' loss histories saved with the model, or None entries.
@@ -94,11 +99,13 @@ def load_model(loadfile, model, device, lr_optimizer=None, scheduler=None, confi
     return loss
 
 
-def load_config_from_model_file(loadmodelfile=None, config=None, state=None, no_overwrite=(), sensory_params=None, weights_only=True):
+def load_config_from_model_file(loadmodelfile=None, config=None, state=None, no_overwrite=(), sensory_params=None, weights_only=False):
     if state is None:
         assert loadmodelfile is not None
         LOG.info(f'Loading config from file {loadmodelfile}...')
-        state = torch.load(loadmodelfile, weights_only=weights_only)
+        # map_location keeps the checkpoint's tensors off the GPU, since only its config is
+        # read here. See load_model for weights_only.
+        state = torch.load(loadmodelfile, map_location='cpu', weights_only=weights_only)
     if config is not None and 'config' in state:
         overwrite_config(config, state['config'], no_overwrite=no_overwrite)
     else:
